@@ -11,13 +11,13 @@ use crate::source::Source;
 use bytes::Bytes;
 use eo_core::*;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Size of the blocks that the reader gets for the header and the tag values.
 const BLOCK: u64 = 64 << 10;
 /// Tags that the viewer uses. The reader ignores all other tags.
 const USED: &[u16] = &[
-    254, 256, 257, 258, 259, 273, 277, 278, 279, 284, 317, 322, 323, 324, 325, 339, 33550, 33922, 34264, 34735, 34736,
+    254, 256, 257, 258, 259, 273, 277, 278, 279, 284, 317, 322, 323, 324, 325, 339, 347, 33550, 33922, 34264, 34735, 34736,
     34737, 42112, 42113,
 ];
 
@@ -208,7 +208,7 @@ fn array(rd: &Rd, ifd: &Ifd, src: u32) -> Result<Array> {
         8 | 32946 => Some(Codec::Deflate),
         50000 => Some(Codec::Zstd),
         32773 => Some(Codec::PackBits),
-        7 => return Err("TIFF JPEG compression is not supported yet".into()),
+        7 => Some(Codec::Jpeg { tables: ifd.get(&347).map_or(Arc::from(&[][..]), |t| Arc::from(&t.raw[..])) }),
         34712 => return Err("TIFF JPEG 2000 compression is not supported yet".into()),
         c => return Err(format!("TIFF compression {c} is not supported (none, LZW, Deflate, Zstd, PackBits)").into()),
     };

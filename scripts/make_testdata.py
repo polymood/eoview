@@ -1,14 +1,18 @@
 """Write the reference test files and the expected values to testdata/.
 
-Run: uv run --with numpy --with tifffile --with imagecodecs python scripts/make_testdata.py
+Run: uv run --with numpy --with tifffile --with imagecodecs --with netCDF4 python scripts/make_testdata.py
 The script also uses the GDAL command line tools (gdal_translate, gdalinfo, gdallocationinfo).
 
 Lines of testdata/expected.tsv (tab-separated):
   s  file  width  height  bands  levels  dtype
-  v  file  level  band[:part]  x  y  value       stored value at a file level ("nan" for NaN)
+  v  file  level  band[:part]  x  y  value [tol] stored value at a file level ("nan" for NaN), optional absolute tolerance
   g  file  gt0 gt1 gt2 gt3 gt4 gt5  epsg        GDAL geotransform and EPSG code
   p  file  scale  offset  fill                    physical value = stored * scale + offset
   m  file  level  x  y  value                     mean that the viewer generates for a display level
+  l  file  col  row  lon  lat  tol                geolocation at pixel position (col, row), tolerance in degrees
+
+"file#name" selects the variable "name" of a file with more than one variable.
+The Zarr stores come from scripts/testdata_zarr.py (zarr-python 2 and 3 in their own environments).
 """
 import json
 import os
@@ -149,6 +153,94 @@ for d in (1, 2):
         m = float(a[y * f:(y + 1) * f, x * f:(x + 1) * f].astype(np.float64).mean())
         out.append(f"m\tvirt_u8.tif\t{d}\t{x}\t{y}\t{m!r}")
 
+# 10. JPEG 2000: tiles of 256, 3 resolution levels, lossless, no TLM marker (the reader scans the tile parts).
+a = pattern(500, 700, 100, 30000).astype(np.uint16)
+with tempfile.TemporaryDirectory() as t:
+    src = os.path.join(t, "src.tif")
+    tifffile.imwrite(src, a)
+    run("gdal_translate", "-q", "-of", "JP2OpenJPEG", "-co", "REVERSIBLE=YES", "-co", "QUALITY=100", "-co", "BLOCKXSIZE=256",
+        "-co", "BLOCKYSIZE=256", "-co", "RESOLUTIONS=3", src, os.path.join(D, "u16_tiles.jp2"))
+jp = os.path.join(D, "u16_tiles.jp2")
+for aux in (jp + ".aux.xml",):
+    if os.path.exists(aux):
+        os.remove(aux)
+shape("u16_tiles.jp2", 700, 500, 1, 3, "U16")
+values("u16_tiles.jp2", 0, a)
+for k in (1, 2):
+    w, h = -(-700 // 2**k), -(-500 // 2**k)
+    for x, y in points(h, w):
+        bx, by = (x + 0.5) * 700 / w, (y + 0.5) * 500 / h
+        v = run("gdallocationinfo", "-valonly", "-overview", str(k), jp, str(bx), str(by)).strip()
+        out.append(f"v\tu16_tiles.jp2\t{k}\t0\t{x}\t{y}\t{v}")
+
+# 11. NetCDF-4: a swath with 2D latitude and longitude, deflate and shuffle, 11 attributes (dense attribute
+#     storage), and a regular grid with 1D coordinates.
+import netCDF4
+
+nc = os.path.join(D, "nc4_swath.nc")
+with netCDF4.Dataset(nc, "w") as f:
+    f.createDimension("rows", 80)
+    f.createDimension("columns", 100)
+    raw = pattern(80, 100, 100, 60000).astype(np.uint16)
+    raw[0, 0] = 65535
+    v = f.createVariable("rad", "u2", ("rows", "columns"), zlib=True, shuffle=True, chunksizes=(32, 40), fill_value=65535)
+    v.set_auto_maskandscale(False)
+    v.setncatts({"scale_factor": np.float32(0.01), "add_offset": np.float32(1.0), "units": "W m-2", "long_name": "radiance",
+                 "standard_name": "toa_radiance", "valid_min": np.uint16(0), "valid_max": np.uint16(65534), "comment": "test",
+                 "source": "eoview", "coordinates": "latitude longitude"})
+    v[:] = raw
+    r, c = np.mgrid[0:80, 0:100]
+    lat = 45.0 + 0.01 * r + 0.002 * c + 0.0001 * c * r
+    lon = 5.0 + 0.015 * c - 0.003 * r
+    la = f.createVariable("latitude", "f8", ("rows", "columns"), zlib=True)
+    la[:] = lat
+    lo = f.createVariable("longitude", "f8", ("rows", "columns"), zlib=True)
+    lo[:] = lon
+shape("nc4_swath.nc#rad", 100, 80, 1, 1, "U16")
+values("nc4_swath.nc#rad", 0, raw)
+out.append("p\tnc4_swath.nc#rad\t0.009999999776482582\t1.0\t65535")
+for x, y in points(80, 100):
+    out.append(f"l\tnc4_swath.nc#rad\t{x + 0.5}\t{y + 0.5}\t{lon[y, x].item()!r}\t{lat[y, x].item()!r}\t1e-9")
+
+nc = os.path.join(D, "nc4_grid.nc")
+with netCDF4.Dataset(nc, "w") as f:
+    f.createDimension("lat", 60)
+    f.createDimension("lon", 90)
+    la = f.createVariable("lat", "f4", ("lat",))
+    la[:] = 60.0 - 0.25 * np.arange(60)
+    lo = f.createVariable("lon", "f4", ("lon",))
+    lo[:] = -10.0 + 0.25 * np.arange(90)
+    sst = pattern(60, 90, 270, 300).astype(np.float32)
+    sst[5:9, 5:9] = np.nan
+    v = f.createVariable("sst", "f4", ("lat", "lon"), zlib=True, chunksizes=(30, 45))
+    v[:] = sst
+shape("nc4_grid.nc#sst", 90, 60, 1, 1, "F32")
+values("nc4_grid.nc#sst", 0, sst)
+out.append("v\tnc4_grid.nc#sst\t0\t0\t6\t6\tnan")
+out.append("g\tnc4_grid.nc#sst\t-10.125 0.25 0.0 60.125 0.0 -0.25\t4326")
+
+# 13. JPEG: RGB COG, YCbCr, with JPEGTables. Expected values from GDAL (libjpeg); decoders can differ by 1 or 2.
+a = np.stack([pattern(200, 300, 20 + 60 * b, 230) for b in range(3)], -1).clip(0, 255).astype(np.uint8)
+with tempfile.TemporaryDirectory() as t:
+    src = os.path.join(t, "src.tif")
+    tifffile.imwrite(src, a, photometric="rgb")
+    run("gdal_translate", "-q", "-of", "COG", "-co", "COMPRESS=JPEG", "-co", "QUALITY=90", "-co", "BLOCKSIZE=128", "-co", "OVERVIEWS=NONE",
+        src, os.path.join(D, "rgb_jpeg.tif"))
+jt = os.path.join(D, "rgb_jpeg.tif")
+shape("rgb_jpeg.tif", 300, 200, 3, 1, "U8")
+for b in range(3):
+    for x, y in points(200, 300):
+        v = run("gdallocationinfo", "-valonly", "-b", str(b + 1), jt, str(x), str(y)).strip()
+        out.append(f"v\trgb_jpeg.tif\t0\t{b}\t{x}\t{y}\t{v}\t2")
+
+# 12. Zarr v2 and v3 stores (each zarr-python version in its own environment).
+here = os.path.dirname(__file__)
+for ver, req in (("v2", "zarr<3"), ("v3", "zarr>=3")):
+    r = subprocess.run(["uv", "run", "--with", req, "--with", "numpy", "python", os.path.join(here, "testdata_zarr.py"), ver],
+                       check=True, capture_output=True, text=True)
+    out.extend(r.stdout.strip().splitlines())
+
 with open(os.path.join(D, "expected.tsv"), "w") as f:
     f.write("\n".join(out) + "\n")
-print(sum(os.path.getsize(os.path.join(D, n)) for n in os.listdir(D)), "bytes in testdata")
+total = sum(os.path.getsize(os.path.join(dp, n)) for dp, _, fs in os.walk(D) for n in fs)
+print(total, "bytes in testdata")

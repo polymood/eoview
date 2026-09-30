@@ -78,7 +78,33 @@ fn step<'a>(a: &Array, c: &Codec, cur: Cow<'a, [u8]>, need: usize) -> Result<Cow
             owned(v)
         }
         Codec::Jpeg2000 { reduce, header } => owned(crate::jp2::decode_tile(a, s, *reduce, header)?),
+        Codec::Jpeg { tables } => owned(jpeg(a, s, tables)?),
     }
+}
+
+/// Decode a JPEG chunk (u8, 1 or 3 values per pixel, pixel interleaved). With TIFF JPEGTables, the stream is
+/// the tables (without their end marker) and the chunk (without its start marker), as libtiff does.
+fn jpeg(a: &Array, src: &[u8], tables: &[u8]) -> Result<Vec<u8>> {
+    use zune_jpeg::zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions};
+    let stream: Cow<[u8]> = if tables.len() > 4 && src.len() > 2 {
+        Cow::Owned([&tables[..tables.len() - 2], &src[2..]].concat())
+    } else {
+        Cow::Borrowed(src)
+    };
+    let nb = a.axis("band").map_or(1, |b| a.chunk[b] as usize);
+    let cs = if nb == 1 { ColorSpace::Luma } else { ColorSpace::RGB };
+    let mut d = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(&stream[..]), DecoderOptions::default().jpeg_set_out_colorspace(cs));
+    let px = d.decode().map_err(|e| Error(format!("{e:?}")))?;
+    let info = d.info().ok_or("JPEG without header")?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    let (y, x) = (a.axis("y").unwrap(), a.axis("x").unwrap());
+    let (ch, cw) = (a.chunk[y] as usize, a.chunk[x] as usize);
+    let mut out = vec![0u8; a.chunk_bytes()];
+    let row = w.min(cw) * nb;
+    for r in 0..h.min(ch) {
+        out[r * cw * nb..][..row].copy_from_slice(&px[r * w * nb..][..row]);
+    }
+    Ok(out)
 }
 
 /// Undo the numcodecs delta filter: cumulative sum of the values.

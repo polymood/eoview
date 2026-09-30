@@ -103,6 +103,8 @@ pub enum Codec {
     /// TIFF predictor: 2 (horizontal differencing) or 3 (floating point).
     /// `stride` is the number of values in one pixel. `row` is the number of values in one row.
     Predictor { kind: u16, stride: u32, row: u32 },
+    /// JPEG stream (8-bit). `tables`: shared quantization and Huffman tables (TIFF JPEGTables), or empty.
+    Jpeg { tables: std::sync::Arc<[u8]> },
     /// JPEG 2000 tile: the chunk has the tile parts of one tile. `header` is the main header of the
     /// codestream. `reduce`: number of resolution levels to discard.
     Jpeg2000 { reduce: u8, header: std::sync::Arc<[u8]> },

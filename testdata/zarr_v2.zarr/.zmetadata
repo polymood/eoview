@@ -1,0 +1,184 @@
+{
+    "metadata": {
+        ".zattrs": {
+            "other_metadata": {
+                "horizontal_crs_code": "EPSG:32631"
+            }
+        },
+        ".zgroup": {
+            "zarr_format": 2
+        },
+        "measurements/.zgroup": {
+            "zarr_format": 2
+        },
+        "measurements/r10m/.zgroup": {
+            "zarr_format": 2
+        },
+        "measurements/r10m/b1/.zarray": {
+            "chunks": [
+                128,
+                128
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 3,
+                "cname": "zstd",
+                "id": "blosc",
+                "shuffle": 2
+            },
+            "dtype": "<u2",
+            "fill_value": 0,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                300,
+                400
+            ],
+            "zarr_format": 2
+        },
+        "measurements/r10m/b1/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "y",
+                "x"
+            ],
+            "add_offset": -0.1,
+            "scale_factor": 0.0001,
+            "units": "1"
+        },
+        "measurements/r10m/x/.zarray": {
+            "chunks": [
+                400
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 3,
+                "cname": "zstd",
+                "id": "blosc",
+                "shuffle": 2
+            },
+            "dtype": "<f8",
+            "fill_value": 0.0,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                400
+            ],
+            "zarr_format": 2
+        },
+        "measurements/r10m/x/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "x"
+            ]
+        },
+        "measurements/r10m/y/.zarray": {
+            "chunks": [
+                300
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 3,
+                "cname": "zstd",
+                "id": "blosc",
+                "shuffle": 2
+            },
+            "dtype": "<f8",
+            "fill_value": 0.0,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                300
+            ],
+            "zarr_format": 2
+        },
+        "measurements/r10m/y/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "y"
+            ]
+        },
+        "measurements/r20m/.zgroup": {
+            "zarr_format": 2
+        },
+        "measurements/r20m/b1/.zarray": {
+            "chunks": [
+                128,
+                128
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 3,
+                "cname": "zstd",
+                "id": "blosc",
+                "shuffle": 2
+            },
+            "dtype": "<u2",
+            "fill_value": 0,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                150,
+                200
+            ],
+            "zarr_format": 2
+        },
+        "measurements/r20m/b1/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "y",
+                "x"
+            ],
+            "add_offset": -0.1,
+            "scale_factor": 0.0001,
+            "units": "1"
+        },
+        "measurements/r20m/x/.zarray": {
+            "chunks": [
+                200
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 3,
+                "cname": "zstd",
+                "id": "blosc",
+                "shuffle": 2
+            },
+            "dtype": "<f8",
+            "fill_value": 0.0,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                200
+            ],
+            "zarr_format": 2
+        },
+        "measurements/r20m/x/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "x"
+            ]
+        },
+        "measurements/r20m/y/.zarray": {
+            "chunks": [
+                150
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 3,
+                "cname": "zstd",
+                "id": "blosc",
+                "shuffle": 2
+            },
+            "dtype": "<f8",
+            "fill_value": 0.0,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                150
+            ],
+            "zarr_format": 2
+        },
+        "measurements/r20m/y/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "y"
+            ]
+        }
+    },
+    "zarr_consolidated_format": 1
+}

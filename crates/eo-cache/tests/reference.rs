@@ -1,11 +1,14 @@
 //! Reference tests. scripts/make_testdata.py writes the files and the expected values with
-//! tifffile, numpy and GDAL. These tests compare the values that eoview reads.
+//! tifffile, numpy, GDAL, netCDF4 and zarr-python. These tests compare the values that eoview reads.
+//!
+//! Real products: set EOVIEW_TEST_PRODUCTS to a directory of products, and run
+//! scripts/reference_products.py first (it writes expected_products.tsv in that directory).
 use eo_cache::pixels::{Part, PlaneAt, value_f64};
 use eo_cache::{Engine, Event, LevelSrc, Pixels, TILE, TileKey, chunk_at};
 use eo_core::{Georef, Variable};
 use eo_io::Dataset;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,9 +16,13 @@ fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata")
 }
 
+fn lines_of(p: &Path) -> Vec<Vec<String>> {
+    let t = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    t.lines().filter(|l| !l.is_empty()).map(|l| l.split('\t').map(String::from).collect()).collect()
+}
+
 fn lines() -> Vec<Vec<String>> {
-    let t = std::fs::read_to_string(dir().join("expected.tsv")).unwrap();
-    t.lines().map(|l| l.split('\t').map(String::from).collect()).collect()
+    lines_of(&dir().join("expected.tsv"))
 }
 
 fn part(s: &str) -> (u64, Part) {
@@ -29,12 +36,26 @@ fn part(s: &str) -> (u64, Part) {
     (b.parse().unwrap(), p)
 }
 
+/// Variable with the name `n` (or a name that ends with "/n").
+fn find<'a>(p: &'a eo_core::Product, n: &str) -> &'a Variable {
+    p.vars.iter().find(|v| v.name == n || v.name.ends_with(&format!("/{n}"))).unwrap_or_else(|| panic!("no variable {n}"))
+}
+
 /// Stored value at pixel (x, y) of a file level, read through the chunk table and the codecs.
 fn read(ds: &Dataset, v: &Variable, level: usize, band: u64, p: Part, x: u64, y: u64) -> f64 {
     let a = &v.levels[level];
     let (ch, cw) = (a.chunk[a.axis("y").unwrap()], a.chunk[a.axis("x").unwrap()]);
     let c = a.chunks[chunk_at(a, band, y / ch, x / cw)];
-    let raw = ds.sources[c.src as usize].read(c.off..c.off + c.len).unwrap();
+    let s = &ds.sources[c.src as usize];
+    let raw = match c.len {
+        0 => bytes::Bytes::new(),
+        eo_core::ChunkLoc::WHOLE => s.read_whole().unwrap_or_default(),
+        l => s.read(c.off..c.off + l).unwrap(),
+    };
+    // A chunk that was not written: all values are the fill value.
+    if raw.is_empty() {
+        return v.fill.unwrap_or(0.0);
+    }
     let d = eo_io::codec::decode(a, &raw).unwrap();
     let pa = PlaneAt::new(a, band);
     value_f64(a, &d, pa.base + (y % ch) as usize * pa.sy + (x % cw) as usize * pa.sx, p)
@@ -44,16 +65,17 @@ fn close(got: f64, exp: f64, rel: f64) -> bool {
     (got.is_nan() && exp.is_nan()) || (got - exp).abs() <= exp.abs() * rel + 1e-9
 }
 
-#[test]
-fn readers_match_reference() {
+/// Check the lines s, v, g and p (reader level: chunk table, codecs, attributes). Return the number of checks.
+fn check_values(dir: &Path, lines: &[Vec<String>]) -> usize {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let mut open: HashMap<String, Dataset> = HashMap::new();
     let mut n = 0;
-    for f in lines() {
-        let ds = open.entry(f[1].clone()).or_insert_with(|| {
-            eo_io::open(dir().join(&f[1]).to_str().unwrap(), rt.handle()).unwrap_or_else(|e| panic!("{}: {e}", f[1]))
+    for f in lines {
+        let (file, var) = f[1].split_once('#').unwrap_or((&f[1], ""));
+        let ds = open.entry(file.to_string()).or_insert_with(|| {
+            eo_io::open(dir.join(file).to_str().unwrap(), rt.handle()).unwrap_or_else(|e| panic!("{file}: {e}"))
         });
-        let v = &ds.product.vars[0];
+        let v = if var.is_empty() { &ds.product.vars[0] } else { find(&ds.product, var) };
         let num = |i: usize| f[i].parse::<f64>().unwrap();
         match f[0].as_str() {
             "s" => {
@@ -65,7 +87,11 @@ fn readers_match_reference() {
             "v" => {
                 let (band, p) = part(&f[3]);
                 let got = read(ds, v, num(2) as usize, band, p, num(4) as u64, num(5) as u64);
-                assert!(close(got, num(6), 1e-6), "{:?}: got {got}", f);
+                let ok = match f.get(7) {
+                    Some(t) => (got - num(6)).abs() <= t.parse::<f64>().unwrap(),
+                    None => close(got, num(6), 1e-6),
+                };
+                assert!(ok, "{:?}: got {got}", f);
             }
             "g" => {
                 let Georef::Affine { gt, crs } = &v.georef else { panic!("{}: no georeferencing", f[1]) };
@@ -78,7 +104,47 @@ fn readers_match_reference() {
         }
         n += 1;
     }
-    assert!(n > 100, "only {n} checks");
+    n
+}
+
+#[test]
+fn readers_match_reference() {
+    let n = check_values(&dir(), &lines());
+    assert!(n > 150, "only {n} checks");
+}
+
+/// Real products (EOVIEW_TEST_PRODUCTS). No check if the variable is not set.
+#[test]
+fn products_match_reference() {
+    let Some(d) = std::env::var_os("EOVIEW_TEST_PRODUCTS").map(PathBuf::from) else { return };
+    let all = lines_of(&d.join("expected_products.tsv"));
+    let n = check_values(&d, &all);
+    let g = check_geo(&d, &all);
+    println!("{n} value checks, {g} position checks");
+    assert!(n > 50);
+}
+
+/// Check the lines l (geolocation): the engine reads the geolocation arrays or grids. Return the number of checks.
+fn check_geo(dir: &Path, lines: &[Vec<String>]) -> usize {
+    let (e, rx) = Engine::new(1 << 30, || {});
+    let mut n = 0;
+    for f in lines.iter().filter(|f| f[0] == "l") {
+        let (file, var) = f[1].split_once('#').unwrap();
+        let l = layer(&e, &rx, &dir.join(file));
+        let vi = l.ds.product.vars.iter().position(|v| v.name == var).unwrap_or_else(|| panic!("no variable {var}"));
+        e.select(&l, vi, 0);
+        let lv = loop {
+            if let Event::Opened { res, .. } = rx.recv_timeout(Duration::from_secs(60)).unwrap() {
+                break res.unwrap();
+            }
+        };
+        let g = e.georef(&lv).unwrap();
+        let num = |i: usize| f[i].parse::<f64>().unwrap();
+        let (lon, lat) = g.map(num(2), num(3)).unwrap();
+        assert!((lon - num(4)).abs() <= num(6) && (lat - num(5)).abs() <= num(6), "{f:?}: got {lon} {lat}");
+        n += 1;
+    }
+    n
 }
 
 /// Wait for the complete tiles `keys` of `layer`.
@@ -95,8 +161,8 @@ fn tiles(e: &Engine, rx: &std::sync::mpsc::Receiver<Event>, l: &Arc<eo_cache::La
     got
 }
 
-fn layer(e: &Engine, rx: &std::sync::mpsc::Receiver<Event>, name: &str) -> Arc<eo_cache::Layer> {
-    e.open(dir().join(name).to_str().unwrap().into());
+fn layer(e: &Engine, rx: &std::sync::mpsc::Receiver<Event>, path: &Path) -> Arc<eo_cache::Layer> {
+    e.open(path.to_str().unwrap().into());
     loop {
         if let Event::Opened { res, .. } = rx.recv_timeout(Duration::from_secs(20)).unwrap() {
             return res.unwrap();
@@ -110,7 +176,7 @@ fn engine_tiles_match_reference() {
     let all = lines();
 
     // Generated display levels: mean of the level-0 pixels.
-    let l = layer(&e, &rx, "virt_u8.tif");
+    let l = layer(&e, &rx, &dir().join("virt_u8.tif"));
     assert!(l.enc.u8);
     let m: Vec<&Vec<String>> = all.iter().filter(|f| f[0] == "m").collect();
     let key = |f: &Vec<String>| {
@@ -132,7 +198,7 @@ fn engine_tiles_match_reference() {
     }
 
     // File overview through the f16 display path of the engine.
-    let l = layer(&e, &rx, "cog_u16.tif");
+    let l = layer(&e, &rx, &dir().join("cog_u16.tif"));
     let top = l.levels.len() - 1;
     let LevelSrc::File(lvl) = l.levels[top].src else { panic!("top level of a COG is a file level") };
     let k = TileKey { layer: l.id, lv: top as u8, tx: 0, ty: 0 };
@@ -152,4 +218,6 @@ fn engine_tiles_match_reference() {
         n += 1;
     }
     assert!(n >= 6);
+
+    assert!(check_geo(&dir(), &all) >= 6);
 }

@@ -126,3 +126,94 @@ m	virt_u8.tif	2	137	50	126.375
 m	virt_u8.tif	2	274	0	252.75
 m	virt_u8.tif	2	0	149	175.0
 m	virt_u8.tif	2	91	75	212.0
+s	u16_tiles.jp2	700	500	1	3	U16
+v	u16_tiles.jp2	0	0	0	0	22056
+v	u16_tiles.jp2	0	0	699	499	5856
+v	u16_tiles.jp2	0	0	350	166	26728
+v	u16_tiles.jp2	0	0	699	0	20669
+v	u16_tiles.jp2	0	0	0	499	8127
+v	u16_tiles.jp2	0	0	233	250	20184
+v	u16_tiles.jp2	1	0	0	0	22519
+v	u16_tiles.jp2	1	0	349	249	6177
+v	u16_tiles.jp2	1	0	175	83	26588
+v	u16_tiles.jp2	1	0	349	0	20567
+v	u16_tiles.jp2	1	0	0	249	8023
+v	u16_tiles.jp2	1	0	116	125	20772
+v	u16_tiles.jp2	2	0	0	0	22442
+v	u16_tiles.jp2	2	0	174	124	7113
+v	u16_tiles.jp2	2	0	87	41	27221
+v	u16_tiles.jp2	2	0	174	0	21262
+v	u16_tiles.jp2	2	0	0	124	8340
+v	u16_tiles.jp2	2	0	58	62	20152
+s	nc4_swath.nc#rad	100	80	1	1	U16
+v	nc4_swath.nc#rad	0	0	0	0	65535
+v	nc4_swath.nc#rad	0	0	99	79	9108
+v	nc4_swath.nc#rad	0	0	50	26	40217
+v	nc4_swath.nc#rad	0	0	99	0	37962
+v	nc4_swath.nc#rad	0	0	0	79	15546
+v	nc4_swath.nc#rad	0	0	33	40	40948
+p	nc4_swath.nc#rad	0.009999999776482582	1.0	65535
+l	nc4_swath.nc#rad	0.5	0.5	5.0	45.0	1e-9
+l	nc4_swath.nc#rad	99.5	79.5	6.247999999999999	46.7701	1e-9
+l	nc4_swath.nc#rad	50.5	26.5	5.672	45.49	1e-9
+l	nc4_swath.nc#rad	99.5	0.5	6.484999999999999	45.198	1e-9
+l	nc4_swath.nc#rad	0.5	79.5	4.763	45.79	1e-9
+l	nc4_swath.nc#rad	33.5	40.5	5.375	45.598	1e-9
+s	nc4_grid.nc#sst	90	60	1	1	F32
+v	nc4_grid.nc#sst	0	0	0	0	292.6816711425781
+v	nc4_grid.nc#sst	0	0	89	59	272.7474670410156
+v	nc4_grid.nc#sst	0	0	45	20	293.06121826171875
+v	nc4_grid.nc#sst	0	0	89	0	286.1822814941406
+v	nc4_grid.nc#sst	0	0	0	59	278.4143981933594
+v	nc4_grid.nc#sst	0	0	30	30	293.9822692871094
+v	nc4_grid.nc#sst	0	0	6	6	nan
+g	nc4_grid.nc#sst	-10.125 0.25 0.0 60.125 0.0 -0.25	4326
+s	rgb_jpeg.tif	300	200	3	1	U8
+v	rgb_jpeg.tif	0	0	0	0	179	2
+v	rgb_jpeg.tif	0	0	299	199	36	2
+v	rgb_jpeg.tif	0	0	150	66	103	2
+v	rgb_jpeg.tif	0	0	299	0	126	2
+v	rgb_jpeg.tif	0	0	0	199	88	2
+v	rgb_jpeg.tif	0	0	100	100	85	2
+v	rgb_jpeg.tif	0	1	0	0	192	2
+v	rgb_jpeg.tif	0	1	299	199	93	2
+v	rgb_jpeg.tif	0	1	150	66	141	2
+v	rgb_jpeg.tif	0	1	299	0	156	2
+v	rgb_jpeg.tif	0	1	0	199	126	2
+v	rgb_jpeg.tif	0	1	100	100	127	2
+v	rgb_jpeg.tif	0	2	0	0	208	2
+v	rgb_jpeg.tif	0	2	299	199	148	2
+v	rgb_jpeg.tif	0	2	150	66	177	2
+v	rgb_jpeg.tif	0	2	299	0	184	2
+v	rgb_jpeg.tif	0	2	0	199	165	2
+v	rgb_jpeg.tif	0	2	100	100	169	2
+s	zarr_v2.zarr#measurements/b1	400	300	1	2	U16
+v	zarr_v2.zarr#measurements/b1	0	0	0	0	0
+v	zarr_v2.zarr#measurements/b1	0	0	399	299	1798
+v	zarr_v2.zarr#measurements/b1	0	0	200	100	445
+v	zarr_v2.zarr#measurements/b1	0	0	399	0	186
+v	zarr_v2.zarr#measurements/b1	0	0	5	5	0
+v	zarr_v2.zarr#measurements/b1	0	0	133	150	927
+v	zarr_v2.zarr#measurements/b1	1	0	0	0	0
+v	zarr_v2.zarr#measurements/b1	1	0	199	149	1772
+v	zarr_v2.zarr#measurements/b1	1	0	100	50	468
+v	zarr_v2.zarr#measurements/b1	1	0	199	0	175
+v	zarr_v2.zarr#measurements/b1	1	0	5	5	1331
+v	zarr_v2.zarr#measurements/b1	1	0	66	75	952
+g	zarr_v2.zarr#measurements/b1	600000.0 10.0 0.0 5000000.0 0.0 -10.0	32631
+p	zarr_v2.zarr#measurements/b1	0.0001	-0.1	0
+s	zarr_v3.zarr#measurements/b1	400	300	1	2	U16
+v	zarr_v3.zarr#measurements/b1	0	0	0	0	0
+v	zarr_v3.zarr#measurements/b1	0	0	399	299	1798
+v	zarr_v3.zarr#measurements/b1	0	0	200	100	445
+v	zarr_v3.zarr#measurements/b1	0	0	399	0	186
+v	zarr_v3.zarr#measurements/b1	0	0	5	5	0
+v	zarr_v3.zarr#measurements/b1	0	0	133	150	927
+v	zarr_v3.zarr#measurements/b1	1	0	0	0	0
+v	zarr_v3.zarr#measurements/b1	1	0	199	149	1772
+v	zarr_v3.zarr#measurements/b1	1	0	100	50	468
+v	zarr_v3.zarr#measurements/b1	1	0	199	0	175
+v	zarr_v3.zarr#measurements/b1	1	0	5	5	1331
+v	zarr_v3.zarr#measurements/b1	1	0	66	75	952
+g	zarr_v3.zarr#measurements/b1	600000.0 10.0 0.0 5000000.0 0.0 -10.0	32631
+p	zarr_v3.zarr#measurements/b1	0.0001	-0.1	0

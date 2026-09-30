@@ -111,16 +111,14 @@ fn messages(r: &Rd, addr: u64) -> Result<Vec<(u16, Vec<u8>)>> {
         while let Some((a, n)) = blocks.pop() {
             let b = r.bytes(a, n)?;
             let mut c = Cur { b: &b, p: 0 };
+            // Message header: type, size, flags, and the creation order if the header tracks it.
+            let hsz = if flags & 0x04 != 0 { 6 } else { 4 };
             // A gap smaller than a message header can end the block.
-            while c.p + 4 <= b.len() {
+            while c.p + hsz <= b.len() {
                 let t = c.u(1)? as u16;
                 let size = c.u(2)? as usize;
-                c.skip(1);
-                // Creation order of the message: present if the header tracks the attribute creation order.
-                if flags & 0x04 != 0 {
-                    c.skip(2);
-                }
-                let data = c.take(size)?.to_vec();
+                c.skip(hsz - 3);
+                let Ok(data) = c.take(size).map(<[u8]>::to_vec) else { break };
                 if t == 0x10 {
                     let mut d = Cur { b: &data, p: 0 };
                     let (o, l) = (d.u(r.so)?, d.u(r.sl)?);
@@ -325,7 +323,7 @@ fn group(r: &Rd, addr: u64, path: &str, min_rank: usize, out: &mut Vec<Dataset>,
     if depth > 16 {
         return Ok(());
     }
-    let msgs = messages(r, addr)?;
+    let msgs = messages(r, addr).map_err(|e| Error(format!("object header at {addr}: {e}")))?;
     let mut links: Vec<(String, u64)> = vec![];
     for (t, d) in &msgs {
         match t {
@@ -379,7 +377,7 @@ fn link(r: &Rd, d: &[u8]) -> Result<Option<(String, u64)>> {
     }
     let n = c.u(1 << (flags & 3))? as usize;
     let name = String::from_utf8_lossy(c.take(n)?).to_string();
-    Ok((lt == 0).then_some((name, c.u(r.so)?)).map(|(n, a)| (n, a)))
+    Ok((lt == 0).then_some((name, c.u(r.so)?)))
 }
 
 /// Number of bytes to encode `v` (H5VM_limit_enc_size).
@@ -439,28 +437,59 @@ fn dense(r: &Rd, heap: u64, bt: u64, kind: u8) -> Result<Vec<Vec<u8>>> {
         Err("HDF5 fractal heap object in a nested indirect block is not supported".into())
     };
     let _ = flags;
-    // Version 2 B-tree: header, then a root leaf (depth 0).
+    // Version 2 B-tree: header, then a root leaf (depth 0) or a root internal node with leaves (depth 1).
+    let mut internal_records: Vec<Vec<u8>> = vec![];
     let b = r.bytes(bt, 40.min(r.len - bt))?;
     if &b[..4] != b"BTHD" {
         return Err("bad HDF5 version 2 B-tree".into());
     }
     let mut c = Cur { b: &b, p: 6 };
-    let _node = c.u(4)?;
+    let node = c.u(4)? as usize;
     let rec = c.u(2)? as usize;
     let depth = c.u(2)?;
     c.skip(2);
     let (rootn, nrec) = (c.u(r.so)?, c.u(2)? as usize);
-    if depth != 0 {
-        return Err("HDF5 version 2 B-tree with depth > 0 is not supported".into());
-    }
-    let leaf = r.bytes(rootn, (6 + nrec * rec) as u64)?;
-    if &leaf[..4] != b"BTLF" {
-        return Err("bad HDF5 version 2 B-tree leaf".into());
+    // Leaves: (address, number of records). A root of depth 1 lists its leaves after its records.
+    let leaves = match depth {
+        0 => vec![(rootn, nrec)],
+        1 => {
+            let nsize = enc_size(((node - 10) / rec) as u64);
+            let ib = r.bytes(rootn, (6 + nrec * rec + (nrec + 1) * (r.so + nsize)) as u64)?;
+            if &ib[..4] != b"BTIN" {
+                return Err("bad HDF5 version 2 B-tree internal node".into());
+            }
+            let mut c = Cur { b: &ib, p: 6 + nrec * rec };
+            let mut v = vec![];
+            for _ in 0..=nrec {
+                v.push((c.u(r.so)?, c.u(nsize)? as usize));
+            }
+            // The records of the internal node are objects too.
+            let mut own = vec![];
+            for k in 0..nrec {
+                own.push(ib[6 + k * rec..6 + (k + 1) * rec].to_vec());
+            }
+            v.push((u64::MAX, own.len()));
+            internal_records = own;
+            v
+        }
+        _ => return Err("HDF5 version 2 B-tree with depth > 1 is not supported".into()),
+    };
+    let mut records: Vec<Vec<u8>> = vec![];
+    for (addr, n) in leaves {
+        if addr == u64::MAX {
+            records.append(&mut internal_records);
+            continue;
+        }
+        let leaf = r.bytes(addr, (6 + n * rec) as u64)?;
+        if &leaf[..4] != b"BTLF" {
+            return Err("bad HDF5 version 2 B-tree leaf".into());
+        }
+        records.extend((0..n).map(|k| leaf[6 + k * rec..6 + (k + 1) * rec].to_vec()));
     }
     let id_at = if kind == 5 { 4 } else { 0 };
     let mut out = vec![];
-    for k in 0..nrec {
-        let id = &leaf[6 + k * rec + id_at..6 + k * rec + id_at + id_len];
+    for rcd in &records {
+        let id = rcd.get(id_at..id_at + id_len).ok_or("bad HDF5 B-tree record")?;
         match (id[0] >> 4) & 3 {
             0 => {
                 let mut c = Cur { b: &id[1..], p: 0 };
@@ -530,7 +559,7 @@ fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset
     let Some((Some(dtype), le, size)) = get(0x03).and_then(datatype) else { return Ok(None) };
     let lay = get(0x08).ok_or("dataset without layout")?;
     let rank = shape.len();
-    let codecs = get(0x0B).map(|f| filters(f, size)).transpose()?.unwrap_or_default();
+    let codecs = get(0x0B).map(|f| filters(f, size)).transpose().map_err(|e| Error(format!("filter pipeline: {e}")))?.unwrap_or_default();
     let mut attrs: HashMap<String, Attr> = msgs.iter().filter(|m| m.0 == 0x0C).filter_map(|m| attribute(&m.1)).collect();
     // Dense attribute storage (attribute info message).
     if let Some(d) = get(0x15) {
@@ -545,8 +574,9 @@ fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset
         }
     }
     let (ver, class) = (lay[0], lay[1]);
+    let lay_err = |e: Error| Error(format!("layout {ver}/{class}: {e}"));
     let mut c = Cur { b: lay, p: 2 };
-    let (chunk, chunks) = match (ver, class) {
+    let (chunk, chunks) = (|| -> Result<(Vec<u64>, Vec<(Vec<u64>, u64, u64, u32)>)> { Ok(match (ver, class) {
         (3 | 4, 1) => {
             let (a, l) = (c.u(r.so)?, c.u(r.sl)?);
             let v = if undef(a, r.so) { vec![] } else { vec![(vec![0; rank], a, l, 0)] };
@@ -580,7 +610,7 @@ fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset
             }
         }
         _ => return Err(format!("HDF5 data layout {ver}/{class} is not supported").into()),
-    };
+    }) })().map_err(lay_err)?;
     Ok(Some(Dataset { path: path.to_string(), shape, dtype, le, chunk, chunks, codecs, attrs }))
 }
 

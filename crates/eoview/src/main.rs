@@ -40,6 +40,7 @@ const PRESETS: &[(&str, Kind, [&str; 3], &str, bool)] = &[
     ("NDVI", Kind::Expr, ["(B08 - B04) / (B08 + B04)", "", ""], "RdYlGn", false),
     ("NDWI", Kind::Expr, ["(B03 - B08) / (B03 + B08)", "", ""], "RdBu", false),
     ("Dual-pol SAR", Kind::Rgb, ["VV", "VH", "VV / VH"], "Gray", true),
+    ("OLCI true color", Kind::Rgb, ["Oa08_radiance", "Oa06_radiance", "Oa04_radiance"], "Gray", false),
 ];
 
 /// Display CRS choices: EPSG code (None: pixel space) and name. The layer CRS is also in the list.
@@ -373,7 +374,7 @@ impl App {
         self.view.space = Self::default_space(&l);
         self.view.fit = true;
         self.comp.band = 0;
-        let preset = PRESETS.iter().find(|p| self.preset_ok(p) && (p.0 == "True color" || p.0 == "Dual-pol SAR"));
+        let preset = PRESETS.iter().find(|p| self.preset_ok(p) && matches!(p.0, "True color" | "Dual-pol SAR" | "OLCI true color"));
         match preset {
             Some(p) => self.set_preset(p),
             None => {
@@ -611,7 +612,9 @@ impl App {
             }
         });
         if self.comp.kind != Kind::Band {
-            ui.small(format!("Bands: {}", self.names().join(" ")));
+            let n = self.names();
+            let more = if n.len() > 24 { format!(" and {} more", n.len() - 24) } else { String::new() };
+            ui.small(format!("Bands: {}{more}", n[..n.len().min(24)].join(" ")));
         }
         if let Some(e) = &self.comp.err {
             ui.colored_label(Color32::from_rgb(255, 110, 110), e);
@@ -787,6 +790,14 @@ impl App {
                 None => {
                     s += &format!("{id} [{x}, {y}]: ...\n");
                     vals.push(f64::NAN);
+                }
+            }
+            // The other bands of a multi-band variable.
+            if v.bands.len() > 1
+                && let Some(p) = self.probes.get(&i.layer.id).and_then(|p| p.last.as_ref()).filter(|p| (p.0, p.1) == (x, y))
+            {
+                for (b, val) in v.bands.iter().zip(&p.2) {
+                    s += &format!("  {b}: {}\n", val.map_or("no data".into(), |v| format!("{v}{unit}")));
                 }
             }
             if let Some(f) = v.fill {
