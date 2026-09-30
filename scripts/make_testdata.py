@@ -233,6 +233,42 @@ for b in range(3):
         v = run("gdallocationinfo", "-valonly", "-b", str(b + 1), jt, str(x), str(y)).strip()
         out.append(f"v\trgb_jpeg.tif\t0\t{b}\t{x}\t{y}\t{v}\t2")
 
+# 14. NITF: u8 with 128 x 128 blocks and IGEOLO corners, i16 3 bands in IMODE B, complex float.
+#     (The GDAL NITF writer writes IMODE B also when IMODE P or S is requested.)
+with tempfile.TemporaryDirectory() as t:
+    a = pattern(200, 300, 0, 255).clip(0, 255).astype(np.uint8)
+    src = os.path.join(t, "u8.tif")
+    tifffile.imwrite(src, a)
+    run("gdal_translate", "-q", "-of", "NITF", "-co", "BLOCKXSIZE=128", "-co", "BLOCKYSIZE=128", "-a_srs", "EPSG:4326",
+        "-a_ullr", "4.3", "51.3", "4.4", "51.25", src, os.path.join(D, "nitf_u8.ntf"))
+    shape("nitf_u8.ntf", 300, 200, 1, 1, "U8")
+    values("nitf_u8.ntf", 0, a)
+    info = json.loads(run("gdalinfo", "-json", os.path.join(D, "nitf_u8.ntf")))
+    # GDAL reads rectangular IGEOLO corners (centers of the corner pixels) as a geotransform.
+    gt = info["geoTransform"]
+    for c, r in [(0.5, 0.5), (299.5, 0.5), (299.5, 199.5), (0.5, 199.5)]:
+        lon, lat = gt[0] + c * gt[1] + r * gt[2], gt[3] + c * gt[4] + r * gt[5]
+        out.append(f"l\tnitf_u8.ntf#NITF\t{c}\t{r}\t{lon!r}\t{lat!r}\t1e-9")
+    b3 = np.stack([pattern(150, 170, -2000 * (b + 1), 3000) for b in range(3)]).astype(np.int16)
+    src = os.path.join(t, "i16.tif")
+    tifffile.imwrite(src, b3, planarconfig="separate", photometric="minisblack")
+    for m in "B":
+        f = f"nitf_i16_{m.lower()}.ntf"
+        run("gdal_translate", "-q", "-of", "NITF", "-co", f"IMODE={m}", "-co", "BLOCKXSIZE=64", "-co", "BLOCKYSIZE=64", src, os.path.join(D, f))
+        shape(f, 170, 150, 3, 1, "I16")
+        for b in range(3):
+            values(f, 0, b3[b], str(b))
+    c = (pattern(60, 80, -300, 300) + 1j * pattern(60, 80, -100, 500)).astype(np.complex64)
+    src = os.path.join(t, "c.tif")
+    tifffile.imwrite(src, c)
+    run("gdal_translate", "-q", "-of", "NITF", src, os.path.join(D, "nitf_cf32.ntf"))
+    shape("nitf_cf32.ntf", 80, 60, 1, 1, "CF32")
+    values("nitf_cf32.ntf", 0, c.real, "0:I")
+    values("nitf_cf32.ntf", 0, c.imag, "0:Q")
+for f in os.listdir(D):
+    if f.endswith(".aux.xml"):
+        os.remove(os.path.join(D, f))
+
 # 12. Zarr v2 and v3 stores (each zarr-python version in its own environment).
 here = os.path.dirname(__file__)
 for ver, req in (("v2", "zarr<3"), ("v3", "zarr>=3")):

@@ -23,6 +23,19 @@ impl Proj {
     }
 }
 
+/// Longitude and latitude (degrees, WGS 84) of an ECEF point (meters). Bowring's method: error below 1 mm
+/// near the surface of the Earth. The height is not used.
+pub fn ecef_to_lonlat(p: [f64; 3]) -> (f64, f64) {
+    let (a, f) = (6378137.0, 1.0 / 298.257223563);
+    let b = a * (1.0 - f);
+    let e2 = f * (2.0 - f);
+    let ep2 = e2 / (1.0 - e2);
+    let r = p[0].hypot(p[1]);
+    let t = (p[2] * a).atan2(r * b);
+    let lat = (p[2] + ep2 * b * t.sin().powi(3)).atan2(r - e2 * a * t.cos().powi(3));
+    (p[1].atan2(p[0]).to_degrees(), lat.to_degrees())
+}
+
 /// Display coordinates at the nodes of a regular grid over the level-0 pixels of a layer.
 /// Display coordinates have y up: in a map CRS, y is the northing. In pixel space, y = -row.
 /// Values are relative to `origin`, so that they stay precise in f32.
@@ -262,6 +275,17 @@ mod tests {
         let g = Proj::epsg(4326).unwrap();
         let (lon, lat) = a.to(&g, 300000.0, 4900020.0).unwrap();
         assert!((lon - 6.49592859291465).abs() < 1e-9 && (lat - 44.2259641543025).abs() < 1e-9, "{lon} {lat}");
+    }
+
+    #[test]
+    fn ecef_point() {
+        // ECEF of lon 4.35, lat 51.25, height 0 (computed with the closed formula).
+        let (lon, lat) = (4.35f64.to_radians(), 51.25f64.to_radians());
+        let (a, e2) = (6378137.0, 6.69437999014e-3);
+        let n = a / (1.0 - e2 * lat.sin().powi(2)).sqrt();
+        let p = [n * lat.cos() * lon.cos(), n * lat.cos() * lon.sin(), n * (1.0 - e2) * lat.sin()];
+        let (lo, la) = ecef_to_lonlat(p);
+        assert!((lo - 4.35).abs() < 1e-10 && (la - 51.25).abs() < 1e-9, "{lo} {la}");
     }
 
     #[test]

@@ -308,11 +308,25 @@ impl App {
         self.request_warps();
     }
 
-    /// Default display CRS of a layer: its EPSG code, WGS 84 for geolocation grids, else pixels.
+    /// Default display CRS of a layer: its EPSG code; for a geolocation grid, the UTM zone of its center
+    /// (conformal: no stretch), or polar stereographic above 84 degrees; for geolocation arrays (not read yet)
+    /// WGS 84; else pixels.
     fn default_space(l: &Layer) -> Option<u32> {
         match &l.var().georef {
             eo_core::Georef::Affine { crs, .. } => crs.epsg,
             eo_core::Georef::None => None,
+            eo_core::Georef::Grid { lon, lat, .. } => {
+                let k = lon.len() / 2;
+                let (lo, la) = (lon[k], lat[k]);
+                Some(match la {
+                    _ if la > 84.0 => 3413,
+                    _ if la < -84.0 => 3031,
+                    _ => {
+                        let zone = (((lo + 180.0) / 6.0).floor() as u32 + 1).clamp(1, 60);
+                        if la >= 0.0 { 32600 + zone } else { 32700 + zone }
+                    }
+                })
+            }
             _ => Some(4326),
         }
     }

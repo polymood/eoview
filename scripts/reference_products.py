@@ -96,6 +96,20 @@ for sen3 in sorted(glob.glob(os.path.join(D, "S3*_OL_1_E*.SEN3")))[:1]:
     for x, y in [(w // 3 + 7, h // 2 + 3), (2 * w // 3 + 11, h // 5 + 13)]:
         out.append(f"l\t{name}\t{x + 0.5}\t{y + 0.5}\t{lon[y, x].item()!r}\t{lat[y, x].item()!r}\t2e-3")
 
+# NITF SIDD: values (GDAL) and the positions of the image corners of the SIDD XML (centers of the corner pixels).
+for nitf in sorted(glob.glob(os.path.join(D, "*SIDD*.nitf")))[:1]:
+    name = f"{rel(nitf)}#SIDD"
+    info = json.loads(run("gdalinfo", "-json", nitf))
+    w, h = info["size"]
+    out.append(f"s\t{name}\t{w}\t{h}\t1\t1\tU8")
+    gdal_values(name, 0, nitf, w, h, w, h, 0)
+    xml = open(nitf, "rb").read()[-200000:].decode("utf-8", "replace")
+    icp = re.findall(r"<ICP[^>]*>\s*<[^>]*Lat>([-\d.eE+]+)<[^>]*>\s*<[^>]*Lon>([-\d.eE+]+)<", xml)
+    for (lat, lon), (c, r) in zip(icp, [(0.5, 0.5), (w - 0.5, 0.5), (w - 0.5, h - 0.5), (0.5, h - 0.5)]):
+        # Corner order of SICD/SIDD: first row first column, first row last column, last row last column,
+        # last row first column. Row is y: the second corner is (last column, first row).
+        out.append(f"l\t{name}\t{c}\t{r}\t{lon}\t{lat}\t1e-6")
+
 # EOPF Zarr v2 (GDAL) and v3 (zarr-python): band b04 at each multiscale level.
 v2 = os.path.join(D, "s2l2a_v2")
 if os.path.isdir(v2):

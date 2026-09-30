@@ -61,10 +61,16 @@ fn siz(h: &[u8]) -> Result<(usize, Siz)> {
 
 /// Open a JPEG 2000 source: the levels of one variable. `idx` is the index of `src` in the dataset sources.
 pub fn arrays(src: &Source, idx: u32) -> Result<Vec<Array>> {
+    arrays_at(src, idx, None)
+}
+
+/// As `arrays`, with the position of a raw codestream in the source (for example in a NITF file).
+/// None: a JP2 file (the codestream is in the jp2c box) or a raw codestream at the start.
+pub fn arrays_at(src: &Source, idx: u32, at: Option<u64>) -> Result<Vec<Array>> {
     let len = src.len()?;
     // Codestream position: the contents of the jp2c box, or the whole source.
-    let mut cs = 0;
-    if src.read(0..12.min(len))?.starts_with(&[0, 0, 0, 12]) {
+    let mut cs = at.unwrap_or(0);
+    if at.is_none() && src.read(0..12.min(len))?.starts_with(&[0, 0, 0, 12]) {
         let mut p = 0;
         loop {
             let b = src.read(p..(p + 16).min(len))?;

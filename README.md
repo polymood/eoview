@@ -12,7 +12,7 @@ Phases 0 and 1 of the specification are complete:
   (coarse level first, screen center first), cancellation of tiles that are not visible.
 - Byte sources: local files (memory map, zero-copy reads of uncompressed data) and HTTP(S) range requests.
 - Caches with budgets: raw bytes, decoded chunks, GPU tiles.
-- Readers: GeoTIFF/COG, JPEG 2000, EOPF Zarr v2 and v3, Sentinel-1, -2 and -3 SAFE, NetCDF-4/HDF5.
+- Readers: GeoTIFF/COG, JPEG 2000, NITF (SICD, SIDD), EOPF Zarr v2 and v3, Sentinel-1, -2 and -3 SAFE, NetCDF-4/HDF5.
 - Georeferencing: affine, geolocation arrays, geolocation grids (GCPs). Reprojection on the GPU with a warp mesh.
 - RGB composites, band math, color maps, pixel inspector.
 
@@ -21,6 +21,7 @@ Phases 0 and 1 of the specification are complete:
 | Format | Supported |
 |---|---|
 | TIFF, BigTIFF, GeoTIFF, COG | Strips and tiles. None, LZW, Deflate, Zstd, PackBits and JPEG compression. Predictors 2 and 3. Both byte orders. Overviews. GDAL no data value, scale, offset and band descriptions |
+| NITF 2.1, NSIF 1.0 (SICD, SIDD) | Uncompressed (NC) and masked (NM) blocks, JPEG 2000 (C8), IMODE B, P and S, complex pixels (C, or I and Q), large images in more than one segment. Georeferencing from the SIDD plane projection, the SICD/SIDD image corners, or IGEOLO |
 | JPEG 2000 (JP2, J2K) | Tiles and resolution levels (the levels are the overviews). OpenJPEG decoder |
 | Zarr v2 and v3 (EOPF, GeoZarr) | Consolidated metadata or a local store. Sharding. Blosc (LZ4, zlib, Zstd; byte and bit shuffle), Zstd, zlib, gzip, LZ4, shuffle, delta, crc32c. Multiscales. Georeferencing from the x and y coordinates |
 | NetCDF-4, HDF5 | Chunked and contiguous datasets, deflate, shuffle, Fletcher-32, Zstd. CF scale, offset, fill value, units. 1D or 2D latitude and longitude |
@@ -51,7 +52,7 @@ You can also open a product with the **Open** button, with **Ctrl+O**, with the 
 The side panel has these parts:
 
 - **Display**: one band, an RGB composite, or band math. The fields accept expressions of the band names, for example `(B08 - B04) / (B08 + B04)`. Operators: `+ - * / ^`, functions: `abs sqrt ln log10 exp sin cos min max pow atan2 clamp`. The GPU computes the expressions. Presets: true color, false color, NDVI, NDWI, dual-polarization SAR, OLCI true color.
-- **Display CRS**: the CRS of the layer, geographic (EPSG:4326), Web Mercator, north or south polar stereographic, or pixels.
+- **Display CRS**: the CRS of the layer (for a geolocation grid: the UTM zone of the image center), geographic (EPSG:4326), Web Mercator, north or south polar stereographic, or pixels.
 - **Stretch**: minimum, maximum, gamma and dB scale for each channel, automatic clip percentage.
 - **Inspector**: position, latitude and longitude, and the values of all bands of each input under the cursor, with units and the fill value.
 - **Memory**: the budgets and the use of each cache.
