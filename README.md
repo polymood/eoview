@@ -6,15 +6,17 @@ Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
 
 ## Status
 
-Phases 0 and 1 of the specification are complete:
+Phases 0, 1 and 2 of the specification are complete:
 
-- Chunk engine: tokio does the I/O, rayon decodes, the UI thread never waits. Priorities from the view
+- Chunk engine: tokio does the I/O, rayon decodes, the UI thread never waits. Priorities from the views
   (coarse level first, screen center first), cancellation of tiles that are not visible.
 - Byte sources: local files (memory map, zero-copy reads of uncompressed data) and HTTP(S) range requests.
 - Caches with budgets: raw bytes, decoded chunks, GPU tiles.
 - Readers: GeoTIFF/COG, JPEG 2000, NITF (SICD, SIDD), EOPF Zarr v2 and v3, Sentinel-1, -2 and -3 SAFE, NetCDF-4/HDF5.
 - Georeferencing: affine, geolocation arrays, geolocation grids (GCPs). Reprojection on the GPU with a warp mesh.
 - RGB composites, band math, color maps, pixel inspector.
+- Docking layout with layout presets, a stack of layers in each view, link groups (geographic or pixel),
+  crosshair, compare modes (swipe, blend, difference, flicker), workspace files, command palette.
 
 ## Formats
 
@@ -33,29 +35,85 @@ Phases 0 and 1 of the specification are complete:
 ## Use
 
 ```
-eoview [file, SAFE directory, Zarr store or URL]
+eoview [files, SAFE directories, Zarr stores, URLs or a workspace file]
 eoview --info <path>     # structure of a product: variables, levels, chunks, georeferencing
 ```
 
-You can also open a product with the **Open** button, with **Ctrl+O**, with the path field (a local path or an `http://` or `https://` URL), or by dropping it on the window.
+Each product opens in its own view. With more than one product, the layout changes to a grid.
 
-| Input | Action |
+### Open
+
+| Action | How |
 |---|---|
-| Mouse wheel | Zoom at the cursor |
-| Drag | Pan |
-| Double-click, F | Fit the image to the window |
-| 1 | Zoom 1:1 (one layer pixel for each screen pixel) |
-| C | Next color map |
-| I | Invert the color map |
-| H | Show or hide the side panel |
+| Open products in the view under the mouse | Drop the files on the view, or **Open** (Ctrl+O). More files open in more views |
+| Add products as layers of a view | Shift + drop, or **Add layer** (Ctrl+Shift+O) |
+| Save the workspace | **Save** (Ctrl+S) |
+| Open a workspace | **Load**, Ctrl+O, or drop the `.eoview` file |
 
-The side panel has these parts:
+A workspace file (JSON) contains the layout, the views, the cameras, the layers and their settings. It
+does not contain data. It does not contain the query, the fragment or the user information of URLs (they
+can contain credentials or signed tokens).
+
+### Views
+
+The views are tabs of a dock: drag a tab to split, tab or move a view. The toolbar has the layout presets
+1, 2, 2 x 2 and 3 x 3. The right-click menu of a view or of a tab has the view commands.
+
+Linked views pan and zoom together. The badge at the top right of a view links or unlinks it with one
+click. Link modes:
+
+- **Geo**: the views have the same center latitude, center longitude and ground resolution (meters for
+  each screen pixel). Views in different CRSs stay aligned.
+- **Pixel**: the views show the same pixel region. For products on the same grid.
+
+A new view joins the link group only if it shows data at the position of the group. Else it shows all its
+data and stays unlinked. The views of a group show the cursor of the view under the mouse as a crosshair.
+
+### Layers and compare modes
+
+A view contains a stack of layers. The side panel shows the layers of the active view (the last view that
+you clicked), top layer first: show or hide, move up or down, remove. Each layer has its own composite,
+stretch, color map and opacity. The view draws the 4 lowest visible layers.
+
+The compare modes use the two lowest visible layers: A and B.
+
+| Mode | Key | Function |
+|---|---|---|
+| Swipe | W | A on one side of a line, B on the other side. Drag the line. V: vertical or horizontal line |
+| Blend | B | B over A, with the opacity slider of B |
+| Difference | D | A - B, A / B or 10 log10(A / B), with a diverging color map |
+| Flicker | K | A and B alternately, at a set rate |
+| Off | Esc | All layers, each over the layers below it with its opacity |
+
+The GPU calculates all modes in one pass, after the reprojection of A and B to the display CRS.
+
+### Keys
+
+The keys act on the view under the mouse.
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| Wheel | Zoom at the cursor | Drag | Pan |
+| Double-click, F | Fit | 1 | Zoom 1:1 |
+| A | Automatic stretch | C | Next color map |
+| I | Invert the color map | [ ] | Previous, next band |
+| L | Link or unlink | Shift+L | Link mode: geographic or pixel |
+| Ctrl+N | New view | Ctrl+D | Duplicate the view |
+| Ctrl+W | Close the view | Alt+1 to Alt+4 | Layouts 1, 2, 2 x 2, 3 x 3 |
+| H | Show or hide the side panel | Ctrl+K | Command palette |
+
+The command palette finds all commands, bands, presets, color maps and display CRSs by name: type some
+letters in order (for example `ndvi`, `b8a`, `vir`), then Enter.
+
+### Side panel
 
 - **Display**: one band, an RGB composite, or band math. The fields accept expressions of the band names, for example `(B08 - B04) / (B08 + B04)`. Operators: `+ - * / ^`, functions: `abs sqrt ln log10 exp sin cos min max pow atan2 clamp`. The GPU computes the expressions. Presets: true color, false color, NDVI, NDWI, dual-polarization SAR, OLCI true color.
-- **Display CRS**: the CRS of the layer (for a geolocation grid: the UTM zone of the image center), geographic (EPSG:4326), Web Mercator, north or south polar stereographic, or pixels.
-- **Stretch**: minimum, maximum, gamma and dB scale for each channel, automatic clip percentage.
-- **Inspector**: position, latitude and longitude, and the values of all bands of each input under the cursor, with units and the fill value.
+- **Stretch**: a histogram for each channel. Drag the limits, or drag between them to move both. Double-click: automatic stretch. Minimum, maximum, gamma and dB scale for each channel, automatic clip percentage.
+- **Color map**: one click on a swatch. Invert, edit the colors.
+- **Inspector**: the values of all bands of each layer under the cursor, with units and the fill value.
 - **Memory**: the budgets and the use of each cache.
+
+The toolbar has the display CRS of the active view: the CRS of the layer (for a geolocation grid: the UTM zone of the image center), geographic (EPSG:4326), Web Mercator, north or south polar stereographic, or pixels. The status bar shows the latitude, the longitude, the display coordinates and the value under the cursor, the tiles that load, and the RAM and GPU use.
 
 Budgets:
 
@@ -63,8 +121,6 @@ Budgets:
 |---|---|
 | `EOVIEW_RAM_MB` | 25 % of the system RAM |
 | `EOVIEW_GPU_MB` | 1024 |
-
-The side panel shows the budgets and the use of each cache.
 
 ## Build
 
@@ -101,7 +157,7 @@ scripts/bench.sh               # eoview --bench on these files, with a cold page
 cargo bench -p eo-cache        # open to first pixels, engine only (set EOVIEW_BENCH_FILES for more files)
 ```
 
-`eoview --bench <file or URL> [frames]` measures the start time, the open time, the frame times of a pan and zoom sequence, the band change time and the idle CPU, and writes them to stdout.
+`eoview --bench <files or URLs> [frames]` measures the start time, the open time, the frame times of a pan and zoom sequence, the band change time and the idle CPU, and writes them to stdout. With more than one product, each product goes in its own view, the views are linked (pixel mode, or geographic mode with `EOVIEW_BENCH_LINK=geo`), and the sequence moves the first view. `EOVIEW_BENCH_SIZE=3840x2160` draws the frames into an offscreen target of this size and waits for the GPU at each frame: it measures a 4K display on a smaller screen.
 
 ## Operation
 

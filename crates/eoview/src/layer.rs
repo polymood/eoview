@@ -1,0 +1,513 @@
+//! One layer of a view: a product and its composite (one band, RGB or band math), with its own stretch,
+//! color map and opacity.
+use eo_cache::Layer;
+use eo_render::bandmath::{self, Node};
+use eo_render::{LayerParams, LayerSpec, Mode};
+use std::collections::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+pub const CMAPS: &[(&str, &[u32])] = &[
+    ("Gray", &[0x000000, 0xFFFFFF]),
+    ("Viridis", &[0x440154, 0x482878, 0x3E4A89, 0x31688E, 0x26828E, 0x1F9E89, 0x35B779, 0x6DCD59, 0xB4DE2C, 0xFDE725]),
+    ("Magma", &[0x000004, 0x180F3D, 0x440F76, 0x721F81, 0x9E2F7F, 0xCD4071, 0xF1605D, 0xFD9668, 0xFECA8D, 0xFCFDBF]),
+    ("Inferno", &[0x000004, 0x1B0C41, 0x4A0C6B, 0x781C6D, 0xA52C60, 0xCF4446, 0xED6925, 0xFB9B06, 0xF7D13D, 0xFCFFA4]),
+    ("Plasma", &[0x0D0887, 0x46039F, 0x7201A8, 0x9C179E, 0xBD3786, 0xD8576B, 0xED7953, 0xFB9F3A, 0xFDCA26, 0xF0F921]),
+    ("Cividis", &[0x00224E, 0x123570, 0x3B496C, 0x575D6D, 0x707173, 0x8A8779, 0xA69D75, 0xC4B56C, 0xE4CF5B, 0xFEE838]),
+    ("Turbo", &[0x30123B, 0x4662D7, 0x36AAF9, 0x1AE4B6, 0x72FE5E, 0xC8EF34, 0xFABA39, 0xF66B19, 0xCA2A04, 0x7A0403]),
+    ("Jet", &[0x00007F, 0x0000FF, 0x007FFF, 0x00FFFF, 0x7FFF7F, 0xFFFF00, 0xFF7F00, 0xFF0000, 0x7F0000]),
+    ("Hot", &[0x000000, 0xE60000, 0xFFD200, 0xFFFFFF]),
+    ("Terrain", &[0x333399, 0x0294FA, 0x20D073, 0xFEFE98, 0x805C54, 0xFFFFFF]),
+    ("RdBu", &[0x67001F, 0xB2182B, 0xD6604D, 0xF4A582, 0xFDDBC7, 0xF7F7F7, 0xD1E5F0, 0x92C5DE, 0x4393C3, 0x2166AC, 0x053061]),
+    ("RdYlGn", &[0xA50026, 0xD73027, 0xF46D43, 0xFDAE61, 0xFEE08B, 0xFFFFBF, 0xD9EF8B, 0xA6D96A, 0x66BD63, 0x1A9850, 0x006837]),
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Kind {
+    Band,
+    Rgb,
+    Expr,
+}
+
+/// Presets: name, kind, expressions, color map, dB for each channel.
+pub const PRESETS: &[(&str, Kind, [&str; 3], &str, bool)] = &[
+    ("True color", Kind::Rgb, ["B04", "B03", "B02"], "Gray", false),
+    ("False color", Kind::Rgb, ["B08", "B04", "B03"], "Gray", false),
+    ("NDVI", Kind::Expr, ["(B08 - B04) / (B08 + B04)", "", ""], "RdYlGn", false),
+    ("NDWI", Kind::Expr, ["(B03 - B08) / (B03 + B08)", "", ""], "RdBu", false),
+    ("Dual-pol SAR", Kind::Rgb, ["VV", "VH", "VV / VH"], "Gray", true),
+    ("OLCI true color", Kind::Rgb, ["Oa08_radiance", "Oa06_radiance", "Oa04_radiance"], "Gray", false),
+];
+
+/// Presets that a new layer uses first, if its bands exist.
+const DEFAULT_PRESETS: &[&str] = &["True color", "Dual-pol SAR", "OLCI true color"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Stretch {
+    pub lo: f32,
+    pub hi: f32,
+    pub gamma: f32,
+    pub db: bool,
+}
+
+impl Default for Stretch {
+    fn default() -> Self {
+        Stretch { lo: 0.0, hi: 1.0, gamma: 1.0, db: false }
+    }
+}
+
+/// A value that a composite can use: one band of one variable.
+#[derive(Clone)]
+pub struct Chan {
+    /// Name in expressions, for example B04 or VV.
+    pub id: String,
+    pub var: usize,
+    pub choice: usize,
+}
+
+/// Name in expressions: letters, digits and '_'. "Band 3" becomes "b3".
+fn ident(s: &str) -> String {
+    let s = s.rsplit('/').next().unwrap_or(s);
+    let s = s.strip_prefix("Band ").map_or(s.to_string(), |n| format!("b{n}"));
+    let s: String = s.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+    let s = s.trim_matches('_').to_string();
+    if s.starts_with(|c: char| c.is_ascii_digit()) { format!("b{s}") } else { s }
+}
+
+fn channels(p: &eo_core::Product) -> Vec<Chan> {
+    let mut out: Vec<Chan> = vec![];
+    for (var, v) in p.vars.iter().enumerate() {
+        let ch = Layer::choices(v);
+        for (choice, c) in ch.iter().enumerate() {
+            let base = if ch.len() == 1 { v.name.split([' ', '(']).next().unwrap_or(&v.name).to_string() } else { c.clone() };
+            let mut id = ident(&base);
+            if out.iter().any(|o| o.id.eq_ignore_ascii_case(&id)) {
+                id = format!("{id}_{var}");
+            }
+            out.push(Chan { id, var, choice });
+        }
+    }
+    out
+}
+
+fn db(v: f32) -> f32 {
+    20.0 * v.abs().max(1e-10).log10()
+}
+
+pub fn hex(c: u32) -> [u8; 3] {
+    [(c >> 16) as u8, (c >> 8) as u8, c as u8]
+}
+
+pub fn lut(stops: &[[u8; 3]]) -> Vec<[u8; 4]> {
+    let n = stops.len() - 1;
+    (0..256)
+        .map(|i| {
+            let t = i as f32 / 255.0 * n as f32;
+            let j = (t as usize).min(n - 1);
+            let f = t - j as f32;
+            let (a, b) = (stops[j], stops[j + 1]);
+            let m = |k: usize| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * f).round() as u8;
+            [m(0), m(1), m(2), 255]
+        })
+        .collect()
+}
+
+/// Bins of the histograms of the stretch panel.
+pub const BINS: usize = 128;
+
+#[derive(Clone)]
+pub struct MapLayer {
+    pub uid: u64,
+    /// Position in the stack while a workspace loads (the layers can arrive in a different order).
+    pub order: usize,
+    /// File path or URL.
+    pub path: String,
+    pub name: String,
+    pub chans: Vec<Chan>,
+    /// Layers of the dataset that are ready, by (variable, choice).
+    pub cache: HashMap<(usize, usize), Arc<Layer>>,
+    pub kind: Kind,
+    pub band: usize,
+    pub rgb: [String; 3],
+    pub expr: String,
+    pub err: Option<String>,
+    pub trees: Vec<Node>,
+    /// Channels of the inputs, in input order.
+    pub used: Vec<usize>,
+    pub st: [Stretch; 3],
+    pub clip: f32,
+    pub cmap: usize,
+    pub stops: Vec<[u8; 3]>,
+    pub invert: bool,
+    pub opacity: f32,
+    pub visible: bool,
+    /// Layers of the used channels, when all are ready.
+    pub inputs: Vec<Arc<Layer>>,
+    /// Stretch again when the inputs are ready.
+    pub auto_pending: bool,
+    /// Histograms of the values of each channel (sample of the product), and their range.
+    pub hist: Vec<(Vec<u32>, f32, f32)>,
+}
+
+impl MapLayer {
+    /// A new layer with the first layer of a dataset. The composite is a default preset, or the first band.
+    pub fn new(uid: u64, path: String, first: Arc<Layer>) -> MapLayer {
+        let name = std::path::Path::new(&path).file_name().map_or(path.clone(), |n| n.to_string_lossy().into());
+        let mut m = MapLayer {
+            uid,
+            order: usize::MAX,
+            path,
+            name,
+            chans: channels(&first.ds.product),
+            cache: HashMap::new(),
+            kind: Kind::Band,
+            band: 0,
+            rgb: Default::default(),
+            expr: String::new(),
+            err: None,
+            trees: vec![],
+            used: vec![],
+            st: [Stretch::default(); 3],
+            clip: 2.0,
+            cmap: 0,
+            stops: CMAPS[0].1.iter().map(|&c| hex(c)).collect(),
+            invert: false,
+            opacity: 1.0,
+            visible: true,
+            inputs: vec![],
+            auto_pending: true,
+            hist: vec![],
+        };
+        if first.var().levels[0].dtype.is_complex() {
+            m.st[0].db = first.part == eo_cache::Part::Amp;
+        }
+        m.cache.insert((first.var, first.choice), first);
+        if let Some(p) = PRESETS.iter().find(|p| DEFAULT_PRESETS.contains(&p.0) && m.preset_ok(p)) {
+            m.set_preset(p);
+        }
+        m
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.chans.iter().map(|c| c.id.clone()).collect()
+    }
+
+    pub fn any(&self) -> Option<&Arc<Layer>> {
+        self.cache.values().next()
+    }
+
+    pub fn preset_ok(&self, p: &(&str, Kind, [&str; 3], &str, bool)) -> bool {
+        let e: Vec<&str> = p.2.iter().copied().filter(|e| !e.is_empty()).collect();
+        bandmath::parse(&e, &self.names()).is_ok()
+    }
+
+    pub fn set_preset(&mut self, p: &(&str, Kind, [&str; 3], &str, bool)) {
+        self.kind = p.1;
+        match p.1 {
+            Kind::Rgb => self.rgb = p.2.map(String::from),
+            _ => self.expr = p.2[0].into(),
+        }
+        if let Some(i) = CMAPS.iter().position(|c| c.0 == p.3) {
+            self.set_cmap(i);
+        }
+        self.st.iter_mut().for_each(|s| s.db = p.4);
+        self.auto_pending = true;
+    }
+
+    pub fn set_cmap(&mut self, i: usize) {
+        self.cmap = i % CMAPS.len();
+        self.stops = CMAPS[self.cmap].1.iter().map(|&c| hex(c)).collect();
+    }
+
+    /// Show the next or the previous band (one band mode).
+    pub fn cycle_band(&mut self, d: i32) {
+        let n = self.chans.len().max(1) as i32;
+        self.kind = Kind::Band;
+        self.band = (self.band as i32 + d).rem_euclid(n) as usize;
+        self.auto_pending = true;
+    }
+
+    /// Parse the composite. Return the (variable, choice) of the used channels that are not ready: the
+    /// application asks the engine for them.
+    pub fn compile(&mut self) -> Vec<(usize, usize)> {
+        let names = self.names();
+        let exprs: Vec<String> = match self.kind {
+            Kind::Band => vec![names.get(self.band).cloned().unwrap_or_default()],
+            Kind::Rgb => self.rgb.to_vec(),
+            Kind::Expr => vec![self.expr.clone()],
+        };
+        let e: Vec<&str> = exprs.iter().map(String::as_str).collect();
+        match bandmath::parse(&e, &names) {
+            Ok((trees, used)) if used.len() <= eo_render::MAX_INPUTS => {
+                self.trees = trees;
+                self.used = used;
+                self.err = None;
+            }
+            Ok(_) => {
+                self.err = Some(format!("more than {} bands", eo_render::MAX_INPUTS));
+                return vec![];
+            }
+            Err(e) => {
+                self.err = Some(e);
+                return vec![];
+            }
+        }
+        self.inputs.clear();
+        let missing: Vec<(usize, usize)> = self
+            .used
+            .iter()
+            .map(|&c| (self.chans[c].var, self.chans[c].choice))
+            .filter(|k| !self.cache.contains_key(k))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if missing.is_empty() {
+            self.ready();
+        }
+        missing
+    }
+
+    /// A channel layer is ready. Return true if the inputs are complete.
+    pub fn loaded(&mut self, l: Arc<Layer>) -> bool {
+        self.cache.insert((l.var, l.choice), l);
+        self.inputs.is_empty() && self.ready()
+    }
+
+    fn ready(&mut self) -> bool {
+        let v: Option<Vec<Arc<Layer>>> = self.used.iter().map(|&c| self.cache.get(&(self.chans[c].var, self.chans[c].choice)).cloned()).collect();
+        let Some(v) = v else { return false };
+        self.inputs = v;
+        if self.auto_pending {
+            self.auto_pending = false;
+            self.auto();
+        }
+        self.histograms();
+        true
+    }
+
+    fn gray(&self) -> bool {
+        self.kind != Kind::Rgb
+    }
+
+    /// Values of channel k of the composite for the sample: the sample of the band, or the expression on
+    /// the value pairs of layers on the same grid.
+    fn values(&self, k: usize) -> Vec<f32> {
+        let Some(t) = self.trees.get(k) else { return vec![] };
+        let mut vals: Vec<f32> = match t {
+            Node::Var(j) => self.inputs.get(*j).map_or(vec![], |l| l.sample.clone()),
+            _ => {
+                let len = self.inputs.first().map_or(0, |l| l.sample_at.len());
+                if self.inputs.iter().all(|l| l.sample_at.len() == len) {
+                    (0..len).map(|i| t.eval(&self.inputs.iter().map(|l| l.sample_at[i] as f64).collect::<Vec<_>>()) as f32).filter(|v| v.is_finite()).collect()
+                } else {
+                    vec![-1.0, 1.0]
+                }
+            }
+        };
+        if self.st[k].db {
+            vals.iter_mut().for_each(|v| *v = db(*v));
+        }
+        vals.sort_unstable_by(f32::total_cmp);
+        vals
+    }
+
+    /// Stretch limits of each channel from the sample percentiles.
+    pub fn auto(&mut self) {
+        let n = if self.gray() { 1 } else { 3 };
+        for k in 0..n.min(self.trees.len()) {
+            let vals = self.values(k);
+            if vals.is_empty() {
+                (self.st[k].lo, self.st[k].hi) = (0.0, 1.0);
+                continue;
+            }
+            let q = |p: f32| vals[((vals.len() - 1) as f32 * p) as usize];
+            let c = self.clip / 100.0;
+            (self.st[k].lo, self.st[k].hi) = (q(c), q(1.0 - c));
+            if self.st[k].hi <= self.st[k].lo {
+                self.st[k].hi = self.st[k].lo + 1.0;
+            }
+        }
+        self.histograms();
+    }
+
+    /// Histograms of the channels, between the 0.1 and 99.9 percentiles of the sample.
+    pub fn histograms(&mut self) {
+        let n = if self.gray() { 1 } else { 3 };
+        self.hist = (0..n.min(self.trees.len()))
+            .map(|k| {
+                let v = self.values(k);
+                if v.is_empty() {
+                    return (vec![0; BINS], 0.0, 1.0);
+                }
+                let (lo, hi) = (v[v.len() / 1000], v[(v.len() - 1) * 999 / 1000]);
+                let (lo, hi) = (lo.min(self.st[k].lo), hi.max(self.st[k].hi));
+                let hi = if hi > lo { hi } else { lo + 1.0 };
+                let mut b = vec![0u32; BINS];
+                for x in v {
+                    let i = ((x - lo) / (hi - lo) * BINS as f32) as isize;
+                    if (0..BINS as isize).contains(&i) {
+                        b[i as usize] += 1;
+                    }
+                }
+                (b, lo, hi)
+            })
+            .collect();
+    }
+
+    /// Layer spec for the composite. `inputs` are the view input indices of the inputs of this layer.
+    pub fn spec(&self, inputs: &[usize]) -> Option<LayerSpec> {
+        let map = |j: usize| inputs[j];
+        let w: Vec<String> = self.trees.iter().map(|t| t.wgsl_map(&map)).collect();
+        let mode = if self.gray() { Mode::Gray(w.first()?.clone()) } else { Mode::Rgb([w.first()?.clone(), w.get(1)?.clone(), w.get(2)?.clone()]) };
+        Some(LayerSpec { mode, inputs: inputs.to_vec() })
+    }
+
+    pub fn params(&self) -> LayerParams {
+        let mut p = LayerParams { opacity: self.opacity, flags: (self.invert as u32) << 3, ..Default::default() };
+        for (k, s) in self.st.iter().enumerate() {
+            p.lo[k] = s.lo;
+            p.hi[k] = if s.hi == s.lo { s.lo + 1e-6 } else { s.hi };
+            p.gamma[k] = s.gamma;
+            p.flags |= (s.db as u32) << k;
+        }
+        p
+    }
+
+    /// Default display CRS: the CRS of the layer; for a geolocation grid, the UTM zone of its center
+    /// (conformal: no stretch), or polar stereographic above 84 degrees; for geolocation arrays (not read
+    /// yet) WGS 84; else pixels.
+    pub fn default_space(&self) -> Option<u32> {
+        let l = self.inputs.first().or(self.any())?;
+        match &l.var().georef {
+            eo_core::Georef::Affine { crs, .. } => crs.epsg,
+            eo_core::Georef::None => None,
+            eo_core::Georef::Grid { lon, lat, .. } => {
+                let k = lon.len() / 2;
+                let (lo, la) = (lon[k], lat[k]);
+                Some(match la {
+                    _ if la > 84.0 => 3413,
+                    _ if la < -84.0 => 3031,
+                    _ => {
+                        let zone = (((lo + 180.0) / 6.0).floor() as u32 + 1).clamp(1, 60);
+                        if la >= 0.0 { 32600 + zone } else { 32700 + zone }
+                    }
+                })
+            }
+            _ => Some(4326),
+        }
+    }
+
+    /// What the layer shows: the preset name, the band, the RGB bands or the expression.
+    pub fn comp_name(&self) -> String {
+        let exprs: [&str; 3] = [&self.rgb[0], &self.rgb[1], &self.rgb[2]];
+        let preset = PRESETS.iter().find(|p| {
+            p.1 == self.kind
+                && match self.kind {
+                    Kind::Rgb => p.2 == exprs,
+                    Kind::Expr => p.2[0] == self.expr,
+                    Kind::Band => false,
+                }
+        });
+        match (preset, self.kind) {
+            (Some(p), _) => p.0.into(),
+            (None, Kind::Band) => self.chans.get(self.band).map_or(String::new(), |c| c.id.clone()),
+            (None, Kind::Rgb) => self.rgb.join(" "),
+            (None, Kind::Expr) => self.expr.clone(),
+        }
+    }
+
+    /// Short name for lists and titles: what the layer shows, then the product name, at most `n` characters.
+    pub fn label(&self, n: usize) -> String {
+        let s = format!("{} - {}", self.comp_name(), self.name);
+        if s.chars().count() <= n { s } else { format!("{}...", s.chars().take(n.saturating_sub(3)).collect::<String>()) }
+    }
+
+    /// Name of channel `c` for the user: the variable, and the band if the variable has more than one.
+    pub fn chan_label(&self, c: usize) -> String {
+        let (Some(ch), Some(l)) = (self.chans.get(c), self.any()) else { return String::new() };
+        let v = &l.ds.product.vars[ch.var];
+        let names = Layer::choices(v);
+        if names.len() > 1 { format!("{} - {}", v.name, names[ch.choice]) } else { v.name.clone() }
+    }
+}
+
+/// Layer settings in a workspace file. No data and no credentials.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayerSave {
+    pub path: String,
+    pub kind: Kind,
+    /// Band of the one band mode, by its name in expressions.
+    pub band: String,
+    pub rgb: [String; 3],
+    pub expr: String,
+    pub st: [Stretch; 3],
+    pub clip: f32,
+    pub cmap: String,
+    pub stops: Vec<[u8; 3]>,
+    pub invert: bool,
+    pub opacity: f32,
+    pub visible: bool,
+}
+
+/// Path without the query, the fragment and the user information of a URL: they can contain credentials
+/// or signed tokens.
+pub fn clean_path(p: &str) -> String {
+    let Some((scheme, rest)) = p.split_once("://") else { return p.to_string() };
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (host, path) = rest.split_once('/').map_or((rest, None), |(h, q)| (h, Some(q)));
+    let host = host.rsplit('@').next().unwrap_or(host);
+    match path {
+        Some(q) => format!("{scheme}://{host}/{q}"),
+        None => format!("{scheme}://{host}"),
+    }
+}
+
+impl MapLayer {
+    pub fn save(&self) -> LayerSave {
+        LayerSave {
+            path: clean_path(&self.path),
+            kind: self.kind,
+            band: self.chans.get(self.band).map_or(String::new(), |c| c.id.clone()),
+            rgb: self.rgb.clone(),
+            expr: self.expr.clone(),
+            st: self.st,
+            clip: self.clip,
+            cmap: CMAPS[self.cmap].0.into(),
+            stops: self.stops.clone(),
+            invert: self.invert,
+            opacity: self.opacity,
+            visible: self.visible,
+        }
+    }
+
+    /// Settings of a workspace file. The stretch stays as saved.
+    pub fn apply(&mut self, s: &LayerSave) {
+        self.kind = s.kind;
+        self.band = self.chans.iter().position(|c| c.id == s.band).unwrap_or(0);
+        self.rgb = s.rgb.clone();
+        self.expr = s.expr.clone();
+        self.st = s.st;
+        self.clip = s.clip;
+        self.set_cmap(CMAPS.iter().position(|c| c.0 == s.cmap).unwrap_or(0));
+        if s.stops.len() >= 2 {
+            self.stops = s.stops.clone();
+        }
+        self.invert = s.invert;
+        self.opacity = s.opacity;
+        self.visible = s.visible;
+        self.auto_pending = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_path_removes_credentials() {
+        assert_eq!(clean_path("https://user:pw@host.eu/a/b.tif?X-Amz-Signature=abc#f"), "https://host.eu/a/b.tif");
+        assert_eq!(clean_path("s3://bucket/key.zarr"), "s3://bucket/key.zarr");
+        assert_eq!(clean_path("https://host?token=1"), "https://host");
+        assert_eq!(clean_path("/data/a?b.tif"), "/data/a?b.tif");
+    }
+}

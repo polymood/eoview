@@ -19,6 +19,8 @@ pub const MAX_DRAWS: usize = 8192;
 pub const MAX_INPUTS: usize = 8;
 /// Value of an offscreen target where no layer pixel is. The composite discards it.
 pub const NO_DATA: f32 = -3.0e38;
+/// Rows of the color map texture: one for each layer (4) and one for the difference.
+pub const LUT_ROWS: u32 = 5;
 /// Subdivisions of each side of a tile when the warp is not affine.
 const MESH: u32 = 8;
 
@@ -74,11 +76,17 @@ fn warped(p: vec2f) -> vec2f {
 }
 "#;
 
-/// Composite shader. `EXPR` is replaced with the WGSL of the mode (it sets `c`, the color).
+/// Composite shader. `LAYERS` is replaced with the code of the layers and of the compare mode (it sets `col`).
 const COMPOSITE_SHADER: &str = r#"
+struct L {
+    lo: vec4f, hi: vec4f, gamma: vec4f,
+    flags: u32, opacity: f32, p0: f32, p1: f32,
+};
 struct C {
-    vo: vec2f, n: u32, flags: u32,
-    lo: array<vec4f, 2>, hi: array<vec4f, 2>, gamma: array<vec4f, 2>,
+    vo: vec2f, cmp: u32, n: u32,
+    swipe: f32, vertical: u32, show_b: u32, diff: u32,
+    dlo: f32, dhi: f32, dflags: u32, p0: u32,
+    l: array<L, 4>,
 };
 @group(0) @binding(0) var<uniform> u: C;
 @group(0) @binding(1) var smp: sampler;
@@ -97,19 +105,17 @@ struct C {
     return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
 }
 
-fn lim(k: u32, v: array<vec4f, 2>) -> f32 {
-    return v[k / 4u][k % 4u];
+// Stretch of channel c of layer k to 0..1: dB (flag bit c), limits, gamma.
+fn stretch(x: f32, k: u32, c: u32) -> f32 {
+    let l = u.l[k];
+    let y = select(x, 6.0206 * log2(max(abs(x), 1e-10)), (l.flags & (1u << c)) != 0u);
+    return pow(clamp((y - l.lo[c]) / (l.hi[c] - l.lo[c]), 0.0, 1.0), l.gamma[c]);
 }
 
-// Stretch of channel k to 0..1: dB (flag bit 8 + k), limits, gamma.
-fn stretch(x: f32, k: u32) -> f32 {
-    let y = select(x, 6.0206 * log2(max(abs(x), 1e-10)), (u.flags & (256u << k)) != 0u);
-    return pow(clamp((y - lim(k, u.lo)) / (lim(k, u.hi) - lim(k, u.lo)), 0.0, 1.0), lim(k, u.gamma));
-}
-
-fn cmap(t: f32) -> vec3f {
-    let s = select(t, 1.0 - t, (u.flags & 2u) != 0u);
-    return textureSampleLevel(lut, smp, vec2f(s * (255.0 / 256.0) + 0.5 / 256.0, 0.5), 0.0).rgb;
+// Color map row `row` of the LUT (rows 0 to 3: layers, row 4: difference).
+fn cmap(t: f32, row: u32, inv: bool) -> vec3f {
+    let s = select(t, 1.0 - t, inv);
+    return textureSampleLevel(lut, smp, vec2f(s * (255.0 / 256.0) + 0.5 / 256.0, (f32(row) + 0.5) / 5.0), 0.0).rgb;
 }
 
 fn nd(x: f32) -> bool {
@@ -121,8 +127,20 @@ fn finite(x: f32) -> bool {
     return b < 0x7f800000u;
 }
 
+fn fin(x: f32) -> f32 {
+    return select(0.0, x, finite(x));
+}
+
+// src over dst (straight alpha).
+fn over(dst: vec4f, src: vec4f) -> vec4f {
+    let a = src.a + dst.a * (1.0 - src.a);
+    if (a <= 0.0) { return vec4f(0.0); }
+    return vec4f((src.rgb * src.a + dst.rgb * dst.a * (1.0 - src.a)) / a, a);
+}
+
 @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    let p = vec2i(pos.xy - u.vo);
+    let pf = pos.xy - u.vo;
+    let p = vec2i(pf);
     let v0 = textureLoad(i0, p, 0).r;
     let v1 = textureLoad(i1, p, 0).r;
     let v2 = textureLoad(i2, p, 0).r;
@@ -131,14 +149,15 @@ fn finite(x: f32) -> bool {
     let v5 = textureLoad(i5, p, 0).r;
     let v6 = textureLoad(i6, p, 0).r;
     let v7 = textureLoad(i7, p, 0).r;
-    var c = vec3f(0.0);
-    EXPR
-    return vec4f(c, 1.0);
+    var col = vec4f(0.0);
+    LAYERS
+    if (col.a <= 0.0) { discard; }
+    return col;
 }
 "#;
 
-/// How a view makes the color from its inputs. The strings are WGSL expressions of the input values
-/// v0 .. v7 (see `bandmath`).
+/// How a layer makes its color. The strings are WGSL expressions of the input values v0 .. v7 of the view
+/// (see `bandmath`).
 #[derive(Clone, PartialEq, Debug)]
 pub enum Mode {
     /// One value with the color map.
@@ -148,17 +167,123 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Fragment code. `n` inputs are used: a pixel without data in one of them has no color.
-    fn wgsl(&self, n: usize) -> String {
-        let nd = if n == 0 { "false".into() } else { (0..n).map(|k| format!("nd(v{k})")).collect::<Vec<_>>().join(" || ") };
+    /// Expression of the value of the layer: the gray value, or the red value.
+    fn value(&self) -> &str {
         match self {
-            Mode::Gray(e) => format!("if ({nd}) {{ discard; }}\n    let x = f32({e});\n    if (!finite(x)) {{ discard; }}\n    c = cmap(stretch(x, 0u));"),
-            Mode::Rgb(e) => format!(
-                "if ({nd}) {{ discard; }}\n    c = vec3f(stretch(f32({}), 0u), stretch(f32({}), 1u), stretch(f32({}), 2u));",
-                e[0], e[1], e[2]
-            ),
+            Mode::Gray(e) => e,
+            Mode::Rgb(e) => &e[0],
         }
     }
+}
+
+/// One layer of a view: its mode and the inputs (view input indices) that it uses.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LayerSpec {
+    pub mode: Mode,
+    pub inputs: Vec<usize>,
+}
+
+/// Compare mode of the first two layers (A = layer 0, B = layer 1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Compare {
+    /// All layers, each over the layers below it with its opacity (the blend mode is this with the opacity of B).
+    #[default]
+    Stack,
+    /// B only on one side of a line.
+    Swipe,
+    /// A or B, one after the other.
+    Flicker,
+    /// A - B, A / B or 10 log10(A / B) with the difference color map.
+    Difference,
+}
+
+/// Fragment code of a composite.
+fn program(layers: &[LayerSpec], cmp: Compare) -> String {
+    let nd = |ins: &[usize]| if ins.is_empty() { "false".to_string() } else { ins.iter().map(|k| format!("nd(v{k})")).collect::<Vec<_>>().join(" || ") };
+    if cmp == Compare::Difference && layers.len() >= 2 {
+        let (a, b) = (&layers[0], &layers[1]);
+        return format!(
+            "if (!({}) && !({})) {{
+        let xa = f32({});
+        let xb = f32({});
+        let d = select(select(xa - xb, xa / xb, u.diff == 1u), 10.0 * log2(xa / xb) * 0.30103, u.diff == 2u);
+        if (finite(d)) {{
+            let t = clamp((d - u.dlo) / (u.dhi - u.dlo), 0.0, 1.0);
+            col = vec4f(cmap(t, 4u, (u.dflags & 8u) != 0u), 1.0);
+        }}
+    }}",
+            nd(&a.inputs),
+            nd(&b.inputs),
+            a.mode.value(),
+            b.mode.value()
+        );
+    }
+    let mut out = String::new();
+    for (k, l) in layers.iter().enumerate().take(4) {
+        let show = match (cmp, k) {
+            (Compare::Swipe, 1) => "select(pf.y, pf.x, u.vertical != 0u) > u.swipe",
+            (Compare::Flicker, 0) => "u.show_b == 0u",
+            (Compare::Flicker, 1) => "u.show_b == 1u",
+            _ => "true",
+        };
+        let color = match &l.mode {
+            Mode::Gray(e) => format!(
+                "let x = f32({e});
+            if (finite(x)) {{
+                col = over(col, vec4f(cmap(stretch(x, {k}u, 0u), {k}u, (u.l[{k}].flags & 8u) != 0u), u.l[{k}].opacity));
+            }}"
+            ),
+            Mode::Rgb(e) => format!(
+                "let c = vec3f(stretch(fin(f32({})), {k}u, 0u), stretch(fin(f32({})), {k}u, 1u), stretch(fin(f32({})), {k}u, 2u));
+            col = over(col, vec4f(c, u.l[{k}].opacity));",
+                e[0], e[1], e[2]
+            ),
+        };
+        out += &format!("// layer {k}\n    if ({show} && !({})) {{\n            {color}\n    }}\n    ", nd(&l.inputs));
+    }
+    out
+}
+
+/// Parameters of one layer of the composite.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct LayerParams {
+    pub lo: [f32; 4],
+    pub hi: [f32; 4],
+    pub gamma: [f32; 4],
+    /// Bit c: channel c in dB. Bit 3: invert the color map.
+    pub flags: u32,
+    pub opacity: f32,
+    pub pad: [f32; 2],
+}
+
+impl Default for LayerParams {
+    fn default() -> Self {
+        LayerParams { lo: [0.0; 4], hi: [1.0; 4], gamma: [1.0; 4], flags: 0, opacity: 1.0, pad: [0.0; 2] }
+    }
+}
+
+/// Uniforms of the composite pass.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CompositeUniforms {
+    /// View origin in window pixels.
+    pub vo: [f32; 2],
+    pub cmp: u32,
+    pub n: u32,
+    /// Swipe line position in view pixels, and 1 for a vertical line.
+    pub swipe: f32,
+    pub vertical: u32,
+    /// Flicker: 1 when B is shown.
+    pub show_b: u32,
+    /// Difference: 0 A - B, 1 A / B, 2 10 log10(A / B).
+    pub diff: u32,
+    pub dlo: f32,
+    pub dhi: f32,
+    /// Bit 3: invert the difference color map.
+    pub dflags: u32,
+    pub pad: u32,
+    pub l: [LayerParams; 4],
 }
 
 #[repr(C)]
@@ -181,20 +306,6 @@ pub struct LayerUniforms {
     pub flags: u32,
     pub grid: [u32; 2],
     pub pad: [u32; 2],
-}
-
-/// Stretch and color flags of a composite.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct CompositeUniforms {
-    /// View origin in window pixels.
-    pub vo: [f32; 2],
-    pub n: u32,
-    /// 2: invert the color map. 256 << k: channel k in dB.
-    pub flags: u32,
-    pub lo: [f32; 8],
-    pub hi: [f32; 8],
-    pub gamma: [f32; 8],
 }
 
 #[repr(C)]
@@ -374,9 +485,9 @@ impl Gpu {
         })
     }
 
-    /// Composite pipeline of a mode for `n` inputs. Errors come from the WGSL compiler (band math).
-    fn composite(&mut self, mode: &Mode, n: usize) -> Result<wgpu::RenderPipeline, String> {
-        let src = COMPOSITE_SHADER.replace("EXPR", &mode.wgsl(n));
+    /// Composite pipeline of layers and a compare mode. Errors come from the WGSL compiler (band math).
+    fn composite(&mut self, layers: &[LayerSpec], cmp: Compare) -> Result<wgpu::RenderPipeline, String> {
+        let src = COMPOSITE_SHADER.replace("LAYERS", &program(layers, cmp));
         if let Some(p) = self.comp_pipes.get(&src) {
             return Ok(p.clone());
         }
@@ -392,7 +503,12 @@ impl Gpu {
                 module: &shader,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(self.format.into())],
+                // Layers with an opacity below 1 over no data: blend with the background of the window.
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: self.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             primitive: Default::default(),
             depth_stencil: None,
@@ -585,7 +701,7 @@ impl View2d {
     pub fn new(gpu: &Gpu) -> View2d {
         let lut = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("lut"),
-            size: wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d { width: 256, height: LUT_ROWS, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -602,9 +718,10 @@ impl View2d {
         View2d { lut, cbuf, targets: vec![], size: (0, 0), inputs: vec![] }
     }
 
-    pub fn set_lut(&self, gpu: &Gpu, rgba: &[[u8; 4]]) {
+    /// Color map of row `row`: 0 to 3 for the layers, 4 for the difference.
+    pub fn set_lut(&self, gpu: &Gpu, row: u32, rgba: &[[u8; 4]]) {
         gpu.queue.write_texture(
-            self.lut.as_image_copy(),
+            wgpu::TexelCopyTextureInfo { texture: &self.lut, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: row.min(LUT_ROWS - 1), z: 0 }, aspect: wgpu::TextureAspect::All },
             bytemuck::cast_slice(rgba),
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
             wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
@@ -639,21 +756,24 @@ impl View2d {
 
     /// Write the buffers and make the paint callback for egui. `layers[k]` are the uniforms and the u8 flag
     /// of input k. `rect` is the view in points, `px` its size in physical pixels, `origin` in window pixels.
+    /// `inputs[k]` are the uniforms and the u8 flag of input k. `specs` are the layers of the composite.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,
         gpu: &mut Gpu,
-        layers: &[(LayerUniforms, bool)],
-        mode: &Mode,
+        inputs: &[(LayerUniforms, bool)],
+        specs: &[LayerSpec],
+        cmp: Compare,
         cu: &CompositeUniforms,
         rect: egui::Rect,
         px: (u32, u32),
     ) -> Result<Option<egui::PaintCallback>, String> {
+        let layers = inputs;
         let n = layers.len().min(self.inputs.len()).min(MAX_INPUTS);
-        if n == 0 || px.0 == 0 || px.1 == 0 {
+        if n == 0 || specs.is_empty() || px.0 == 0 || px.1 == 0 {
             return Ok(None);
         }
-        let pipe = gpu.composite(mode, n)?;
+        let pipe = gpu.composite(specs, cmp)?;
         self.targets(gpu, px.0, px.1, n);
         let mut passes = vec![];
         for (k, (lu, u8)) in layers.iter().take(n).enumerate() {
@@ -768,5 +888,27 @@ impl egui_wgpu::CallbackTrait for Draw {
         pass.set_pipeline(&self.pipe);
         pass.set_bind_group(0, &self.bind, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// All compare modes with gray and RGB layers compile (WGSL front end and validation of naga).
+    #[test]
+    fn composite_programs_are_valid() {
+        let gray = LayerSpec { mode: Mode::Gray("((v0 - v1) / (v0 + v1))".into()), inputs: vec![0, 1] };
+        let rgb = LayerSpec { mode: Mode::Rgb(["v2".into(), "v3".into(), "(v2 / v3)".into()]), inputs: vec![2, 3] };
+        for cmp in [Compare::Stack, Compare::Swipe, Compare::Flicker, Compare::Difference] {
+            for layers in [vec![gray.clone()], vec![gray.clone(), rgb.clone()], vec![rgb.clone(), gray.clone(), gray.clone()]] {
+                let src = COMPOSITE_SHADER.replace("LAYERS", &program(&layers, cmp));
+                let m = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{cmp:?}: {}", e.emit_to_string(&src)));
+                naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default())
+                    .validate(&m)
+                    .unwrap_or_else(|e| panic!("{cmp:?}: {e:?}"));
+            }
+        }
+        assert_eq!(std::mem::size_of::<CompositeUniforms>(), 48 + 4 * 64);
     }
 }

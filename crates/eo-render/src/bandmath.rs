@@ -171,14 +171,19 @@ pub fn parse(exprs: &[&str], names: &[String]) -> Result<(Vec<Node>, Vec<usize>)
 
 impl Node {
     pub fn wgsl(&self) -> String {
+        self.wgsl_map(&|j| j)
+    }
+
+    /// WGSL where input j is `v{map(j)}` (the inputs of all layers of a view are in one list).
+    pub fn wgsl_map(&self, map: &dyn Fn(usize) -> usize) -> String {
         match self {
             Node::Num(v) => format!("{:?}", *v as f32),
-            Node::Var(j) => format!("v{j}"),
-            Node::Neg(a) => format!("(-{})", a.wgsl()),
-            Node::Bin('^', a, b) => format!("pow({}, {})", a.wgsl(), b.wgsl()),
-            Node::Bin(op, a, b) => format!("({} {op} {})", a.wgsl(), b.wgsl()),
+            Node::Var(j) => format!("v{}", map(*j)),
+            Node::Neg(a) => format!("(-{})", a.wgsl_map(map)),
+            Node::Bin('^', a, b) => format!("pow({}, {})", a.wgsl_map(map), b.wgsl_map(map)),
+            Node::Bin(op, a, b) => format!("({} {op} {})", a.wgsl_map(map), b.wgsl_map(map)),
             Node::Call(f, a) => {
-                let a: Vec<String> = a.iter().map(Node::wgsl).collect();
+                let a: Vec<String> = a.iter().map(|n| n.wgsl_map(map)).collect();
                 match f.as_str() {
                     "ln" => format!("log({})", a[0]),
                     "log10" => format!("(log({}) * 0.4342944819)", a[0]),

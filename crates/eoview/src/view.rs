@@ -11,6 +11,8 @@ pub struct Input {
 }
 
 pub struct View {
+    /// Client id of the view for the tile requests of the engine.
+    pub client: u32,
     /// Display CRS (EPSG code). None: pixel space of the first input.
     pub space: Option<u32>,
     /// View center in display coordinates (y up).
@@ -29,8 +31,9 @@ pub struct View {
 }
 
 impl View {
-    pub fn new() -> View {
+    pub fn new(client: u32) -> View {
         View {
+            client,
             space: None,
             center: [0.0; 2],
             scale: 1.0,
@@ -54,6 +57,13 @@ impl View {
     pub fn rect(&self) -> [f64; 4] {
         let (a, b) = (self.to_display([0.0, self.px.height() as f64]), self.to_display([self.px.width() as f64, 0.0]));
         [a[0], a[1], b[0], b[1]]
+    }
+
+    /// True if the view shows data of an input with this center and scale.
+    pub fn shows_data(&self, center: [f64; 2], scale: f64) -> bool {
+        let (w, h) = (self.px.width() as f64 / scale / 2.0, self.px.height() as f64 / scale / 2.0);
+        let r = [center[0] - w, center[1] - h, center[0] + w, center[1] + h];
+        self.inputs.iter().any(|i| i.warp.as_ref().is_some_and(|(wp, _)| wp.pixel_bbox(r).is_some()))
     }
 
     /// Fit all inputs with a warp in the view. Return false if no input has a warp.
@@ -150,9 +160,23 @@ impl View {
         if changed {
             self.sent.clear();
             self.sent.extend(self.want.iter().map(|w| w.1));
-            engine.want(0, self.want.clone());
+            engine.want(self.client, self.want.clone());
         }
         (!self.want.is_empty(), changed)
+    }
+
+    /// The view is not visible: cancel its tile requests.
+    pub fn idle(&mut self, engine: &Engine) {
+        if !self.sent.is_empty() {
+            self.sent.clear();
+            engine.want(self.client, vec![]);
+        }
+    }
+
+    /// Screen position (points) of display point `d`. `rect` is the view in points.
+    pub fn to_screen(&self, d: [f64; 2], rect: Rect) -> egui::Pos2 {
+        let k = self.scale * (rect.width() / self.px.width().max(1.0)) as f64;
+        egui::pos2(rect.center().x + ((d[0] - self.center[0]) * k) as f32, rect.center().y - ((d[1] - self.center[1]) * k) as f32)
     }
 
     /// Uniforms of each input for the layer passes.

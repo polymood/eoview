@@ -1,10 +1,15 @@
-//! Benchmark mode: `eoview --bench <file> [frames]`. It measures the targets of section 4 of the
+//! Benchmark mode: `eoview --bench <file or URL>... [frames]`. It measures the targets of section 4 of the
 //! specification on this machine and writes them to stdout. The window is 3840 x 2160 when the
-//! screen permits it, without the vertical sync limit.
+//! screen permits it, without the vertical sync limit. `EOVIEW_BENCH_SIZE=3840x2160` draws into an
+//! offscreen target of this size, and waits for the GPU at each frame.
+//!
+//! With more than one file, each file goes in its own view, all views are linked (pixel mode; set
+//! `EOVIEW_BENCH_LINK=geo` for geographic mode), and the pan and zoom test moves the first view.
 //!
 //! To include the process start in "start to first window", set `EOVIEW_T0` to the start time in
 //! nanoseconds since the Unix epoch (`EOVIEW_T0=$(date +%s%N) eoview --bench ...`).
-use crate::View;
+use crate::app::Pane;
+use crate::view::View;
 use eo_cache::{Engine, Layer};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use winit::event_loop::ActiveEventLoop;
@@ -13,7 +18,7 @@ const IDLE: Duration = Duration::from_secs(3);
 
 pub enum Next {
     Redraw,
-    Open(String),
+    Open(Vec<String>),
     Select(usize),
     /// Draw again only at this time (or before, for other events).
     Wait(Instant),
@@ -36,7 +41,7 @@ enum Stage {
 
 pub struct Bench {
     t0: Instant,
-    file: String,
+    files: Vec<String>,
     frames: usize,
     stage: Stage,
     t_stage: Instant,
@@ -74,12 +79,13 @@ fn report(k: &str, v: String) {
 
 impl Bench {
     pub fn new(t0: Instant, args: &[String]) -> Bench {
-        let file = args.first().cloned().expect("usage: eoview --bench <file> [frames]");
-        let frames = args.get(1).and_then(|f| f.parse().ok()).unwrap_or(600);
+        let files: Vec<String> = args.iter().filter(|a| a.parse::<usize>().is_err()).cloned().collect();
+        assert!(!files.is_empty(), "usage: eoview --bench <file>... [frames]");
+        let frames = args.iter().find_map(|f| f.parse().ok()).unwrap_or(600);
         let t = Instant::now();
         Bench {
             t0,
-            file,
+            files,
             frames,
             stage: Stage::Start,
             t_stage: t,
@@ -105,24 +111,25 @@ impl Bench {
     }
 
     /// Set the camera for the pan and zoom test: two zoom cycles to 32x, and three circles.
-    pub fn drive(&mut self, v: &mut View) {
-        if let Stage::Pan(i) = self.stage {
-            let t = i as f64 / self.frames as f64;
-            let tau = std::f64::consts::TAU;
-            let z = 5.0 * (0.5 - 0.5 * (tau * 2.0 * t).cos());
-            // Circles of a quarter of the fit view size.
-            let (w, h) = (v.px.width() as f64 / self.fit.0, v.px.height() as f64 / self.fit.0);
-            let r = 0.25 * (1.0 - 0.5 * (tau * 3.0 * t).cos());
-            v.scale = self.fit.0 * 2f64.powf(z);
-            v.center = [self.fit.1[0] + r * w * (tau * 3.0 * t).cos(), self.fit.1[1] + r * h * (tau * 3.0 * t).sin()];
-        }
+    pub fn drive(&mut self, v: &mut View) -> bool {
+        let Stage::Pan(i) = self.stage else { return false };
+        let t = i as f64 / self.frames as f64;
+        let tau = std::f64::consts::TAU;
+        let z = 5.0 * (0.5 - 0.5 * (tau * 2.0 * t).cos());
+        // Circles of a quarter of the fit view size.
+        let (w, h) = (v.px.width() as f64 / self.fit.0, v.px.height() as f64 / self.fit.0);
+        let r = 0.25 * (1.0 - 0.5 * (tau * 3.0 * t).cos());
+        v.scale = self.fit.0 * 2f64.powf(z);
+        v.center = [self.fit.1[0] + r * w * (tau * 3.0 * t).cos(), self.fit.1[1] + r * h * (tau * 3.0 * t).sin()];
+        true
     }
 
     fn complete(&self, engine: &Engine) -> bool {
         !self.missing && engine.stats().running == 0
     }
 
-    pub fn presented(&mut self, engine: &Engine, v: &View, el: &ActiveEventLoop) -> Next {
+    pub fn presented(&mut self, engine: &Engine, panes: &[Pane], el: &ActiveEventLoop) -> Next {
+        let v = &panes[0].v;
         let now = Instant::now();
         let dt = now - self.t_stage;
         let up = std::mem::take(&mut self.uploaded);
@@ -135,7 +142,7 @@ impl Bench {
                 }
                 self.stage = Stage::Opening;
                 self.t_stage = now;
-                return Next::Open(self.file.clone());
+                return Next::Open(self.files.clone());
             }
             Stage::Opening if up => {
                 report("open to first pixels", ms(dt));
@@ -144,11 +151,13 @@ impl Bench {
             Stage::Opening => {}
             Stage::Loading if self.complete(engine) => {
                 report("open to complete view", ms(dt));
-                if let Some(i) = v.inputs.first() {
-                    let (w, h) = i.layer.size();
-                    report("image", format!("{w} x {h}, {} levels, {} input(s), {}", i.layer.levels.len(), v.inputs.len(), i.layer.ds.product.desc));
+                for p in panes {
+                    if let Some(i) = p.v.inputs.first() {
+                        let (w, h) = i.layer.size();
+                        report("image", format!("{w} x {h}, {} levels, {} input(s), {}", i.layer.levels.len(), p.v.inputs.len(), i.layer.ds.product.desc));
+                    }
+                    report("view size", format!("{} x {} px", p.v.px.width(), p.v.px.height()));
                 }
-                report("view size", format!("{} x {} px", v.px.width(), v.px.height()));
                 self.fit = (v.scale, v.center);
                 self.stage = Stage::Pan(0);
                 self.last = None;
@@ -172,7 +181,7 @@ impl Bench {
                     report("pan and zoom frames > 16 ms", format!("{}", t.iter().filter(|&&x| x > 16.0).count()));
                     self.t_stage = now;
                     let bands: usize = v.inputs.first().map_or(0, |i| i.layer.ds.product.vars.iter().map(|v| Layer::choices(v).len()).sum());
-                    if bands > 2 {
+                    if bands > 2 && panes.len() == 1 {
                         self.stage = Stage::BandNew;
                         return Next::Select(1);
                     }

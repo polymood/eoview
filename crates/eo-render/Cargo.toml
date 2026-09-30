@@ -13,3 +13,6 @@ egui.workspace = true
 egui-wgpu.workspace = true
 wgpu.workspace = true
 pollster = "1.0.1"
+
+[dev-dependencies]
+naga = { version = "=30.0.1", features = ["wgsl-in"] }
