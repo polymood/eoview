@@ -5,6 +5,7 @@ pub mod codec;
 mod jp2;
 pub mod safe;
 pub mod xml;
+pub mod zarr;
 pub mod source;
 pub mod tiff;
 
@@ -24,6 +25,10 @@ pub struct Dataset {
 /// A directory can be a SAFE product. A metadata file of a SAFE product opens its directory.
 pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     let path = std::path::Path::new(url);
+    let remote_zarr = source::is_remote(url) && (url.trim_end_matches('/').ends_with(".zarr") || url.contains(".zarr/"));
+    if remote_zarr || (path.is_dir() && zarr::is_zarr(url, rt)) {
+        return zarr::open(url.trim_end_matches('/'), rt);
+    }
     if !source::is_remote(url) {
         if path.is_dir() {
             return safe::open(path, rt);

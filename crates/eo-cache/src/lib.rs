@@ -16,11 +16,13 @@ pub struct Lru<K, V> {
     tick: u64,
     pub bytes: usize,
     pub cap: usize,
+    /// Copy of `bytes` that other threads can read without the lock.
+    pub used: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl<K: Hash + Eq + Clone, V> Lru<K, V> {
     pub fn new(cap: usize) -> Self {
-        Lru { map: HashMap::new(), order: BTreeMap::new(), tick: 0, bytes: 0, cap }
+        Lru { map: HashMap::new(), order: BTreeMap::new(), tick: 0, bytes: 0, cap, used: Default::default() }
     }
 
     pub fn get(&mut self, k: &K) -> Option<&V> {
@@ -48,6 +50,7 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
                 self.bytes -= e.1;
             }
         }
+        self.used.store(self.bytes, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn len(&self) -> usize {
@@ -57,6 +60,26 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+}
+
+/// Number of physical CPU cores (without SMT threads).
+pub fn physical_cores() -> usize {
+    let logical = std::thread::available_parallelism().map_or(4, |n| n.get());
+    // ponytail: Linux only (/proc/cpuinfo). Other systems count logical cores.
+    let info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let mut cores = std::collections::HashSet::new();
+    let mut phys = "";
+    for l in info.lines() {
+        let (k, v) = l.split_once(':').map_or((l, ""), |(k, v)| (k.trim(), v.trim()));
+        match k {
+            "physical id" => phys = v,
+            "core id" => {
+                cores.insert((phys, v));
+            }
+            _ => {}
+        }
+    }
+    if cores.is_empty() { logical } else { cores.len().min(logical) }
 }
 
 /// Total system RAM in bytes.

@@ -136,6 +136,9 @@ pub struct Array {
     pub codecs: Vec<Codec>,
     /// One location for each chunk, in C order over the chunk grid.
     pub chunks: Vec<ChunkLoc>,
+    /// Position of an overview on level 0: [kx, ky, ox, oy]. Level-0 pixel position = (ox + col * kx, oy + row * ky).
+    /// None: the overview covers the same area as level 0 (kx = level-0 width / width, GDAL convention).
+    pub place: Option<[f64; 4]>,
 }
 
 impl Array {
@@ -293,6 +296,7 @@ mod tests {
             le: true,
             codecs: vec![],
             chunks: vec![ChunkLoc { src: 0, off: 0, len: 0 }; 3 * 2 * 4],
+            place: None,
         };
         assert_eq!(a.grid(), [3, 2, 4]);
         assert_eq!(a.chunk_index(&[2, 1, 3]), 23);

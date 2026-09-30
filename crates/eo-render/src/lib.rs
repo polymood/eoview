@@ -9,6 +9,8 @@ pub mod bandmath;
 
 use eo_cache::{Pixels, TILE, TileKey};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const T: u32 = TILE as u32;
 /// Maximum number of tiles in one draw call.
@@ -237,7 +239,16 @@ pub struct Gpu {
     pub frame: u64,
     /// Bytes of the offscreen targets of all views.
     pub target_bytes: usize,
+    /// Staging buffers for tile uploads. A buffer is ready when it is mapped again after its copy.
+    staging: Vec<(wgpu::Buffer, Arc<AtomicBool>)>,
 }
+
+/// Size of one staging buffer. The application uploads at most about this much in one frame.
+pub const STAGING: u64 = 12 << 20;
+/// Time limit of the tile copy in one frame.
+const UPLOAD_TIME: std::time::Duration = std::time::Duration::from_millis(3);
+/// Maximum number of staging buffers.
+const STAGING_BUFFERS: usize = 3;
 
 fn tex_entry(binding: u32, dim: wgpu::TextureViewDimension, filterable: bool, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -341,6 +352,7 @@ impl Gpu {
             layers,
             frame: 0,
             target_bytes: 0,
+            staging: vec![],
         }
     }
 
@@ -403,41 +415,96 @@ impl Gpu {
         Some((s.layer, s.done))
     }
 
-    /// Put a tile on the GPU. If the array is full, remove the least recently used tile that is not
-    /// used in this frame or the previous frame. Return false if there is no free layer.
-    pub fn upload(&mut self, key: TileKey, w: u32, h: u32, px: &Pixels, done: bool) -> bool {
-        let (frame, u8) = (self.frame, matches!(px, Pixels::U8(_)));
-        let queue = self.queue.clone();
+    /// Array layer for a tile. If the array is full, remove the least recently used tile that is not
+    /// used in this frame or the previous frame. None if there is no free layer.
+    fn slot(&mut self, key: TileKey, u8: bool, done: bool) -> Option<u32> {
+        let frame = self.frame;
         let a = self.array(u8);
-        let layer = match a.map.get_mut(&key) {
-            Some(s) => {
-                s.done = done;
-                s.layer
-            }
+        if let Some(s) = a.map.get_mut(&key) {
+            s.done = done;
+            return Some(s.layer);
+        }
+        let layer = match a.free.pop() {
+            Some(l) => l,
             None => {
-                let layer = match a.free.pop() {
-                    Some(l) => l,
-                    None => {
-                        // ponytail: O(n) scan for the oldest tile. Use an ordered index if arrays get much larger than 2048 layers.
-                        let Some((&k, s)) = a.map.iter().filter(|(_, s)| s.used + 1 < frame).min_by_key(|(_, s)| s.used) else {
-                            return false;
-                        };
-                        let l = s.layer;
-                        a.map.remove(&k);
-                        l
-                    }
-                };
-                a.map.insert(key, Slot { layer, done, used: frame });
-                layer
+                // ponytail: O(n) scan for the oldest tile. Use an ordered index if arrays get much larger than 2048 layers.
+                let (&k, s) = a.map.iter().filter(|(_, s)| s.used + 1 < frame).min_by_key(|(_, s)| s.used)?;
+                let l = s.layer;
+                a.map.remove(&k);
+                l
             }
         };
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &a.tex, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: layer }, aspect: wgpu::TextureAspect::All },
-            px.bytes(),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * a.bpp), rows_per_image: None },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
-        true
+        a.map.insert(key, Slot { layer, done, used: frame });
+        Some(layer)
+    }
+
+    /// A mapped staging buffer: a ready one of the ring, or a new one if the ring is not full.
+    fn staging(&mut self) -> Option<wgpu::Buffer> {
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        if let Some((b, r)) = self.staging.iter().find(|(_, r)| r.load(Ordering::Acquire)) {
+            r.store(false, Ordering::Release);
+            return Some(b.clone());
+        }
+        if self.staging.len() >= STAGING_BUFFERS {
+            return None;
+        }
+        let b = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tile upload"),
+            size: STAGING,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+            mapped_at_creation: true,
+        });
+        self.staging.push((b.clone(), Arc::new(AtomicBool::new(false))));
+        Some(b)
+    }
+
+    /// Put tiles (key, width, height, pixels, complete) on the GPU through one staging buffer of a ring:
+    /// one submit for all tiles of a frame, and no new allocation. The copy stops after `UPLOAD_TIME`.
+    /// Return the number of tiles uploaded (the first ones): the others wait for the next frame.
+    pub fn upload(&mut self, tiles: &[(TileKey, u32, u32, &Pixels, bool)]) -> usize {
+        if tiles.is_empty() {
+            return 0;
+        }
+        let t0 = std::time::Instant::now();
+        let Some(buf) = self.staging() else { return 0 };
+        let mut placed = vec![];
+        let mut size = 0u64;
+        {
+            let mut m = buf.slice(..).get_mapped_range_mut().expect("staging buffer is mapped");
+            for &(key, w, h, px, done) in tiles {
+                let u8 = matches!(px, Pixels::U8(_));
+                let row = w as u64 * if u8 { 1 } else { 2 };
+                let prow = row.div_ceil(256) * 256;
+                if size + prow * h as u64 > STAGING || t0.elapsed() > UPLOAD_TIME {
+                    break;
+                }
+                let src = px.bytes();
+                for r in 0..h as usize {
+                    let d = (size + r as u64 * prow) as usize;
+                    m.slice(d..d + row as usize).copy_from_slice(&src[r * row as usize..(r + 1) * row as usize]);
+                }
+                placed.push((key, u8, done, w, h, prow, size));
+                size += prow * h as u64;
+            }
+        }
+        buf.unmap();
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        for &(key, u8, done, w, h, prow, off) in &placed {
+            let Some(layer) = self.slot(key, u8, done) else { continue };
+            let tex = &self.arrays[u8 as usize].as_ref().unwrap().tex;
+            enc.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buf,
+                    layout: wgpu::TexelCopyBufferLayout { offset: off, bytes_per_row: Some(prow as u32), rows_per_image: None },
+                },
+                wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: 0, z: layer }, aspect: wgpu::TextureAspect::All },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+        }
+        self.queue.submit([enc.finish()]);
+        let ready = self.staging.iter().find(|(b, _)| *b == buf).map(|(_, r)| r.clone()).unwrap();
+        buf.map_async(wgpu::MapMode::Write, .., move |r| ready.store(r.is_ok(), Ordering::Release));
+        placed.len()
     }
 
     /// Allocated bytes of the tile arrays and targets, and bytes of the resident tiles.

@@ -833,6 +833,7 @@ dependencies = [
  "eo-io",
  "futures-util",
  "half",
+ "libc",
  "rayon",
  "tokio",
 ]
@@ -855,6 +856,7 @@ dependencies = [
  "lz4_flex",
  "memmap2",
  "object_store",
+ "serde_json",
  "tokio",
  "url",
  "weezl 0.2.1",

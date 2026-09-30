@@ -394,6 +394,21 @@ impl App {
     /// Handle engine events. Upload at most `UPLOAD_BYTES` of tiles. Return true if tiles wait.
     fn events(&mut self) -> bool {
         let mut bytes = 0;
+        let mut tiles = vec![];
+        let more = self.events_into(&mut bytes, &mut tiles);
+        let Some(win) = &mut self.win else { return more };
+        let t: Vec<_> = tiles.iter().map(|(k, w, h, p, d): &(_, _, _, Arc<eo_cache::Pixels>, _)| (*k, *w, *h, &**p, *d)).collect();
+        let n = win.gpu.upload(&t);
+        // Tiles without a staging buffer wait for the next frame.
+        let rest = tiles.len() - n;
+        for (key, w, h, px, done) in tiles.drain(n..).rev() {
+            self.pending.push_front(Event::Tile { key, w, h, px, done });
+        }
+        self.engine.drop_later(tiles);
+        more || rest > 0
+    }
+
+    fn events_into(&mut self, bytes: &mut usize, tiles: &mut Vec<(eo_cache::TileKey, u32, u32, Arc<eo_cache::Pixels>, bool)>) -> bool {
         loop {
             let ev = match self.pending.pop_front() {
                 Some(e) => e,
@@ -407,13 +422,14 @@ impl App {
                     if !self.view.inputs.iter().any(|i| i.layer.id == key.layer) {
                         continue;
                     }
-                    if bytes >= UPLOAD_BYTES {
+                    if *bytes >= UPLOAD_BYTES {
                         self.pending.push_front(Event::Tile { key, w, h, px, done });
                         return true;
                     }
-                    let Some(win) = &mut self.win else { continue };
-                    win.gpu.upload(key, w, h, &px, done);
-                    bytes += px.size();
+                    *bytes += px.size();
+                    // A newer partial version of the same tile replaces the older one.
+                    tiles.retain(|t| t.0 != key);
+                    tiles.push((key, w, h, px, done));
                     if let Some(b) = &mut self.bench {
                         b.uploaded();
                     }
@@ -862,16 +878,19 @@ impl App {
     }
 
     fn render(&mut self, el: &ActiveEventLoop) {
+        let t0 = Instant::now();
         if let Some(w) = &mut self.win {
             w.gpu.frame += 1;
         }
         let more = self.events();
+        let t1 = Instant::now();
         let raw = {
             let w = self.win.as_mut().unwrap();
             w.egui_state.take_egui_input(&w.window)
         };
         let ctx = self.ctx.clone();
         let out = ctx.run_ui(raw, |ui| self.ui(ui));
+        let t2 = Instant::now();
         if std::mem::take(&mut self.dialog) {
             let f = rfd::FileDialog::new()
                 .add_filter("EO data", &["tif", "tiff", "gtiff", "cog", "jp2", "xml", "safe"])
@@ -888,6 +907,7 @@ impl App {
         for (id, d) in &out.textures_delta.set {
             d.iter().for_each(|d| w.egui.update_texture(&device, &queue, *id, d));
         }
+        let t3 = Instant::now();
         let frame = match w.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -922,9 +942,16 @@ impl App {
                 .forget_lifetime();
             w.egui.render(&mut pass, &prims, &sd);
         }
+        let t4 = Instant::now();
         queue.submit(cmds.into_iter().chain([enc.finish()]));
         w.window.pre_present_notify();
         queue.present(frame);
+        // EOVIEW_DEBUG: time of each part of the frames longer than 12 ms.
+        if t0.elapsed().as_millis() > 12 && std::env::var_os("EOVIEW_DEBUG").is_some() {
+            let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
+            let t5 = Instant::now();
+            eprintln!("slow frame {:.1} ms: events {:.1} ui {:.1} tessellate {:.1} acquire {:.1} submit {:.1}", ms(t0, t5), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5));
+        }
         for id in &out.textures_delta.free {
             w.egui.free_texture(id);
         }

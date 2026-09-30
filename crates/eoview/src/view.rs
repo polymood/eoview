@@ -106,14 +106,15 @@ impl View {
                 let (sx, sy) = (TILE as f64 * lv.kx, TILE as f64 * lv.ky);
                 let (nx, ny) = (lv.w.div_ceil(TILE), lv.h.div_ceil(TILE));
                 let t = |v: f64, s: f64, m: u64| ((v / s).max(0.0) as u64).min(m);
-                let (tx0, ty0, tx1, ty1) = (t(pb[0], sx, nx), t(pb[1], sy, ny), t(pb[2], sx, nx - 1) + 1, t(pb[3], sy, ny - 1) + 1);
+                let (px0, py0, px1, py1) = (pb[0] - lv.ox, pb[1] - lv.oy, pb[2] - lv.ox, pb[3] - lv.oy);
+                let (tx0, ty0, tx1, ty1) = (t(px0, sx, nx), t(py0, sy, ny), t(px1, sx, nx - 1) + 1, t(py1, sy, ny - 1) + 1);
                 for ty in ty0..ty1 {
                     for tx in tx0..tx1 {
                         let key = TileKey { layer: l.id, lv: d as u8, tx: tx as u32, ty: ty as u32 };
                         let done = match gpu.lookup(&key, l.enc.u8) {
                             Some((layer, done)) => {
                                 let (tw, th) = (TILE.min(lv.w - tx * TILE), TILE.min(lv.h - ty * TILE));
-                                let (x0, y0) = (tx as f64 * sx, ty as f64 * sy);
+                                let (x0, y0) = (lv.ox + tx as f64 * sx, lv.oy + ty as f64 * sy);
                                 let (x1, y1) = (x0 + tw as f64 * lv.kx, y0 + th as f64 * lv.ky);
                                 let (u, v) = (tw as f32 / TILE as f32, th as f32 / TILE as f32);
                                 gi.insts.push(Inst { rect: [x0 as f32, y0 as f32, x1 as f32, y1 as f32], uvl: [u, v, layer as f32, 0.0] });
@@ -130,7 +131,7 @@ impl View {
             // Coarse level first, then the screen center first.
             let dist = |k: &TileKey| {
                 let lv = &l.levels[k.lv as usize];
-                let (x, y) = ((k.tx as f64 + 0.5) * TILE as f64 * lv.kx, (k.ty as f64 + 0.5) * TILE as f64 * lv.ky);
+                let (x, y) = (lv.ox + (k.tx as f64 + 0.5) * TILE as f64 * lv.kx, lv.oy + (k.ty as f64 + 0.5) * TILE as f64 * lv.ky);
                 (x - c.0).powi(2) + (y - c.1).powi(2)
             };
             self.want[first..].sort_by(|p, q| q.1.lv.cmp(&p.1.lv).then(dist(&p.1).total_cmp(&dist(&q.1))));

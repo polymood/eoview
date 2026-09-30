@@ -256,6 +256,7 @@ fn array(rd: &Rd, ifd: &Ifd, src: u32) -> Result<Array> {
         le: rd.le,
         codecs,
         chunks,
+        place: None,
     })
 }
 

@@ -50,6 +50,9 @@ pub struct Level {
     /// Level-0 pixels for each pixel of this level.
     pub kx: f64,
     pub ky: f64,
+    /// Level-0 position of the top-left corner of this level.
+    pub ox: f64,
+    pub oy: f64,
     pub src: LevelSrc,
 }
 
@@ -136,29 +139,38 @@ pub fn chunk_at(a: &Array, band: u64, cy: u64, cx: u64) -> usize {
     a.chunk_index(&pos)
 }
 
+/// Display pyramid: the file levels, fine to coarse, with generated levels in the gaps (a ratio of
+/// more than about 2.7 between two file levels) and below the coarsest file level (until one tile).
 fn display_levels(v: &Variable) -> Vec<Level> {
     let (w0, h0) = v.size();
-    let (mut out, mut w, mut h) = (Vec::<Level>::new(), w0, h0);
-    loop {
-        let file = v.levels.iter().position(|a| a.len_of("x").abs_diff(w) <= 1 && a.len_of("y").abs_diff(h) <= 1);
-        let l = match file {
-            Some(i) => {
-                let (lw, lh) = (v.levels[i].len_of("x"), v.levels[i].len_of("y"));
-                Level { w: lw, h: lh, kx: w0 as f64 / lw as f64, ky: h0 as f64 / lh as f64, src: LevelSrc::File(i) }
-            }
-            None => {
-                let base = out.iter().rposition(|l| matches!(l.src, LevelSrc::File(_))).unwrap();
-                let (b, f) = (out[base], 1u64 << (out.len() - base));
-                let src = LevelSrc::Virtual { base, f };
-                Level { w: b.w.div_ceil(f), h: b.h.div_ceil(f), kx: b.kx * f as f64, ky: b.ky * f as f64, src }
-            }
-        };
-        out.push(l);
-        if w.max(h) <= TILE {
-            return out;
+    let file = |i: usize| {
+        let a = &v.levels[i];
+        let (w, h) = (a.len_of("x"), a.len_of("y"));
+        let [kx, ky, ox, oy] = a.place.unwrap_or([w0 as f64 / w as f64, h0 as f64 / h as f64, 0.0, 0.0]);
+        Level { w, h, kx, ky, ox, oy, src: LevelSrc::File(i) }
+    };
+    let halve = |out: &Vec<Level>| {
+        let base = out.iter().rposition(|l| matches!(l.src, LevelSrc::File(_))).unwrap();
+        let (b, f) = (out[base], 1u64 << (out.len() - base));
+        let src = LevelSrc::Virtual { base, f };
+        Level { w: b.w.div_ceil(f), h: b.h.div_ceil(f), kx: b.kx * f as f64, ky: b.ky * f as f64, src, ..b }
+    };
+    let mut order: Vec<usize> = (0..v.levels.len()).collect();
+    order.sort_by(|&a, &b| file(a).kx.total_cmp(&file(b).kx));
+    let mut out: Vec<Level> = vec![];
+    for i in order {
+        let f = file(i);
+        while out.last().is_some_and(|p| p.kx * 2.0 < f.kx * 0.75) {
+            out.push(halve(&out));
         }
-        (w, h) = (w.div_ceil(2), h.div_ceil(2));
+        if out.last().is_none_or(|p| f.kx > p.kx * 1.01) {
+            out.push(f);
+        }
     }
+    while out.last().is_some_and(|l| l.w.max(l.h) > TILE) {
+        out.push(halve(&out));
+    }
+    out
 }
 
 pub enum Event {
@@ -201,6 +213,10 @@ struct Sched {
 }
 
 struct Inner {
+    /// Bytes of the raw, decoded and inspector caches (copies of the cache counters).
+    used: [Arc<AtomicUsize>; 3],
+    /// Running and wanted tiles (copies of the scheduler counts).
+    counts: [AtomicUsize; 2],
     rt: Handle,
     pool: rayon::ThreadPool,
     jobs: Arc<Mutex<BinaryHeap<Job>>>,
@@ -281,23 +297,38 @@ impl Engine {
             .enable_all()
             .build()
             .expect("tokio runtime");
+        // EOVIEW_THREADS: number of decode threads. Default: all physical cores but one. With SMT, a decode
+        // thread on the other half of the core of the UI thread makes the frames slow.
+        let n = std::env::var("EOVIEW_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(crate::physical_cores().saturating_sub(1).max(1));
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads.saturating_sub(1).max(1))
+            .num_threads(n)
             .thread_name(|i| format!("eo-decode-{i}"))
+            // Lower priority: the UI thread gets the CPU first when all decode threads are busy.
+            // ponytail: Linux only (there, the nice value is for each thread). Add macOS QoS and Windows thread priority if needed.
+            .start_handler(|_| {
+                #[cfg(target_os = "linux")]
+                // SAFETY: on Linux, setpriority with PRIO_PROCESS and 0 changes only the calling thread.
+                unsafe {
+                    libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+                }
+            })
             .build()
             .expect("rayon pool");
         let (tx, rx) = mpsc::channel();
+        let (raw, dec, probe) = (Lru::new(ram / 4), Lru::new(ram / 2), Lru::new(ram / 16));
         let inner = Inner {
+            used: [raw.used.clone(), dec.used.clone(), probe.used.clone()],
+            counts: Default::default(),
             rt: rt.handle().clone(),
             max_running: 2 * threads + 16,
             pool,
             jobs: Default::default(),
             limit: ram,
             work: AtomicUsize::new(0),
-            raw: Mutex::new(Lru::new(ram / 4)),
-            dec: Mutex::new(Lru::new(ram / 2)),
+            raw: Mutex::new(raw),
+            dec: Mutex::new(dec),
             inflight: Default::default(),
-            probe: Mutex::new(Lru::new(ram / 16)),
+            probe: Mutex::new(probe),
             grids: Default::default(),
             sched: Default::default(),
             ids: Default::default(),
@@ -361,22 +392,28 @@ impl Engine {
         });
     }
 
+    /// Free values on the blocking pool: large buffers go back to the system with `munmap`, which can take
+    /// milliseconds. The UI thread must not wait for it.
+    pub fn drop_later<T: Send + 'static>(&self, v: T) {
+        self.rt.spawn_blocking(move || drop(v));
+    }
+
     /// Georeferencing of `l`, with the geolocation arrays read (blocks).
     pub fn georef(&self, l: &Layer) -> Result<Georef> {
         self.inner.georef(l)
     }
 
+    /// Cache and scheduler counts. No lock: the UI calls it at each frame.
     pub fn stats(&self) -> Stats {
         let i = &self.inner;
-        let s = i.sched.lock().unwrap();
         Stats {
             limit: i.limit,
-            raw: i.raw.lock().unwrap().bytes,
-            dec: i.dec.lock().unwrap().bytes,
-            probe: i.probe.lock().unwrap().bytes,
+            raw: i.used[0].load(Relaxed),
+            dec: i.used[1].load(Relaxed),
+            probe: i.used[2].load(Relaxed),
             work: i.work.load(Relaxed),
-            running: s.running.len(),
-            wanted: s.lists.values().map(|l| l.len()).sum(),
+            running: i.counts[0].load(Relaxed),
+            wanted: i.counts[1].load(Relaxed),
         }
     }
 
@@ -710,6 +747,8 @@ impl Inner {
             });
             s.running.insert(key, h.abort_handle());
         }
+        self.counts[0].store(s.running.len(), Relaxed);
+        self.counts[1].store(s.lists.values().map(|l| l.len()).sum(), Relaxed);
     }
 
     async fn tile(self: &Arc<Self>, l: &Arc<Layer>, key: TileKey, prio: u32) -> Result<()> {
@@ -1011,6 +1050,7 @@ mod tests {
             le: true,
             codecs: vec![],
             chunks: vec![],
+            place: None,
         };
         Variable {
             name: "t".into(),
@@ -1022,6 +1062,19 @@ mod tests {
             units: String::new(),
             georef: Georef::None,
         }
+    }
+
+    #[test]
+    fn levels_with_other_ratios() {
+        // EOPF multiscales: 10, 20, 60, 120 m. A level at 40 m fills the gap between 20 and 60 m.
+        let mut v = var(10980, 10980, &[(5490, 5490), (1830, 1830), (915, 915)]);
+        for (a, k) in v.levels.iter_mut().zip([1.0, 2.0, 6.0, 12.0]) {
+            a.place = Some([k, k, 0.0, 0.0]);
+        }
+        let l = display_levels(&v);
+        let k: Vec<f64> = l.iter().map(|l| l.kx).collect();
+        assert_eq!(k, [1.0, 2.0, 4.0, 6.0, 12.0, 24.0]);
+        assert_eq!(l[2].src, LevelSrc::Virtual { base: 1, f: 2 });
     }
 
     #[test]

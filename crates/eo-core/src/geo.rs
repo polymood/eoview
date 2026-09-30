@@ -35,6 +35,15 @@ pub struct Warp {
     /// Row order (j * nx + i). NaN where the transform fails.
     pub pts: Vec<[f64; 2]>,
     pub origin: [f64; 2],
+    /// Cells in each bucket of a regular grid over the display box, for `inverse`. Made at the first use.
+    index: std::sync::OnceLock<Index>,
+}
+
+#[derive(Clone, Debug)]
+struct Index {
+    bbox: [f64; 4],
+    n: usize,
+    cells: Vec<Vec<u32>>,
 }
 
 impl Warp {
@@ -67,7 +76,7 @@ impl Warp {
         loop {
             let pts: Vec<[f64; 2]> =
                 (0..n).flat_map(|j| (0..n).map(move |i| (i, j))).map(|(i, j)| f(w * i as f64 / (n - 1) as f64, h * j as f64 / (n - 1) as f64)).collect();
-            let mut wp = Warp { w, h, nx: n, ny: n, pts, origin: [0.0; 2] };
+            let mut wp = Warp { w, h, nx: n, ny: n, pts, origin: [0.0; 2], index: Default::default() };
             let px = wp.px_size().max(1e-12);
             let mut err = 0f64;
             for j in 0..n - 1 {
@@ -126,25 +135,62 @@ impl Warp {
         })
     }
 
-    /// Pixel rectangle (col0, row0, col1, row1) that contains all pixels visible in the display rectangle
-    /// (x0, y0, x1, y1). None if no pixel is visible.
-    pub fn pixel_bbox(&self, r: [f64; 4]) -> Option<[f64; 4]> {
-        let (cw, ch) = (self.w / (self.nx - 1) as f64, self.h / (self.ny - 1) as f64);
-        let mut b: Option<[f64; 4]> = None;
-        for (i, j, c) in self.cells() {
-            if c[2] < r[0] || c[0] > r[2] || c[3] < r[1] || c[1] > r[3] {
-                continue;
-            }
-            let p = [i as f64 * cw, j as f64 * ch, (i + 1) as f64 * cw, (j + 1) as f64 * ch];
-            b = Some(b.map_or(p, |b| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[2]), b[3].max(p[3])]));
+    fn cell_box(&self, i: usize, j: usize) -> Option<[f64; 4]> {
+        let q = [self.node(i, j), self.node(i + 1, j), self.node(i, j + 1), self.node(i + 1, j + 1)];
+        if q.iter().any(|p| !p[0].is_finite()) {
+            return None;
         }
-        b
+        let (o, f) = (self.origin, |k: usize, m: fn(f64, f64) -> f64| q.iter().map(|p| p[k]).fold(q[0][k], m));
+        Some([f(0, f64::min) + o[0], f(1, f64::min) + o[1], f(0, f64::max) + o[0], f(1, f64::max) + o[1]])
+    }
+
+    fn index(&self) -> &Index {
+        self.index.get_or_init(|| {
+            let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for (_, _, c) in self.cells() {
+                b = [b[0].min(c[0]), b[1].min(c[1]), b[2].max(c[2]), b[3].max(c[3])];
+            }
+            let n = 64;
+            let mut cells = vec![vec![]; n * n];
+            let (sx, sy) = ((b[2] - b[0]).max(1e-300) / n as f64, (b[3] - b[1]).max(1e-300) / n as f64);
+            let k = |v: f64, o: f64, s: f64| (((v - o) / s) as usize).min(n - 1);
+            for (i, j, c) in self.cells() {
+                let id = (j * (self.nx - 1) + i) as u32;
+                for by in k(c[1], b[1], sy)..=k(c[3], b[1], sy) {
+                    for bx in k(c[0], b[0], sx)..=k(c[2], b[0], sx) {
+                        cells[by * n + bx].push(id);
+                    }
+                }
+            }
+            Index { bbox: b, n, cells }
+        })
     }
 
     /// Pixel position of display point (x, y), or None if it is outside the image.
     pub fn inverse(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         let (cw, ch) = (self.w / (self.nx - 1) as f64, self.h / (self.ny - 1) as f64);
-        for (i, j, c) in self.cells() {
+        if self.nx == 2 && self.ny == 2 {
+            // Affine: exact inverse from the corners.
+            let (o, a, b) = (self.at(0.0, 0.0), self.at(self.w, 0.0), self.at(0.0, self.h));
+            let (ax, ay, bx, by) = ((a[0] - o[0]) / self.w, (a[1] - o[1]) / self.w, (b[0] - o[0]) / self.h, (b[1] - o[1]) / self.h);
+            let det = ax * by - bx * ay;
+            if det == 0.0 || !det.is_finite() {
+                return None;
+            }
+            let (ex, ey) = (x - o[0], y - o[1]);
+            let (c, r) = ((by * ex - bx * ey) / det, (ax * ey - ay * ex) / det);
+            return ((0.0..=self.w).contains(&c) && (0.0..=self.h).contains(&r)).then_some((c, r));
+        }
+        let ix = self.index();
+        let b = ix.bbox;
+        if x < b[0] || x > b[2] || y < b[1] || y > b[3] {
+            return None;
+        }
+        let k = |v: f64, o: f64, s: f64| (((v - o) / s) as usize).min(ix.n - 1);
+        let (bx, by) = (k(x, b[0], (b[2] - b[0]).max(1e-300) / ix.n as f64), k(y, b[1], (b[3] - b[1]).max(1e-300) / ix.n as f64));
+        for &id in &ix.cells[by * ix.n + bx] {
+            let (i, j) = (id as usize % (self.nx - 1), id as usize / (self.nx - 1));
+            let Some(c) = self.cell_box(i, j) else { continue };
             if x < c[0] || x > c[2] || y < c[1] || y > c[3] {
                 continue;
             }
@@ -169,6 +215,38 @@ impl Warp {
             }
         }
         None
+    }
+
+    /// Pixel rectangle (col0, row0, col1, row1) that contains the pixels visible in the display rectangle
+    /// (x0, y0, x1, y1): the pixel positions of points on the edges of the rectangle, and the points on the
+    /// image edges that are in the rectangle, with a small margin. None if no pixel is visible.
+    pub fn pixel_bbox(&self, r: [f64; 4]) -> Option<[f64; 4]> {
+        const N: usize = 16;
+        let mut b: Option<[f64; 4]> = None;
+        let mut add = |c: f64, rw: f64| {
+            b = Some(b.map_or([c, rw, c, rw], |b| [b[0].min(c), b[1].min(rw), b[2].max(c), b[3].max(rw)]));
+        };
+        let t = |k: usize| k as f64 / N as f64;
+        for k in 0..=N {
+            let (x, y) = (r[0] + (r[2] - r[0]) * t(k), r[1] + (r[3] - r[1]) * t(k));
+            for (px, py) in [(x, r[1]), (x, r[3]), (r[0], y), (r[2], y), ((r[0] + r[2]) / 2.0, y)] {
+                if let Some((c, rw)) = self.inverse(px, py) {
+                    add(c, rw);
+                }
+            }
+            let (c, rw) = (self.w * t(k), self.h * t(k));
+            for (pc, pr) in [(c, 0.0), (c, self.h), (0.0, rw), (self.w, rw)] {
+                let p = self.at(pc, pr);
+                if p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3] {
+                    add(pc, pr);
+                }
+            }
+        }
+        // Margin: the edges between the points can bend outwards.
+        b.map(|b| {
+            let (mx, my) = ((b[2] - b[0]) * 0.02 + 1.0, (b[3] - b[1]) * 0.02 + 1.0);
+            [(b[0] - mx).max(0.0), (b[1] - my).max(0.0), (b[2] + mx).min(self.w), (b[3] + my).min(self.h)]
+        })
     }
 }
 

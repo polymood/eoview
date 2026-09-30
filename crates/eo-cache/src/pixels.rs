@@ -246,6 +246,7 @@ mod tests {
             le: false,
             codecs: vec![],
             chunks: vec![ChunkLoc { src: 0, off: 0, len: 24 }],
+            place: None,
         };
         let raw: Vec<u8> = (0u16..12).flat_map(|v| v.to_be_bytes()).collect();
         let p = PlaneAt::new(&a, 1);
