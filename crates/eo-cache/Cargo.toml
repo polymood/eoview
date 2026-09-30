@@ -1,0 +1,24 @@
+[package]
+name = "eo-cache"
+description = "Caches, memory budgets and the chunk request scheduler for eoview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+eo-core.workspace = true
+eo-io.workspace = true
+bytes.workspace = true
+half.workspace = true
+bytemuck.workspace = true
+rayon.workspace = true
+tokio.workspace = true
+futures-util = "0.3"
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "open"
+harness = false

@@ -1,0 +1,20 @@
+[package]
+name = "eoview"
+description = "Fast viewer for Earth observation data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+eo-core.workspace = true
+eo-io.workspace = true
+eo-cache.workspace = true
+eo-render.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+wgpu.workspace = true
+egui-winit = "0.36"
+pollster = "1.0.1"
+rfd = "0.17.2"
+winit = "0.30.13"

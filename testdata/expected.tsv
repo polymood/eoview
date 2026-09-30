@@ -1,0 +1,128 @@
+s	u8_strips.tif	300	200	1	1	U8
+v	u8_strips.tif	0	0	0	0	192
+v	u8_strips.tif	0	0	299	199	24
+v	u8_strips.tif	0	0	150	66	101
+v	u8_strips.tif	0	0	299	0	131
+v	u8_strips.tif	0	0	0	199	83
+v	u8_strips.tif	0	0	100	100	75
+s	u16_rgb_deflate_pred2.tif	257	131	3	1	U16
+v	u16_rgb_deflate_pred2.tif	0	0	0	0	22759
+v	u16_rgb_deflate_pred2.tif	0	0	256	130	25463
+v	u16_rgb_deflate_pred2.tif	0	0	128	43	20082
+v	u16_rgb_deflate_pred2.tif	0	0	256	0	27058
+v	u16_rgb_deflate_pred2.tif	0	0	0	130	21267
+v	u16_rgb_deflate_pred2.tif	0	0	85	65	649
+v	u16_rgb_deflate_pred2.tif	0	1	0	0	22249
+v	u16_rgb_deflate_pred2.tif	0	1	256	130	25618
+v	u16_rgb_deflate_pred2.tif	0	1	128	43	20648
+v	u16_rgb_deflate_pred2.tif	0	1	256	0	26619
+v	u16_rgb_deflate_pred2.tif	0	1	0	130	20813
+v	u16_rgb_deflate_pred2.tif	0	1	85	65	292
+v	u16_rgb_deflate_pred2.tif	0	2	0	0	22438
+v	u16_rgb_deflate_pred2.tif	0	2	256	130	25623
+v	u16_rgb_deflate_pred2.tif	0	2	128	43	19699
+v	u16_rgb_deflate_pred2.tif	0	2	256	0	27593
+v	u16_rgb_deflate_pred2.tif	0	2	0	130	21271
+v	u16_rgb_deflate_pred2.tif	0	2	85	65	965
+s	f32_lzw_pred3_be.tif	200	150	1	1	F32
+v	f32_lzw_pred3_be.tif	0	0	0	0	300.6910400390625
+v	f32_lzw_pred3_be.tif	0	0	199	149	291.2244873046875
+v	f32_lzw_pred3_be.tif	0	0	100	50	280.0862121582031
+v	f32_lzw_pred3_be.tif	0	0	199	0	292.182373046875
+v	f32_lzw_pred3_be.tif	0	0	0	149	299.5718688964844
+v	f32_lzw_pred3_be.tif	0	0	66	75	273.03955078125
+v	f32_lzw_pred3_be.tif	0	0	35	15	nan
+s	i16_planar_zstd_bigtiff.tif	190	170	2	1	I16
+v	i16_planar_zstd_bigtiff.tif	0	0	0	0	9721
+v	i16_planar_zstd_bigtiff.tif	0	0	189	169	-4715
+v	i16_planar_zstd_bigtiff.tif	0	0	95	56	-13746
+v	i16_planar_zstd_bigtiff.tif	0	0	189	0	180
+v	i16_planar_zstd_bigtiff.tif	0	0	0	169	4871
+v	i16_planar_zstd_bigtiff.tif	0	0	63	85	-13741
+v	i16_planar_zstd_bigtiff.tif	0	1	0	0	11343
+v	i16_planar_zstd_bigtiff.tif	0	1	189	169	-1267
+v	i16_planar_zstd_bigtiff.tif	0	1	95	56	-9564
+v	i16_planar_zstd_bigtiff.tif	0	1	189	0	2620
+v	i16_planar_zstd_bigtiff.tif	0	1	0	169	6213
+v	i16_planar_zstd_bigtiff.tif	0	1	63	85	-10054
+s	u8_packbits.tif	100	80	1	1	U8
+v	u8_packbits.tif	0	0	0	0	180
+v	u8_packbits.tif	0	0	99	79	30
+v	u8_packbits.tif	0	0	50	26	150
+v	u8_packbits.tif	0	0	99	0	150
+v	u8_packbits.tif	0	0	0	79	60
+v	u8_packbits.tif	0	0	33	40	150
+s	cf32.tif	64	48	1	1	CF32
+v	cf32.tif	0	0:I	0	0	515.0
+v	cf32.tif	0	0:I	63	47	-503.0
+v	cf32.tif	0	0:I	32	16	835.0
+v	cf32.tif	0	0:I	63	0	224.0
+v	cf32.tif	0	0:I	0	47	-212.0
+v	cf32.tif	0	0:I	21	24	679.0
+v	cf32.tif	0	0:Q	0	0	484.0
+v	cf32.tif	0	0:Q	63	47	-156.0
+v	cf32.tif	0	0:Q	32	16	717.0
+v	cf32.tif	0	0:Q	63	0	319.0
+v	cf32.tif	0	0:Q	0	47	-6.0
+v	cf32.tif	0	0:Q	21	24	638.0
+v	cf32.tif	0	0:Amp	0	0	706.7396850585938
+v	cf32.tif	0	0:Amp	63	47	526.6355590820312
+v	cf32.tif	0	0:Amp	32	16	1100.59716796875
+v	cf32.tif	0	0:Amp	63	0	389.79095458984375
+v	cf32.tif	0	0:Amp	0	47	212.0848846435547
+v	cf32.tif	0	0:Amp	21	24	931.7107543945312
+s	cint16.tif	64	48	1	1	CI16
+v	cint16.tif	0	0:I	0	0	515.0
+v	cint16.tif	0	0:I	63	47	-503.0
+v	cint16.tif	0	0:I	32	16	835.0
+v	cint16.tif	0	0:I	63	0	224.0
+v	cint16.tif	0	0:I	0	47	-212.0
+v	cint16.tif	0	0:I	21	24	679.0
+v	cint16.tif	0	0:Q	0	0	484.0
+v	cint16.tif	0	0:Q	63	47	-156.0
+v	cint16.tif	0	0:Q	32	16	717.0
+v	cint16.tif	0	0:Q	63	0	319.0
+v	cint16.tif	0	0:Q	0	47	-6.0
+v	cint16.tif	0	0:Q	21	24	638.0
+v	cint16.tif	0	0:Amp	0	0	706.7396850585938
+v	cint16.tif	0	0:Amp	63	47	526.6355590820312
+v	cint16.tif	0	0:Amp	32	16	1100.59716796875
+v	cint16.tif	0	0:Amp	63	0	389.79095458984375
+v	cint16.tif	0	0:Amp	0	47	212.0848846435547
+v	cint16.tif	0	0:Amp	21	24	931.7107543945312
+s	cog_u16.tif	1000	800	1	3	U16
+v	cog_u16.tif	0	0	0	0	0
+v	cog_u16.tif	0	0	999	799	5847
+v	cog_u16.tif	0	0	500	266	5291
+v	cog_u16.tif	0	0	999	0	11341
+v	cog_u16.tif	0	0	0	799	3635
+v	cog_u16.tif	0	0	333	400	8535
+v	cog_u16.tif	1	0	0	0	0
+v	cog_u16.tif	1	0	499	399	5791
+v	cog_u16.tif	1	0	250	133	5191
+v	cog_u16.tif	1	0	499	0	11405
+v	cog_u16.tif	1	0	0	399	3529
+v	cog_u16.tif	1	0	166	200	8432
+v	cog_u16.tif	2	0	0	0	0
+v	cog_u16.tif	2	0	249	199	5828
+v	cog_u16.tif	2	0	125	66	5063
+v	cog_u16.tif	2	0	249	0	11538
+v	cog_u16.tif	2	0	0	199	3645
+v	cog_u16.tif	2	0	83	100	8693
+p	cog_u16.tif	0.0001	-0.1	0
+g	cog_u16.tif	500000.0 10.0 0.0 5000000.0 0.0 -10.0	32632
+s	point_4326.tif	50	40	1	1	U8
+g	point_4326.tif	10.0 0.01 0.0 50.0 0.0 -0.01	4326
+s	virt_u8.tif	1100	600	1	1	U8
+m	virt_u8.tif	1	0	0	192.0
+m	virt_u8.tif	1	549	299	225.25
+m	virt_u8.tif	1	275	100	128.75
+m	virt_u8.tif	1	549	0	252.5
+m	virt_u8.tif	1	0	299	168.5
+m	virt_u8.tif	1	183	150	209.25
+m	virt_u8.tif	2	0	0	197.0625
+m	virt_u8.tif	2	274	149	231.125
+m	virt_u8.tif	2	137	50	126.375
+m	virt_u8.tif	2	274	0	252.75
+m	virt_u8.tif	2	0	149	175.0
+m	virt_u8.tif	2	91	75	212.0

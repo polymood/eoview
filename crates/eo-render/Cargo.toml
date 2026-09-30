@@ -1,0 +1,14 @@
+[package]
+name = "eo-render"
+description = "wgpu renderer for eoview: GPU tile cache and 2D view"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+eo-cache.workspace = true
+bytemuck.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+wgpu.workspace = true
