@@ -2,8 +2,12 @@
 //!
 //! Sentinel-2 L1C and L2A: Sentinel-2 Products Specification Document (S2-PDGS-TAS-DI-PSD),
 //! <https://sentinels.copernicus.eu/documents/247904/685211/S2-PDGS-TAS-DI-PSD-V14.9.pdf>.
+//! Sentinel-3 OLCI, SLSTR, SYN Level 1 and 2: Sentinel-3 product data format specifications,
+//! <https://sentinels.copernicus.eu/web/sentinel/technical-guides/sentinel-3-olci/level-1/products>.
+//! Sentinel-1 Level 1: Sentinel-1 Product Specification (S1-RS-MDA-52-7441),
+//! <https://sentinels.copernicus.eu/documents/247904/1877131/S1-RS-MDA-52-7441-3-15_Sentinel-1_ProductSpecification.pdf>.
 use crate::xml::{attr, elems, text};
-use crate::{Dataset, Source, jp2};
+use crate::{Dataset, Source, jp2, netcdf, tiff};
 use eo_core::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -31,6 +35,10 @@ fn find(dir: &Path, prefix: &str, suffix: &str) -> Option<std::path::PathBuf> {
 pub fn kind(dir: &Path) -> Option<&'static str> {
     if find(dir, "MTD_MSIL", ".xml").is_some() {
         Some("S2")
+    } else if dir.join("manifest.safe").exists() && dir.join("measurement").is_dir() && dir.join("annotation").is_dir() {
+        Some("S1")
+    } else if dir.join("xfdumanifest.xml").exists() {
+        Some("S3")
     } else {
         None
     }
@@ -39,6 +47,8 @@ pub fn kind(dir: &Path) -> Option<&'static str> {
 pub fn open(dir: &Path, rt: &Handle) -> Result<Dataset> {
     match kind(dir) {
         Some("S2") => s2(dir, rt),
+        Some("S1") => s1(dir, rt),
+        Some("S3") => s3(dir, rt),
         _ => Err(format!("{}: unknown SAFE product", dir.display()).into()),
     }
 }
@@ -131,5 +141,124 @@ fn s2(dir: &Path, rt: &Handle) -> Result<Dataset> {
     }
     let pname = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into());
     let desc = format!("Sentinel-2 {} SAFE, {} bands, {}", if l2a { "L2A" } else { "L1C" }, vars.len(), crs.name);
+    Ok(Dataset { product: Product { name: pname, desc, vars }, sources })
+}
+
+/// Sentinel-1 Level 1 (GRD, SLC): one variable for each measurement file (polarisation, and swath for SLC).
+/// The geolocation grid of the annotation file gives the georeferencing. As GDAL, the grid uses the
+/// pixel and line values of the annotation as pixel positions.
+fn s1(dir: &Path, rt: &Handle) -> Result<Dataset> {
+    let mut files: Vec<_> = std::fs::read_dir(dir.join("measurement"))?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "tiff" || e == "tif")).collect();
+    files.sort();
+    let mut sources = vec![];
+    let mut vars = vec![];
+    for f in files {
+        let stem = f.file_stem().map_or(String::new(), |s| s.to_string_lossy().into());
+        // s1a-iw1-slc-vv-<start>-<stop>-<orbit>-<datatake>-<index>
+        let parts: Vec<&str> = stem.split('-').collect();
+        let (swath, pol) = (parts.get(1).copied().unwrap_or(""), parts.get(3).copied().unwrap_or(""));
+        let src = Source::new(&f.to_string_lossy(), rt);
+        let p = tiff::open(&src, sources.len() as u32).map_err(|e| Error(format!("{}: {e}", f.display())))?;
+        sources.push(Arc::new(src));
+        let ann = read(&dir.join("annotation").join(format!("{stem}.xml")))?;
+        let pts: Vec<(f64, f64, f64, f64)> = elems(&ann, "geolocationGridPoint")
+            .iter()
+            .filter_map(|(_, t)| {
+                let n = |k| text(t, k)?.parse::<f64>().ok();
+                Some((n("pixel")?, n("line")?, n("longitude")?, n("latitude")?))
+            })
+            .collect();
+        let mut cols: Vec<f64> = pts.iter().map(|p| p.0).collect();
+        let mut rows: Vec<f64> = pts.iter().map(|p| p.1).collect();
+        for v in [&mut cols, &mut rows] {
+            v.sort_by(f64::total_cmp);
+            v.dedup();
+        }
+        let georef = if cols.len() * rows.len() == pts.len() {
+            let (mut lon, mut lat) = (vec![f64::NAN; pts.len()], vec![f64::NAN; pts.len()]);
+            for p in &pts {
+                let (i, j) = (cols.partition_point(|&c| c < p.0), rows.partition_point(|&r| r < p.1));
+                lon[j * cols.len() + i] = p.2;
+                lat[j * cols.len() + i] = p.3;
+            }
+            Georef::Grid { cols, rows, lon, lat }
+        } else {
+            eprintln!("{}: geolocation grid is not regular", f.display());
+            Georef::None
+        };
+        let swath_up = swath.to_uppercase();
+        let name = if swath_up.len() > 2 && swath_up[2..].chars().all(|c| c.is_ascii_digit()) { format!("{swath_up} {}", pol.to_uppercase()) } else { pol.to_uppercase() };
+        let mut v = p.vars.into_iter().next().ok_or("empty measurement file")?;
+        v.bands = if v.bands.len() == 1 { vec![name.clone()] } else { v.bands };
+        v.name = name;
+        v.georef = georef;
+        v.fill = Some(0.0);
+        vars.push(v);
+    }
+    if vars.is_empty() {
+        return Err("Sentinel-1 product without measurement files".into());
+    }
+    let pname = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into());
+    let kind = pname.split('_').filter(|s| !s.is_empty()).skip(1).take(2).collect::<Vec<_>>().join(" ");
+    let desc = format!("Sentinel-1 {kind} SAFE, {} measurement(s), {:?}", vars.len(), vars[0].levels[0].dtype);
+    Ok(Dataset { product: Product { name: pname, desc, vars }, sources })
+}
+
+/// Sentinel-3: the variables of all NetCDF files. A name that is in two files gets the file name first.
+/// Geolocation arrays of the same shape give the georeferencing (geo_coordinates.nc for OLCI, geodetic_*.nc
+/// for SLSTR; the tie-point files have their own latitude and longitude).
+fn s3(dir: &Path, rt: &Handle) -> Result<Dataset> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "nc")).collect();
+    // Full-resolution geolocation files first: their variables keep the short names.
+    files.sort_by_key(|p| {
+        let n = p.file_name().unwrap().to_string_lossy().to_string();
+        (!(n.starts_with("geo_coordinates") || n.starts_with("geodetic")), n)
+    });
+    let mut sources = vec![];
+    let mut vars: Vec<Variable> = vec![];
+    let mut per_file = vec![];
+    for f in files {
+        let src = Source::new(&f.to_string_lossy(), rt);
+        let idx = sources.len() as u32;
+        match netcdf::variables(&src, idx) {
+            Ok((mut v, one_d)) => {
+                let stem = f.file_stem().map_or(String::new(), |s| s.to_string_lossy().into());
+                for x in &mut v {
+                    if vars.iter().any(|o| o.name == x.name) {
+                        x.name = format!("{stem}/{}", x.name);
+                    }
+                }
+                per_file.push((idx, vars.len(), v.len(), one_d));
+                vars.extend(v);
+                sources.push(std::sync::Arc::new(src));
+            }
+            Err(e) => eprintln!("{}: {e}", f.display()),
+        }
+    }
+    // Georeferencing: the geolocation variables of the same file first, then of all files.
+    for (idx, first, n, one_d) in &per_file {
+        for k in *first..first + n {
+            let file_vars: Vec<Variable> = vars[*first..first + n].to_vec();
+            let mut g = netcdf::georef(&sources[*idx as usize], &vars[k], one_d, &file_vars);
+            if g == Georef::None {
+                g = netcdf::georef(&sources[*idx as usize], &vars[k], &[], &vars);
+            }
+            vars[k].georef = g;
+        }
+    }
+    if vars.is_empty() {
+        return Err("Sentinel-3 product without variables".into());
+    }
+    // Radiances and reflectances first (the default layer is the first variable).
+    let rank = |v: &Variable| if v.name.contains("radiance") && !v.name.contains("unc") { 0 } else if v.name.contains("reflectance") { 1 } else { 2 };
+    let order: Vec<usize> = {
+        let mut o: Vec<usize> = (0..vars.len()).collect();
+        o.sort_by_key(|&i| (rank(&vars[i]), vars[i].name.clone()));
+        o
+    };
+    let vars: Vec<Variable> = order.into_iter().map(|i| vars[i].clone()).collect();
+    let pname = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into());
+    let kind = pname.split('_').filter(|s| !s.is_empty()).skip(1).take(3).collect::<Vec<_>>().join(" ");
+    let desc = format!("Sentinel-3 {kind} SAFE, {} variables", vars.len());
     Ok(Dataset { product: Product { name: pname, desc, vars }, sources })
 }

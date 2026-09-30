@@ -1,6 +1,8 @@
 //! Format readers, byte sources and codecs. A reader only describes the chunks of a product.
 //! The chunk engine in `eo-cache` reads and decodes them.
 mod blosc;
+pub mod hdf5;
+pub mod netcdf;
 pub mod codec;
 mod jp2;
 pub mod safe;
@@ -51,8 +53,19 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         let desc = format!("JPEG 2000 {:?}, {w} x {h}, {} level(s)", levels[0].dtype, levels.len());
         let var = Variable { name: name.clone(), levels, bands, fill: None, scale: 1.0, offset: 0.0, units: String::new(), georef: Georef::None };
         Product { name, desc, vars: vec![var] }
+    } else if head.starts_with(&[0x89, b'H', b'D', b'F']) {
+        let (mut vars, one_d) = netcdf::variables(&src, 0)?;
+        let all = vars.clone();
+        for v in &mut vars {
+            v.georef = netcdf::georef(&src, v, &one_d, &all);
+        }
+        if vars.is_empty() {
+            return Err(format!("{url}: no dataset with 2 or more dimensions").into());
+        }
+        let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len());
+        Product { name, desc, vars }
     } else {
-        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000 or SAFE expected)").into());
+        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NetCDF-4, HDF5, Zarr or SAFE expected)").into());
     };
     Ok(Dataset { product, sources: vec![Arc::new(src)] })
 }
