@@ -28,13 +28,14 @@ pub fn is_tiff(head: &[u8]) -> bool {
 /// Reader for the header. For a remote source, it gets aligned blocks and keeps them.
 struct Rd<'a> {
     src: &'a Source,
+    len: u64,
     le: bool,
     blocks: Mutex<HashMap<u64, Bytes>>,
 }
 
 impl Rd<'_> {
     fn bytes(&self, off: u64, n: u64) -> Result<Bytes> {
-        let end = off.checked_add(n).filter(|&e| e <= self.src.len()).ok_or("TIFF value is after end of file")?;
+        let end = off.checked_add(n).filter(|&e| e <= self.len).ok_or("TIFF value is after end of file")?;
         if self.src.is_local() {
             return self.src.read(off..end);
         }
@@ -44,7 +45,7 @@ impl Rd<'_> {
             if let Some(b) = m.get(&b0) {
                 return Ok(b.slice((off - b0 * BLOCK) as usize..(end - b0 * BLOCK) as usize));
             }
-            let b = self.src.read(b0 * BLOCK..((b0 + 1) * BLOCK).min(self.src.len()))?;
+            let b = self.src.read(b0 * BLOCK..((b0 + 1) * BLOCK).min(self.len))?;
             let s = b.slice((off - b0 * BLOCK) as usize..(end - b0 * BLOCK) as usize);
             m.insert(b0, b);
             return Ok(s);
@@ -129,14 +130,15 @@ fn read_ifd(rd: &Rd, big: bool, at: u64) -> Result<(Ifd, u64)> {
     Ok((tags, next))
 }
 
-/// Open a TIFF source as a product with one variable.
-pub fn open(src: &Source) -> Result<Product> {
-    let head = src.read(0..16.min(src.len()))?;
+/// Open a TIFF source as a product with one variable. `idx` is the index of `src` in the sources of the dataset.
+pub fn open(src: &Source, idx: u32) -> Result<Product> {
+    let len = src.len()?;
+    let head = src.read(0..16.min(len))?;
     if !is_tiff(&head) {
         return Err("not a TIFF file".into());
     }
     let le = head[0] == b'I';
-    let rd = Rd { src, le, blocks: Default::default() };
+    let rd = Rd { src, len, le, blocks: Default::default() };
     let big = rd.uint(&head[2..4]) == 43;
     let mut next = if big { rd.uint(&head[8..16]) } else { rd.uint(&head[4..8]) };
     let mut ifds = Vec::new();
@@ -149,11 +151,11 @@ pub fn open(src: &Source) -> Result<Product> {
     let one = |ifd: &Ifd, t: u16, d: u64| ifd.get(&t).and_then(|v| v.uints(&rd).first().copied()).unwrap_or(d);
     // Overviews: reduced-resolution images (bit 0) that are not masks (bit 2), with the same pixel layout.
     let same = |a: &Ifd| [258, 277, 339, 284].iter().all(|&t| one(a, t, 1) == one(first, t, 1));
-    let mut levels = vec![array(&rd, first)?];
+    let mut levels = vec![array(&rd, first, idx)?];
     for ifd in &ifds[1..] {
         let kind = one(ifd, 254, 0);
         if kind & 1 == 1 && kind & 4 == 0 && same(ifd) {
-            match array(&rd, ifd) {
+            match array(&rd, ifd, idx) {
                 Ok(a) => levels.push(a),
                 Err(e) => eprintln!("{}: overview ignored: {e}", src.name()),
             }
@@ -162,7 +164,7 @@ pub fn open(src: &Source) -> Result<Product> {
     levels.sort_by_key(|a| std::cmp::Reverse(a.len_of("x")));
     for a in &levels {
         a.validate()?;
-        if let Some(c) = a.chunks.iter().find(|c| c.off + c.len > src.len()) {
+        if let Some(c) = a.chunks.iter().find(|c| c.off + c.len > len) {
             return Err(format!("chunk at {} (+{}) is after end of file", c.off, c.len).into());
         }
     }
@@ -196,7 +198,7 @@ pub fn open(src: &Source) -> Result<Product> {
     Ok(Product { name, desc, vars: vec![var] })
 }
 
-fn array(rd: &Rd, ifd: &Ifd) -> Result<Array> {
+fn array(rd: &Rd, ifd: &Ifd, src: u32) -> Result<Array> {
     let one = |t: u16, d: u64| ifd.get(&t).and_then(|v| v.uints(rd).first().copied()).unwrap_or(d);
     let (w, h) = (one(256, 0), one(257, 0));
     let (bps, spp, sfmt, planar) = (one(258, 1), one(277, 1), one(339, 1), one(284, 1));
@@ -233,7 +235,7 @@ fn array(rd: &Rd, ifd: &Ifd) -> Result<Array> {
         (w, one(278, h).min(h), 273, 279)
     };
     let get = |t| ifd.get(&t).map(|v| v.uints(rd)).ok_or("TIFF without chunk offsets or sizes");
-    let chunks = get(ot)?.into_iter().zip(get(lt)?).map(|(off, len)| ChunkLoc { src: 0, off, len }).collect();
+    let chunks = get(ot)?.into_iter().zip(get(lt)?).map(|(off, len)| ChunkLoc { src, off, len }).collect();
     let chunky = planar == 1 && spp > 1;
     let (dims, shape, chunk) = match (spp, chunky) {
         (1, _) => (vec!["y", "x"], vec![h, w], vec![ch, cw]),

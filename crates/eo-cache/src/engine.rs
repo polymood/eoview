@@ -6,9 +6,10 @@
 use crate::Lru;
 use crate::pixels::*;
 use bytes::Bytes;
+use eo_core::geo::Warp;
 use eo_core::*;
 use eo_io::{Dataset, codec};
-use futures_util::future::{BoxFuture, FutureExt, Shared, join_all};
+use futures_util::future::{BoxFuture, FutureExt, WeakShared, join_all};
 use futures_util::stream::{self, StreamExt};
 use rayon::prelude::*;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -66,6 +67,9 @@ pub struct Layer {
     pub enc: Enc,
     /// Sorted sample of physical values (finite, not the fill value).
     pub sample: Vec<f32>,
+    /// The same sample, not sorted, with NaN for no data. Two layers with the same grid have their
+    /// values at the same pixels: band math can use pairs of values.
+    pub sample_at: Vec<f32>,
 }
 
 impl Layer {
@@ -163,6 +167,8 @@ pub enum Event {
     Tile { key: TileKey, w: u32, h: u32, px: Arc<Pixels>, done: bool },
     /// Physical values of all bands at level-0 pixel (x, y). `None` is no data.
     Probe { layer: u64, x: u64, y: u64, values: Vec<Option<f64>> },
+    /// Warp grid of a layer to a display CRS (EPSG code; None: pixel space).
+    Warp { layer: u64, dst: Option<u32>, res: Result<Arc<Warp>> },
     Error(String),
 }
 
@@ -184,7 +190,7 @@ enum DecKey {
 }
 
 type Planes = std::result::Result<Arc<Vec<Arc<Pixels>>>, Error>;
-type Batch = Shared<BoxFuture<'static, Planes>>;
+
 
 #[derive(Default)]
 struct Sched {
@@ -204,9 +210,12 @@ struct Inner {
     raw: Mutex<Lru<(u64, u32, u64), Bytes>>,
     /// Display planes of chunks, and generated overview tiles.
     dec: Mutex<Lru<DecKey, Arc<Pixels>>>,
-    inflight: Mutex<HashMap<DecKey, (Batch, usize)>>,
+    /// Reads in progress. Weak: when all tiles that wait for a read are cancelled, the read stops.
+    inflight: Mutex<HashMap<DecKey, (WeakShared<BoxFuture<'static, Planes>>, usize)>>,
     /// Decoded level-0 chunks for the pixel inspector.
     probe: Mutex<Lru<(u64, usize, usize), Bytes>>,
+    /// Geolocation grids read from arrays, by (dataset, variable).
+    grids: Mutex<HashMap<(u64, usize), Georef>>,
     sched: Mutex<Sched>,
     ids: Mutex<HashMap<(u64, usize, usize), u64>>,
     next: AtomicU64,
@@ -289,6 +298,7 @@ impl Engine {
             dec: Mutex::new(Lru::new(ram / 2)),
             inflight: Default::default(),
             probe: Mutex::new(Lru::new(ram / 16)),
+            grids: Default::default(),
             sched: Default::default(),
             ids: Default::default(),
             next: AtomicU64::new(1),
@@ -340,6 +350,22 @@ impl Engine {
         });
     }
 
+    /// Make the warp grid of `l` to the display CRS `dst` (EPSG code; None: pixel space).
+    /// The result comes as `Event::Warp`.
+    pub fn warp(&self, l: Arc<Layer>, dst: Option<u32>) {
+        let i = self.inner.clone();
+        self.rt.spawn_blocking(move || {
+            let (w, h) = l.size();
+            let res = i.georef(&l).and_then(|g| Warp::new(&g, w as f64, h as f64, dst)).map(Arc::new);
+            i.send(Event::Warp { layer: l.id, dst, res });
+        });
+    }
+
+    /// Georeferencing of `l`, with the geolocation arrays read (blocks).
+    pub fn georef(&self, l: &Layer) -> Result<Georef> {
+        self.inner.georef(l)
+    }
+
     pub fn stats(&self) -> Stats {
         let i = &self.inner;
         let s = i.sched.lock().unwrap();
@@ -368,6 +394,62 @@ impl Inner {
 
     /// Run `f` on the decode pool. Rayon has no priorities: each spawn runs the most important job of the
     /// queue at that time. `prio` is the rank of the tile in the lists of the UI (0 is the most important).
+    /// Georeferencing of a layer. Geolocation arrays become a grid (read once, then kept).
+    fn georef(&self, l: &Layer) -> Result<Georef> {
+        let Georef::Arrays { lon, lat, step, off } = &l.var().georef else { return Ok(l.var().georef.clone()) };
+        if let Some(g) = self.grids.lock().unwrap().get(&(l.ds_id, l.var)) {
+            return Ok(g.clone());
+        }
+        let p = &l.ds.product;
+        let find = |n: &str| p.vars.iter().position(|v| v.name == *n).ok_or_else(|| Error(format!("no geolocation variable {n}")));
+        let (vlon, vlat) = (find(lon)?, find(lat)?);
+        let a = &p.vars[vlon].levels[0];
+        let (w, h) = (a.len_of("x"), a.len_of("y"));
+        // About 256 nodes on the long side, and the last row and column.
+        let s = w.max(h).div_ceil(256).max(1);
+        let idx = |n: u64| -> Vec<u64> { (0..n).step_by(s as usize).chain(((n - 1) % s != 0).then_some(n - 1)).collect() };
+        let (is, js) = (idx(w), idx(h));
+        let lonv = self.rt.block_on(self.points(&l.ds, l.ds_id, vlon, &is, &js))?;
+        let latv = self.rt.block_on(self.points(&l.ds, l.ds_id, vlat, &is, &js))?;
+        let g = Georef::Grid {
+            cols: is.iter().map(|&i| off[0] + i as f64 * step[0]).collect(),
+            rows: js.iter().map(|&j| off[1] + j as f64 * step[1]).collect(),
+            lon: lonv,
+            lat: latv,
+        };
+        self.grids.lock().unwrap().insert((l.ds_id, l.var), g.clone());
+        Ok(g)
+    }
+
+    /// Physical values of variable `var` (level 0, band 0) at columns `is` and rows `js`, in row order.
+    async fn points(&self, ds: &Arc<Dataset>, ds_id: u64, var: usize, is: &[u64], js: &[u64]) -> Result<Vec<f64>> {
+        let v = &ds.product.vars[var];
+        let a = &v.levels[0];
+        let (ch, cw) = chunk_size(a);
+        let mut cells: Vec<(u64, u64)> = js.iter().flat_map(|j| is.iter().map(move |i| (j / ch, i / cw))).collect();
+        cells.sort_unstable();
+        cells.dedup();
+        let locs: Vec<ChunkLoc> = cells.iter().map(|&(cy, cx)| a.chunks[chunk_at(a, 0, cy, cx)]).collect();
+        let raws = self.raw_ds(ds, ds_id, &locs).await?;
+        let (a, v2, is, js) = (a.clone(), v.clone(), is.to_vec(), js.to_vec());
+        self.on_pool(0, move || {
+            let dec: Vec<Result<std::borrow::Cow<[u8]>>> = raws.par_iter().map(|r| if r.is_empty() { Ok(Default::default()) } else { readable(&a, r) }).collect();
+            let p = PlaneAt::new(&a, 0);
+            let mut out = Vec::with_capacity(is.len() * js.len());
+            for &j in &js {
+                for &i in &is {
+                    let k = cells.binary_search(&(j / ch, i / cw)).unwrap();
+                    let d = dec[k].as_ref().map_err(Clone::clone)?;
+                    let e = p.base + (j % ch) as usize * p.sy + (i % cw) as usize * p.sx;
+                    let x = if (e + 1) * a.dtype.size() <= d.len() { value_f64(&a, d, e, Part::Real) } else { f64::NAN };
+                    out.push(if x.is_finite() && Some(x) != v2.fill { x * v2.scale + v2.offset } else { f64::NAN });
+                }
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     async fn on_pool<T: Send + 'static>(&self, prio: u32, f: impl FnOnce() -> T + Send + 'static) -> T {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let f = Box::new(move || {
@@ -402,20 +484,25 @@ impl Inner {
             part,
             enc: Enc { u8: false, k: 1.0, off: 0.0 },
             sample: vec![],
+            sample_at: vec![],
         };
         l.ds.sources.iter().for_each(|s| s.sparse(true));
         let raw = self.rt.block_on(self.sample(&l));
         l.ds.sources.iter().for_each(|s| s.sparse(false));
         let raw = raw?;
-        l.enc = choose_enc(l.var().levels[0].dtype, part, &raw);
+        let mut sorted: Vec<f32> = raw.iter().copied().filter(|x| x.is_finite()).collect();
+        sorted.sort_unstable_by(f32::total_cmp);
+        l.enc = choose_enc(l.var().levels[0].dtype, part, &sorted);
         let v = l.var();
         let (s, o) = if part == Part::Amp || part == Part::Phase { (1.0, 0.0) } else { (v.scale as f32, v.offset as f32) };
-        l.sample = raw.into_iter().map(|r| r * s + o).collect();
+        l.sample_at = raw.into_iter().map(|r| r * s + o).collect();
+        l.sample = sorted.into_iter().map(|r| r * s + o).collect();
         l.sample.sort_unstable_by(f32::total_cmp);
         Ok(Arc::new(l))
     }
 
     /// Sample of raw values: spaced values of all chunks of the coarsest level, or of 16 chunks spread over it.
+    /// NaN for no data. The positions depend only on the grid of the level.
     async fn sample(&self, l: &Layer) -> Result<Vec<f32>> {
         let v = l.var();
         let a = v.levels.last().unwrap();
@@ -434,46 +521,35 @@ impl Inner {
                 .par_iter()
                 .zip(&raws)
                 .map(|(&(cy, cx), raw)| {
-                    if raw.is_empty() {
-                        return Ok(vec![]);
-                    }
-                    let d = readable(&a, raw)?;
                     // Only the pixels inside the array: edge chunks have padding.
                     let (rows, cols) = ((h - cy * ch).min(ch) as usize, (w - cx * cw).min(cw) as usize);
                     // Up to 64 spaced rows, 16 short runs of adjacent values in each row: few memory pages
                     // of a large uncompressed chunk. The rows go to all threads: page faults wait in parallel.
                     let nr = rows.min(64);
                     let run = (per / (nr * 16)).clamp(1, cols.div_ceil(16));
-                    let (d, a) = (&d, &a);
-                    let vals: Vec<Vec<f32>> = (0..nr)
-                        .into_par_iter()
-                        .map(|k| {
-                            let r = k * rows / nr;
-                            let mut out = Vec::with_capacity(16 * run);
-                            for s in 0..16 {
-                                let c0 = s * cols / 16;
-                                let win = Win { r0: r, r1: r + 1, c0, c1: (c0 + run).min(cols) };
-                                if win.w() == 0 || !p.covers(a, d.len(), &win) {
-                                    continue;
-                                }
-                                for c in win.c0..win.c1 {
-                                    let x = value_f64(a, d, p.base + r * p.sy + c * p.sx, part);
-                                    if x.is_finite() && Some(x) != fill {
-                                        out.push(x as f32);
-                                    }
-                                }
-                            }
-                            out
-                        })
+                    let pos: Vec<(usize, usize)> = (0..nr)
+                        .flat_map(|k| (0..16).flat_map(move |s| (s * cols / 16..(s * cols / 16 + run).min(cols)).map(move |c| (k * rows / nr, c))))
                         .collect();
-                    Ok(vals.concat())
+                    if raw.is_empty() {
+                        return Ok(vec![f32::NAN; pos.len()]);
+                    }
+                    let d = readable(&a, raw)?;
+                    let (d, a) = (&d, &a);
+                    Ok(pos
+                        .par_iter()
+                        .with_min_len(64)
+                        .map(|&(r, c)| {
+                            let i = p.base + r * p.sy + c * p.sx;
+                            let x = if (i + 1) * a.dtype.size() <= d.len() { value_f64(a, d, i, part) } else { f64::NAN };
+                            if x.is_finite() && Some(x) != fill { x as f32 } else { f32::NAN }
+                        })
+                        .collect())
                 })
                 .collect();
             let mut out = vec![];
             for p in parts {
                 out.extend(p?);
             }
-            out.sort_unstable_by(f32::total_cmp);
             Ok(out)
         })
         .await
@@ -481,31 +557,49 @@ impl Inner {
 
     /// Encoded bytes of chunks. Local data is not copied. Remote data goes through the raw byte cache.
     async fn raw_many(&self, l: &Layer, locs: &[ChunkLoc]) -> Result<Vec<Bytes>> {
+        self.raw_ds(&l.ds, l.ds_id, locs).await
+    }
+
+    async fn raw_ds(&self, ds: &Dataset, ds_id: u64, locs: &[ChunkLoc]) -> Result<Vec<Bytes>> {
         let mut out = vec![Bytes::new(); locs.len()];
-        let mut miss: HashMap<u32, Vec<usize>> = HashMap::new();
+        let (mut miss, mut whole): (HashMap<u32, Vec<usize>>, Vec<usize>) = (HashMap::new(), vec![]);
+        let mut local = vec![];
         {
             let mut raw = self.raw.lock().unwrap();
             for (i, c) in locs.iter().enumerate() {
-                let s = l.ds.sources.get(c.src as usize).ok_or("bad source index")?;
+                let s = ds.sources.get(c.src as usize).ok_or("bad source index")?;
                 if c.len == 0 {
                     continue;
                 } else if s.is_local() {
-                    out[i] = s.read(c.off..c.off + c.len)?;
-                } else if let Some(b) = raw.get(&(l.ds_id, c.src, c.off)) {
+                    local.push(i);
+                } else if let Some(b) = raw.get(&(ds_id, c.src, c.off)) {
                     out[i] = b.clone();
+                } else if c.len == ChunkLoc::WHOLE {
+                    whole.push(i);
                 } else {
                     miss.entry(c.src).or_default().push(i);
                 }
             }
         }
+        // A missing object (a Zarr chunk that was not written) gives empty bytes: the fill value.
+        for i in local {
+            let (c, s) = (locs[i], &ds.sources[locs[i].src as usize]);
+            out[i] = if c.len == ChunkLoc::WHOLE { s.get_whole().await?.unwrap_or_default() } else { s.read(c.off..c.off + c.len)? };
+        }
+        let got = join_all(whole.iter().map(|&i| ds.sources[locs[i].src as usize].get_whole())).await;
+        let mut fetched: Vec<(usize, Bytes)> = vec![];
+        for (&i, b) in whole.iter().zip(got) {
+            fetched.push((i, b?.unwrap_or_default()));
+        }
         for (src, idx) in miss {
             let ranges: Vec<_> = idx.iter().map(|&i| locs[i].off..locs[i].off + locs[i].len).collect();
-            let got = l.ds.sources[src as usize].get_ranges(&ranges).await?;
-            let mut raw = self.raw.lock().unwrap();
-            for (&i, b) in idx.iter().zip(got) {
-                raw.insert((l.ds_id, src, locs[i].off), b.clone(), b.len());
-                out[i] = b;
-            }
+            let got = ds.sources[src as usize].get_ranges(&ranges).await?;
+            fetched.extend(idx.into_iter().zip(got));
+        }
+        let mut raw = self.raw.lock().unwrap();
+        for (i, b) in fetched {
+            raw.insert((ds_id, locs[i].src, locs[i].off), b.clone(), b.len());
+            out[i] = b;
         }
         Ok(out)
     }
@@ -521,8 +615,8 @@ impl Inner {
                 let k = DecKey::Chunk { layer: l.id, lvl, idx };
                 if let Some(p) = dec.get(&k) {
                     out[i] = Some(p.clone());
-                } else if let Some((b, j)) = inf.get(&k) {
-                    waits.push((i, b.clone(), *j));
+                } else if let Some((b, j)) = inf.get(&k).and_then(|(b, j)| Some((b.upgrade()?, *j))) {
+                    waits.push((i, b, j));
                 } else {
                     claim.push((i, idx));
                 }
@@ -531,7 +625,7 @@ impl Inner {
                 let ci: Vec<usize> = claim.iter().map(|c| c.1).collect();
                 let b = self.clone().batch(l.clone(), lvl, ci, prio).boxed().shared();
                 for (j, &(i, idx)) in claim.iter().enumerate() {
-                    inf.insert(DecKey::Chunk { layer: l.id, lvl, idx }, (b.clone(), j));
+                    inf.insert(DecKey::Chunk { layer: l.id, lvl, idx }, (b.downgrade().unwrap(), j));
                     waits.push((i, b.clone(), j));
                 }
             }

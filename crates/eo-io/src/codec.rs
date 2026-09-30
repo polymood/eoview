@@ -1,5 +1,6 @@
 //! Chunk decoders. The code comes from radview.
 use eo_core::{Array, Codec, Error, Result};
+use std::ops::Add;
 use std::borrow::Cow;
 
 /// Largest decoded chunk.
@@ -18,40 +19,95 @@ pub fn decode<'a>(a: &Array, src: &'a [u8]) -> Result<Cow<'a, [u8]>> {
     if need > MAX_CHUNK {
         return Err(Error(format!("chunk of {} MB is too large to decode (limit {} MB)", need >> 20, MAX_CHUNK >> 20)));
     }
-    let mut out = vec![0u8; need];
-    let mut first = true;
+    let mut cur: Cow<[u8]> = Cow::Borrowed(src);
     for c in &a.codecs {
-        let res = match c {
-            Codec::Predictor { kind, stride, row } => {
-                if first {
-                    let n = src.len().min(need);
-                    out[..n].copy_from_slice(&src[..n]);
-                }
-                let rb = *row as usize * a.dtype.part().size();
-                for r in out.chunks_exact_mut(rb) {
-                    unpredict(*kind, a.dtype.part().size(), *stride as usize, a.le, r);
-                }
-                Ok(())
-            }
-            _ if !first => Err(Error(format!("{c:?} must be the first codec"))),
-            Codec::Deflate => {
-                libdeflater::Decompressor::new().zlib_decompress(src, &mut out).map(drop).map_err(|e| Error(e.to_string()))
-            }
-            Codec::Zstd => zstd::bulk::decompress_to_buffer(src, &mut out).map(drop).map_err(|e| Error(e.to_string())),
-            Codec::Lzw => lzw(src, &mut out),
-            Codec::PackBits => {
-                packbits(src, &mut out);
-                Ok(())
-            }
-        };
-        res.map_err(|e| Error(format!("{c:?}: {e}")))?;
-        first = false;
+        cur = step(a, c, cur, need).map_err(|e| Error(format!("{c:?}: {e}")))?;
     }
-    if first {
-        let n = src.len().min(need);
-        out[..n].copy_from_slice(&src[..n]);
-    }
+    let mut out = cur.into_owned();
+    out.resize(need, 0);
     Ok(Cow::Owned(out))
+}
+
+/// Output buffer of a decompressor: `need` bytes, then cut to the decoded size.
+fn inflate(need: usize, f: impl FnOnce(&mut [u8]) -> std::result::Result<usize, String>) -> Result<Vec<u8>> {
+    let mut out = vec![0u8; need];
+    let n = f(&mut out)?;
+    out.truncate(n);
+    Ok(out)
+}
+
+fn step<'a>(a: &Array, c: &Codec, cur: Cow<'a, [u8]>, need: usize) -> Result<Cow<'a, [u8]>> {
+    let s = &cur[..];
+    let es = a.dtype.part().size();
+    let owned = |v: Vec<u8>| Ok(Cow::Owned(v));
+    match c {
+        Codec::Deflate => owned(inflate(need, |o| libdeflater::Decompressor::new().zlib_decompress(s, o).map_err(|e| e.to_string()))?),
+        Codec::Gzip => owned(inflate(need, |o| libdeflater::Decompressor::new().gzip_decompress(s, o).map_err(|e| e.to_string()))?),
+        Codec::Zstd => owned(inflate(need, |o| zstd::bulk::decompress_to_buffer(s, o).map_err(|e| e.to_string()))?),
+        Codec::Lzw => owned(inflate(need, |o| lzw(s, o).map(|_| o.len()).map_err(|e| e.0))?),
+        Codec::PackBits => owned(inflate(need, |o| Ok(packbits(s, o)))?),
+        Codec::Lz4 { header } => {
+            let s = if *header { s.get(4..).ok_or("truncated LZ4 data")? } else { s };
+            owned(inflate(need, |o| lz4_flex::block::decompress_into(s, o).map_err(|e| e.to_string()))?)
+        }
+        Codec::Blosc => owned(crate::blosc::decode(s)?),
+        Codec::Shuffle { size } => {
+            let mut o = vec![0u8; s.len()];
+            crate::blosc::unshuffle(s, &mut o, *size as usize);
+            owned(o)
+        }
+        Codec::Checksum => Ok(match cur {
+            Cow::Borrowed(b) => Cow::Borrowed(&b[..b.len().saturating_sub(4)]),
+            Cow::Owned(mut v) => {
+                v.truncate(v.len().saturating_sub(4));
+                Cow::Owned(v)
+            }
+        }),
+        Codec::Delta => {
+            let mut v = cur.into_owned();
+            v.resize(need, 0);
+            delta(a, &mut v);
+            owned(v)
+        }
+        Codec::Predictor { kind, stride, row } => {
+            let mut v = cur.into_owned();
+            v.resize(need, 0);
+            for r in v.chunks_exact_mut(*row as usize * es) {
+                unpredict(*kind, es, *stride as usize, a.le, r);
+            }
+            owned(v)
+        }
+        Codec::Jpeg2000 { reduce, header } => owned(crate::jp2::decode_tile(a, s, *reduce, header)?),
+    }
+}
+
+/// Undo the numcodecs delta filter: cumulative sum of the values.
+fn delta(a: &Array, v: &mut [u8]) {
+    macro_rules! go {
+        ($t:ty, $add:ident) => {{
+            const N: usize = std::mem::size_of::<$t>();
+            let (g, p): (fn([u8; N]) -> $t, fn($t) -> [u8; N]) =
+                if a.le { (<$t>::from_le_bytes, <$t>::to_le_bytes) } else { (<$t>::from_be_bytes, <$t>::to_be_bytes) };
+            let mut acc = <$t>::default();
+            for c in v.chunks_exact_mut(N) {
+                acc = acc.$add(g(c.try_into().unwrap()));
+                c.copy_from_slice(&p(acc));
+            }
+        }};
+    }
+    use eo_core::DType::*;
+    match a.dtype.part() {
+        U8 => go!(u8, wrapping_add),
+        I8 => go!(i8, wrapping_add),
+        U16 => go!(u16, wrapping_add),
+        I16 => go!(i16, wrapping_add),
+        U32 => go!(u32, wrapping_add),
+        I32 => go!(i32, wrapping_add),
+        U64 => go!(u64, wrapping_add),
+        I64 => go!(i64, wrapping_add),
+        F32 => go!(f32, add),
+        _ => go!(f64, add),
+    }
 }
 
 fn lzw(src: &[u8], out: &mut [u8]) -> Result<()> {
@@ -102,7 +158,7 @@ fn unpredict(kind: u16, s: usize, n: usize, le: bool, row: &mut [u8]) {
     }
 }
 
-fn packbits(src: &[u8], out: &mut [u8]) {
+fn packbits(src: &[u8], out: &mut [u8]) -> usize {
     let (mut i, mut o) = (0, 0);
     while i < src.len() && o < out.len() {
         let n = src[i] as i8;
@@ -119,6 +175,7 @@ fn packbits(src: &[u8], out: &mut [u8]) {
             o += k;
         }
     }
+    o
 }
 
 #[cfg(test)]

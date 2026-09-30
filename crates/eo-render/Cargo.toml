@@ -12,3 +12,4 @@ bytemuck.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 wgpu.workspace = true
+pollster = "1.0.1"

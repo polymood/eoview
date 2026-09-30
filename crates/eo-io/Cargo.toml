@@ -16,3 +16,5 @@ object_store = { version = "0.14.2", default-features = false, features = ["http
 url = "2"
 weezl = "0.2.1"
 zstd = "0.14.0"
+lz4_flex = "0.14.0"
+jpeg2k = { version = "0.10", default-features = false, features = ["openjpeg-sys"] }
