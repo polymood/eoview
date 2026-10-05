@@ -46,6 +46,7 @@ Each product opens in its own view. With more than one product, the layout chang
 | Action | How |
 |---|---|
 | Open products in the view under the mouse | Drop the files on the view, or **Open** (Ctrl+O). More files open in more views |
+| Open product directories (SAFE, SEN3, Zarr) | Drop the directory on the view, or **Open folder** (Ctrl+Alt+O). **Open** also accepts a file in the directory, for example `manifest.safe` or `xfdumanifest.xml` |
 | Add products as layers of a view | Shift + drop, or **Add layer** (Ctrl+Shift+O) |
 | Save the workspace | **Save** (Ctrl+S) |
 | Open a workspace | **Load**, Ctrl+O, or drop the `.eoview` file |
@@ -107,7 +108,8 @@ letters in order (for example `ndvi`, `b8a`, `vir`), then Enter.
 
 ### Side panel
 
-- **Display**: one band, an RGB composite, or band math. The fields accept expressions of the band names, for example `(B08 - B04) / (B08 + B04)`. Operators: `+ - * / ^`, functions: `abs sqrt ln log10 exp sin cos min max pow atan2 clamp`. The GPU computes the expressions. Presets: true color, false color, NDVI, NDWI, dual-polarization SAR, OLCI true color.
+- **Display**: one band, an RGB composite, or band math. The fields accept expressions of the band names, for example `(B08 - B04) / (B08 + B04)`. Operators: `+ - * / ^`, functions: `abs sqrt ln log10 exp sin cos min max pow atan2 clamp`. The GPU computes the expressions. Presets: true color, false color, NDVI, NDWI, dual-polarization SAR, OLCI true color, TCI.
+- **Color images**: a file with 3 bands (or 4 bands of 8 bits) opens as an RGB composite. If the bands have 8 bits, the pixels are colors: the view shows them without a stretch and without a color map (for example a Sentinel-2 TCI file, or the **TCI** preset of a Sentinel-2 product). **As is** sets this state again after a stretch.
 - **Stretch**: a histogram for each channel. Drag the limits, or drag between them to move both. Double-click: automatic stretch. Minimum, maximum, gamma and dB scale for each channel, automatic clip percentage.
 - **Color map**: one click on a swatch. Invert, edit the colors.
 - **Inspector**: the values of all bands of each layer under the cursor, with units and the fill value.

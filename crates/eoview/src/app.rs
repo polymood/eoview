@@ -234,7 +234,8 @@ struct Open {
 }
 
 pub enum Dialog {
-    Open { pane: u32, add: bool },
+    /// Files, or directories (SAFE, SEN3, Zarr): a file dialog cannot select both.
+    Open { pane: u32, add: bool, dirs: bool },
     Save,
     Load,
 }
@@ -915,6 +916,26 @@ mod workspace_tests {
             assert!(t.elapsed().as_secs() < 20, "timeout: {:?} {:?}", app.error, app.panes.iter().map(|p| p.layers.len()).collect::<Vec<_>>());
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    /// An 8-bit RGB file shows as an RGB composite without a stretch (the pixels are colors). A 16-bit
+    /// RGB file shows as an RGB composite with the automatic stretch. One band stays one band.
+    #[test]
+    fn color_images_show_as_they_are() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open_many(1, ["rgb_jpeg.tif", "u16_rgb_deflate_pred2.tif", "u8_strips.tif"].map(|f| format!("{dir}{f}")).to_vec(), false);
+        // Three files: a 2 x 2 layout, the last view is empty.
+        wait(&mut app, |a| a.panes.iter().filter(|p| p.layers.first().is_some_and(|l| !l.inputs.is_empty())).count() == 3);
+        let l = |i: usize| &app.panes[i].layers[0];
+        use crate::layer::Kind;
+        assert_eq!(l(0).kind, Kind::Rgb);
+        assert!(l(0).is_color());
+        assert!(l(0).st.iter().all(|s| (s.lo, s.hi, s.gamma) == (0.0, 255.0, 1.0)), "{:?}", l(0).st);
+        assert_eq!(l(1).kind, Kind::Rgb);
+        assert!(!l(1).is_color() && l(1).st[0].hi != 255.0);
+        assert_eq!(l(2).kind, Kind::Band);
     }
 
     /// Save a workspace with two views, then open it: the layout, the cameras, the layers and their

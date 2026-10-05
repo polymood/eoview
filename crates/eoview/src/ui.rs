@@ -26,6 +26,8 @@ const ACCENT: Color32 = Color32::from_rgb(90, 170, 255);
 pub enum Cmd {
     Open,
     AddLayer,
+    /// Open or add directories (SAFE, SEN3, Zarr). True: add as layers.
+    OpenDir(bool),
     Save,
     Load,
     NewView,
@@ -78,7 +80,9 @@ fn mb(b: usize) -> String {
 fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     let mut v: Vec<(String, &'static str, Cmd)> = [
         ("Open...", "Ctrl+O", Cmd::Open),
+        ("Open folder (SAFE, SEN3, Zarr)...", "Ctrl+Alt+O", Cmd::OpenDir(false)),
         ("Add layer...", "Ctrl+Shift+O", Cmd::AddLayer),
+        ("Add layer from folder (SAFE, SEN3, Zarr)...", "", Cmd::OpenDir(true)),
         ("Save workspace...", "Ctrl+S", Cmd::Save),
         ("Open workspace...", "", Cmd::Load),
         ("New view", "Ctrl+N", Cmd::NewView),
@@ -175,7 +179,9 @@ fn view_menu(ui: &mut egui::Ui, id: u32, cmds: &mut Vec<(Cmd, u32)>) {
         }
     };
     item(ui, "Open...", "Ctrl+O", Cmd::Open);
+    item(ui, "Open folder...", "Ctrl+Alt+O", Cmd::OpenDir(false));
     item(ui, "Add layer...", "Ctrl+Shift+O", Cmd::AddLayer);
+    item(ui, "Add layer from folder...", "", Cmd::OpenDir(true));
     ui.separator();
     item(ui, "Fit", "F", Cmd::Fit);
     item(ui, "Zoom 1:1", "1", Cmd::OneToOne);
@@ -442,6 +448,7 @@ impl App {
         let t = self.target();
         let (cmd, sh, alt, none) = (Modifiers::COMMAND, Modifiers::COMMAND | Modifiers::SHIFT, Modifiers::ALT, Modifiers::NONE);
         let table: &[(Modifiers, Key, Cmd)] = &[
+            (Modifiers::COMMAND | Modifiers::ALT, Key::O, Cmd::OpenDir(false)),
             (sh, Key::O, Cmd::AddLayer),
             (cmd, Key::O, Cmd::Open),
             (cmd, Key::S, Cmd::Save),
@@ -485,8 +492,9 @@ impl App {
 
     pub fn run(&mut self, c: Cmd, id: u32) {
         match c {
-            Cmd::Open => self.dialog = Some(Dialog::Open { pane: id, add: false }),
-            Cmd::AddLayer => self.dialog = Some(Dialog::Open { pane: id, add: true }),
+            Cmd::Open => self.dialog = Some(Dialog::Open { pane: id, add: false, dirs: false }),
+            Cmd::AddLayer => self.dialog = Some(Dialog::Open { pane: id, add: true, dirs: false }),
+            Cmd::OpenDir(add) => self.dialog = Some(Dialog::Open { pane: id, add, dirs: true }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
             Cmd::Load => self.dialog = Some(Dialog::Load),
             Cmd::NewView => drop(self.split(id)),
@@ -624,6 +632,7 @@ impl App {
                 }
             };
             b(ui, "Open", "Open products in the active view (Ctrl+O). Drop files on a view to open them there", Cmd::Open);
+            b(ui, "Open folder", "Open product directories in the active view: SAFE, SEN3, Zarr (Ctrl+Alt+O). You can also drop them on a view", Cmd::OpenDir(false));
             b(ui, "Add layer", "Add products as layers of the active view (Ctrl+Shift+O, or Shift + drop)", Cmd::AddLayer);
             b(ui, "Save", "Save the workspace: layout, views, layers, settings (Ctrl+S)", Cmd::Save);
             b(ui, "Load", "Open a workspace file", Cmd::Load);
@@ -871,6 +880,9 @@ impl App {
             ui.label("Clip %");
             again |= ui.add(egui::Slider::new(&mut l.clip, 0.0..=10.0)).changed();
             again |= ui.button("Auto").on_hover_text("Automatic stretch (A)").clicked();
+            if l.is_color() && ui.button("As is").on_hover_text("No stretch: the colors of the file").clicked() {
+                l.as_is();
+            }
         });
         if again {
             l.auto();
@@ -1245,11 +1257,15 @@ pub fn dialogs(app: &mut App) {
     let Some(d) = app.dialog.take() else { return };
     let ws = [WORKSPACE_EXT];
     match d {
-        Dialog::Open { pane, add } => {
-            let f = rfd::FileDialog::new()
-                .add_filter("EO data and workspaces", &["tif", "tiff", "gtiff", "cog", "jp2", "ntf", "nitf", "nc", "h5", "xml", "safe", "zarr", WORKSPACE_EXT])
-                .add_filter("All files", &["*"])
-                .pick_files();
+        Dialog::Open { pane, add, dirs } => {
+            let f = if dirs {
+                rfd::FileDialog::new().set_title("Open SAFE, SEN3 or Zarr directories").pick_folders()
+            } else {
+                rfd::FileDialog::new()
+                    .add_filter("EO data and workspaces", &["tif", "tiff", "gtiff", "cog", "jp2", "ntf", "nitf", "nc", "h5", "xml", "safe", "zarr", WORKSPACE_EXT])
+                    .add_filter("All files", &["*"])
+                    .pick_files()
+            };
             if let Some(v) = f {
                 app.open_many(pane, v.into_iter().map(|p| p.to_string_lossy().into_owned()).collect(), add);
             }

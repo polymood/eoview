@@ -37,6 +37,8 @@ pub const PRESETS: &[(&str, Kind, [&str; 3], &str, bool)] = &[
     ("NDWI", Kind::Expr, ["(B03 - B08) / (B03 + B08)", "", ""], "RdBu", false),
     ("Dual-pol SAR", Kind::Rgb, ["VV", "VH", "VV / VH"], "Gray", true),
     ("OLCI true color", Kind::Rgb, ["Oa08_radiance", "Oa06_radiance", "Oa04_radiance"], "Gray", false),
+    // The 8-bit color image of a Sentinel-2 product. It shows as it is (see `MapLayer::is_color`).
+    ("TCI", Kind::Rgb, ["red", "green", "blue"], "Gray", false),
 ];
 
 /// Presets that a new layer uses first, if its bands exist.
@@ -184,8 +186,44 @@ impl MapLayer {
         m.cache.insert((first.var, first.choice), first);
         if let Some(p) = PRESETS.iter().find(|p| DEFAULT_PRESETS.contains(&p.0) && m.preset_ok(p)) {
             m.set_preset(p);
+        } else if let Some(ids) = m.color_bands() {
+            m.kind = Kind::Rgb;
+            m.rgb = ids;
         }
         m
+    }
+
+    /// Bands of a color image: the product has one variable with 3 bands, or with 4 bands of 8 bits (the
+    /// fourth band is alpha).
+    // ponytail: the alpha band is not used. Add it to the composite if images with transparency need it.
+    fn color_bands(&self) -> Option<[String; 3]> {
+        let p = &self.any()?.ds.product;
+        let [v] = &p.vars[..] else { return None };
+        let t = v.levels[0].dtype;
+        let color = !t.is_complex() && (v.bands.len() == 3 || (v.bands.len() == 4 && t == eo_core::DType::U8));
+        (color && self.chans.len() >= 3).then(|| [0, 1, 2].map(|k| self.chans[k].id.clone()))
+    }
+
+    /// True if the pixels are colors: an RGB composite, each channel one band of 8-bit data. Then the
+    /// default is no stretch.
+    pub fn is_color(&self) -> bool {
+        self.kind == Kind::Rgb
+            && !self.inputs.is_empty()
+            && self.trees.iter().all(|t| matches!(t, Node::Var(_)))
+            && self.inputs.iter().all(|l| l.var().levels[0].dtype == eo_core::DType::U8)
+    }
+
+    /// No stretch: the stored values 0 to 255 are the display values.
+    pub fn as_is(&mut self) {
+        for k in 0..self.trees.len().min(3) {
+            if let Node::Var(j) = self.trees[k]
+                && let Some(l) = self.inputs.get(j)
+            {
+                let v = l.var();
+                self.st[k] = Stretch { lo: v.offset as f32, hi: (255.0 * v.scale + v.offset) as f32, gamma: 1.0, db: false };
+            }
+        }
+        self.histograms();
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -279,7 +317,7 @@ impl MapLayer {
         self.inputs = v;
         if self.auto_pending {
             self.auto_pending = false;
-            self.auto();
+            if self.is_color() { self.as_is() } else { self.auto() }
         }
         self.histograms();
         true
