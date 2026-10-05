@@ -4,6 +4,7 @@
 //! starts the tiles in this order and cancels the tiles that are not in the list any more.
 //! Tiles go back to the UI through a channel.
 use crate::Lru;
+use crate::disk::Disk;
 use crate::pixels::*;
 use bytes::Bytes;
 use eo_core::geo::Warp;
@@ -14,7 +15,7 @@ use futures_util::stream::{self, StreamExt};
 use rayon::prelude::*;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
 use tokio::task::AbortHandle;
@@ -117,6 +118,13 @@ impl Layer {
         self.var().fill.filter(|_| self.enc.u8).map(|f| f as f32 / 255.0)
     }
 
+    /// Key of generated overview tile `key` in the disk cache: the same in all sessions.
+    fn disk_key(&self, key: TileKey) -> impl std::hash::Hash + Send + 'static {
+        let v = self.var();
+        let src = v.levels[0].chunks.first().and_then(|c| self.ds.sources.get(c.src as usize)).map_or("", |s| s.name());
+        (src.to_string(), v.name.clone(), self.choice, key.lv, key.tx, key.ty, self.enc.u8, self.enc.k.to_bits(), self.enc.off.to_bits())
+    }
+
     /// Index in `Array::chunks` of chunk (cy, cx) for the band of this layer.
     fn chunk_at(&self, a: &Array, cy: u64, cx: u64) -> usize {
         chunk_at(a, self.band, cy, cx)
@@ -193,6 +201,9 @@ pub struct Stats {
     pub work: usize,
     pub running: usize,
     pub wanted: usize,
+    /// Bytes and budget of the disk cache. Budget 0: no disk cache.
+    pub disk: u64,
+    pub disk_limit: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -224,6 +235,8 @@ struct Inner {
     work: AtomicUsize,
     /// Encoded bytes of remote chunks.
     raw: Mutex<Lru<(u64, u32, u64), Bytes>>,
+    /// Encoded bytes of remote chunks and generated overview tiles of remote layers, between sessions.
+    disk: OnceLock<Arc<Disk>>,
     /// Display planes of chunks, and generated overview tiles.
     dec: Mutex<Lru<DecKey, Arc<Pixels>>>,
     /// Reads in progress. Weak: when all tiles that wait for a read are cancelled, the read stops.
@@ -326,6 +339,7 @@ impl Engine {
             limit: ram,
             work: AtomicUsize::new(0),
             raw: Mutex::new(raw),
+            disk: OnceLock::new(),
             dec: Mutex::new(dec),
             inflight: Default::default(),
             probe: Mutex::new(probe),
@@ -337,6 +351,16 @@ impl Engine {
             wake: Box::new(wake),
         };
         (Engine { inner: Arc::new(inner), rt }, rx)
+    }
+
+    /// Keep remote data in directory `dir`, with a budget of `cap` bytes. Call it one time, before `open`.
+    pub fn disk_cache(&self, dir: std::path::PathBuf, cap: u64) -> std::io::Result<()> {
+        let d = Arc::new(Disk::new(dir, cap)?);
+        if self.inner.disk.set(d.clone()).is_ok() {
+            // The count of the files that are there does not delay the start.
+            self.rt.spawn_blocking(move || d.trim());
+        }
+        Ok(())
     }
 
     /// Open a local path or a URL. The result comes as `Event::Opened` with the returned request id.
@@ -414,6 +438,8 @@ impl Engine {
             work: i.work.load(Relaxed),
             running: i.counts[0].load(Relaxed),
             wanted: i.counts[1].load(Relaxed),
+            disk: i.disk.get().map_or(0, |d| d.used.load(Relaxed)),
+            disk_limit: i.disk.get().map_or(0, |d| d.cap),
         }
     }
 
@@ -643,8 +669,23 @@ impl Inner {
             let (c, s) = (locs[i], &ds.sources[locs[i].src as usize]);
             out[i] = if c.len == ChunkLoc::WHOLE { s.get_whole().await?.unwrap_or_default() } else { s.read(c.off..c.off + c.len)? };
         }
-        let got = join_all(whole.iter().map(|&i| ds.sources[locs[i].src as usize].get_whole())).await;
+        // Remote chunks of an earlier session come from the disk cache.
+        let key = |i: usize| (ds.sources[locs[i].src as usize].name().to_string(), locs[i].off, locs[i].len);
         let mut fetched: Vec<(usize, Bytes)> = vec![];
+        if let Some(d) = self.disk.get().filter(|_| !whole.is_empty() || !miss.is_empty()) {
+            let want: Vec<_> = whole.iter().chain(miss.values().flatten()).map(|&i| (i, key(i))).collect();
+            let d = d.clone();
+            let read = move || want.into_iter().filter_map(|(i, k)| Some((i, d.get(&k)?))).collect();
+            fetched = tokio::task::spawn_blocking(read).await.unwrap_or_default();
+            let hit: HashSet<usize> = fetched.iter().map(|f| f.0).collect();
+            whole.retain(|i| !hit.contains(i));
+            miss.retain(|_, v| {
+                v.retain(|i| !hit.contains(i));
+                !v.is_empty()
+            });
+        }
+        let from_disk = fetched.len();
+        let got = join_all(whole.iter().map(|&i| ds.sources[locs[i].src as usize].get_whole())).await;
         for (&i, b) in whole.iter().zip(got) {
             fetched.push((i, b?.unwrap_or_default()));
         }
@@ -652,6 +693,11 @@ impl Inner {
             let ranges: Vec<_> = idx.iter().map(|&i| locs[i].off..locs[i].off + locs[i].len).collect();
             let got = ds.sources[src as usize].get_ranges(&ranges).await?;
             fetched.extend(idx.into_iter().zip(got));
+        }
+        if let Some(d) = self.disk.get().filter(|_| fetched.len() > from_disk) {
+            let new: Vec<_> = fetched[from_disk..].iter().map(|(i, b)| (key(*i), b.clone())).collect();
+            let d = d.clone();
+            self.rt.spawn_blocking(move || new.iter().for_each(|(k, b)| d.put(k, b)));
         }
         let mut raw = self.raw.lock().unwrap();
         for (i, b) in fetched {
@@ -837,7 +883,25 @@ impl Inner {
                     send(p, true);
                     return Ok(());
                 }
-                let px = self.generate(l, base, f, (x0, y0, w, h), prio, &send).await?;
+                // A generated tile of a remote layer stays on the disk: the next open does not read its chunks.
+                let disk = self.disk.get().filter(|_| !l.is_local()).cloned();
+                let mut px = None;
+                if let Some(d) = disk.clone() {
+                    let (k, u8) = (l.disk_key(key), l.enc.u8);
+                    let read = move || d.get(&k).and_then(|b| Pixels::from_bytes(u8, &b, (w * h) as usize));
+                    px = tokio::task::spawn_blocking(read).await.ok().flatten().map(Arc::new);
+                }
+                let px = match px {
+                    Some(px) => px,
+                    None => {
+                        let px = self.generate(l, base, f, (x0, y0, w, h), prio, &send).await?;
+                        if let Some(d) = disk {
+                            let (k, p) = (l.disk_key(key), px.clone());
+                            self.rt.spawn_blocking(move || d.put(&k, p.bytes()));
+                        }
+                        px
+                    }
+                };
                 self.dec.lock().unwrap().insert(tk, px.clone(), px.size());
                 send(px, true);
             }

@@ -217,3 +217,26 @@ fn engine_tiles_match_reference() {
 
     assert!(check_geo(&dir(), &all) >= 6);
 }
+
+/// Remote product (EOVIEW_TEST_URL) with the disk cache: a second session gets the same coarse tile, with
+/// the data from the disk. No check if the variable is not set.
+#[test]
+fn remote_tile_comes_back_from_disk() {
+    let Ok(url) = std::env::var("EOVIEW_TEST_URL") else { return };
+    let dir = std::env::temp_dir().join(format!("eoview-remote-test-{}", std::process::id()));
+    let run = || {
+        let (e, rx) = Engine::new(1 << 30, || {});
+        e.disk_cache(dir.clone(), 1 << 30).unwrap();
+        let t = std::time::Instant::now();
+        let l = layer(&e, &rx, Path::new(&url));
+        let k = TileKey { layer: l.id, lv: l.levels.len() as u8 - 1, tx: 0, ty: 0 };
+        let px = tiles(&e, &rx, &l, &[k]).remove(&k).unwrap().1;
+        (px.bytes().to_vec(), l.levels[k.lv as usize].src, t.elapsed())
+    };
+    let (a, src, ta) = run();
+    let files = std::fs::read_dir(&dir).unwrap().count();
+    let (b, _, tb) = run();
+    println!("{src:?}: first session {ta:?}, second session {tb:?}, {files} cache files");
+    assert!(a == b && files > 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

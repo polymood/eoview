@@ -1,5 +1,6 @@
 //! Caches, memory budgets and the chunk engine. The engine reads, decodes and caches chunks,
 //! and makes the display tiles for the renderer.
+mod disk;
 mod engine;
 pub mod pixels;
 

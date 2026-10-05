@@ -44,6 +44,15 @@ impl Pixels {
         self.bytes().len()
     }
 
+    /// Plane of `n` values from `bytes()` of a plane. None if the length is not correct.
+    pub fn from_bytes(u8: bool, b: &[u8], n: usize) -> Option<Pixels> {
+        match u8 {
+            true if b.len() == n => Some(Pixels::U8(b.to_vec())),
+            false if b.len() == 2 * n => Some(Pixels::F16(b.chunks_exact(2).map(|c| f16::from_ne_bytes([c[0], c[1]])).collect())),
+            _ => None,
+        }
+    }
+
     /// Plane of `n` no-data values.
     pub fn empty(enc: &Enc, fill: Option<f64>, n: usize) -> Pixels {
         if enc.u8 {

@@ -1110,7 +1110,7 @@ impl App {
             let (alloc, used) = self.win.as_ref().map_or((0, 0), |w| w.gpu.usage());
             let tiles = self.win.as_ref().map_or(0, |w| w.gpu.resident());
             ui.monospace(format!(
-                "RAM budget {}\n  raw bytes {}\n  decoded   {}\n  inspector {}\n  work      {}\nGPU budget {}\n  allocated {}\n  tiles     {} ({})\ntiles running {} wanted {}",
+                "RAM budget {}\n  raw bytes {}\n  decoded   {}\n  inspector {}\n  work      {}\nGPU budget {}\n  allocated {}\n  tiles     {} ({})\nDisk budget {}\n  remote data {}\ntiles running {} wanted {}",
                 mb(st.limit),
                 mb(st.raw),
                 mb(st.dec),
@@ -1120,6 +1120,8 @@ impl App {
                 mb(alloc),
                 mb(used),
                 tiles,
+                mb(st.disk_limit as usize),
+                mb(st.disk as usize),
                 st.running,
                 st.wanted,
             ));

@@ -130,6 +130,7 @@ Budgets:
 |---|---|
 | `EOVIEW_RAM_MB` | 25 % of the system RAM |
 | `EOVIEW_GPU_MB` | 1024 |
+| `EOVIEW_DISK_MB` | 10240. 0: no disk cache |
 
 ## Build
 
@@ -156,6 +157,8 @@ EOVIEW_TEST_PRODUCTS=<dir> cargo test --release --test reference
 
 The script gets the expected values from GDAL, h5py and zarr-python.
 
+Remote data: `EOVIEW_TEST_URL=<URL of a COG or a Zarr store> cargo test --release --test reference remote_tile -- --nocapture` opens the URL in two sessions with a disk cache in a temporary directory. It compares the coarsest tile of the two sessions and writes the times from the open to the tile.
+
 ## Benchmarks
 
 The targets are in section 4 of the specification.
@@ -173,6 +176,8 @@ cargo bench -p eo-cache        # open to first pixels, engine only (set EOVIEW_B
 A local file is memory-mapped. The engine reads only the chunks that a view needs. Uncompressed data is read directly from the memory map, without a copy and without the chunk cache. The readers only describe the chunks (byte ranges and codecs): the engine reads and decodes them in parallel for all formats. The HDF5 reader is written in Rust, so the decode does not wait for the global lock of the HDF5 C library.
 
 The display pyramid uses the overviews of the file (COG overviews, JPEG 2000 resolution levels, Zarr multiscales). If a level is not in the file, the engine makes its tiles from the next finer file level with a mean of the valid values. It sends partial tiles while the chunks arrive.
+
+Remote data stays in a disk cache (`eoview/remote` in the cache directory of the user): the encoded bytes of the chunks, and the overview tiles that the engine made. The next open of the same product reads them from the disk. The file names are hashes: the cache contains no URLs. When the cache is larger than its budget, the oldest files go first. The viewer does not check that a remote object changed: delete the directory to read all data again. In a Zarr store with shards, the open reads no shard: the index of a shard is read at the first use of one of its chunks.
 
 The GPU keeps 512 x 512 tiles in texture arrays, with LRU eviction. Each input of a view draws all its visible tiles in one instanced draw call into an offscreen target: the vertex shader moves a mesh on each tile through the warp grid of the layer (reprojection). Then one pass computes the composite (band, RGB or band math) and the color. A display change does not load the data again. 8-bit data stays 8-bit. Other data is stored as 16-bit floats with a scale factor and an offset.
 

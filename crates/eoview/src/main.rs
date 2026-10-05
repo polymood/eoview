@@ -274,9 +274,29 @@ fn env_mb(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.parse::<usize>().ok().map(|m| m << 20)
 }
 
+/// Give the engine the disk cache for remote data: `eoview/remote` in the cache directory of the user, 10 GB.
+/// EOVIEW_DISK_MB sets the budget. 0: no disk cache.
+fn disk_cache(e: &Engine) {
+    let cap = env_mb("EOVIEW_DISK_MB").unwrap_or(10 << 30) as u64;
+    let var = |n: &str| std::env::var_os(n).map(std::path::PathBuf::from);
+    let dir = if cfg!(windows) {
+        var("LOCALAPPDATA")
+    } else if cfg!(target_os = "macos") {
+        var("HOME").map(|h| h.join("Library/Caches"))
+    } else {
+        var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|h| h.join(".cache")))
+    };
+    if let Some(d) = dir.filter(|_| cap > 0)
+        && let Err(err) = e.disk_cache(d.join(APP).join("remote"), cap)
+    {
+        eprintln!("no disk cache: {err}");
+    }
+}
+
 /// `eoview --info <path>`: write the structure of a product to stdout.
 fn info(path: &str) {
     let (e, rx) = Engine::new(1 << 30, || {});
+    disk_cache(&e);
     let t = Instant::now();
     e.open(path.into());
     let l = loop {
@@ -342,6 +362,10 @@ fn main() {
     let (engine, events) = Engine::new(ram, move || drop(proxy.send_event(Ev::Wake)));
     let args: Vec<String> = std::env::args().collect();
     let bench = (args.get(1).map(String::as_str) == Some("--bench")).then(|| bench::Bench::new(t0, &args[2..]));
+    // A benchmark measures the remote reads: no disk cache.
+    if bench.is_none() {
+        disk_cache(&engine);
+    }
     let mut app = App::new(engine, events, env_mb("EOVIEW_GPU_MB").unwrap_or(1 << 30), bench);
     el.run_app(&mut app).unwrap();
 }
