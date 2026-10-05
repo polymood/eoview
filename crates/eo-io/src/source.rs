@@ -287,7 +287,9 @@ impl Source {
             Inner::Missing => Ok(None),
             Inner::Remote { store, path } => match store.get(path).await {
                 Ok(r) => r.bytes().await.map(Some).map_err(|e| Error(format!("{}: {e}", self.name))),
-                Err(object_store::Error::NotFound { .. }) => Ok(None),
+                // S3 answers "access denied" for an object that does not exist, if the caller cannot list
+                // the bucket (public buckets). A Zarr chunk that was not written is such an object.
+                Err(object_store::Error::NotFound { .. } | object_store::Error::PermissionDenied { .. }) => Ok(None),
                 Err(e) => Err(Error(format!("{}: {e}", self.name))),
             },
         }

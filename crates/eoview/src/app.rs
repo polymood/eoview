@@ -285,6 +285,8 @@ struct Open {
     path: String,
     /// The layer is a series of products: path and time of each step (`path` is the first).
     series: Vec<(String, f64)>,
+    /// Variable or band that the layer shows first (`path#name`).
+    band: Option<String>,
 }
 
 /// What an open command opens.
@@ -522,8 +524,13 @@ impl App {
         }
     }
 
-    /// Open a product in view `pane`: replace its layers, or add a layer.
+    /// Open a product in view `pane`: replace its layers, or add a layer. `path#name` shows the variable
+    /// or the band `name` first.
     pub fn open(&mut self, pane: u32, path: String, add: bool) {
+        let (path, band) = match path.rsplit_once('#') {
+            Some((p, b)) if !b.is_empty() && !b.contains('/') && !std::path::Path::new(&path).exists() => (p.to_string(), Some(b.to_string())),
+            _ => (path, None),
+        };
         self.remember(&path);
         if path.ends_with(&format!(".{WORKSPACE_EXT}")) {
             return self.load_workspace(&path);
@@ -538,7 +545,7 @@ impl App {
             self.rebuild(pane);
         }
         let req = self.engine.open(path.clone());
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![] });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band });
     }
 
     /// Put a path at the top of the recent list, and write the list.
@@ -870,6 +877,10 @@ impl App {
         if !o.series.is_empty() {
             m.set_series(o.series);
         }
+        let named = o.band.and_then(|b| (0..m.chans.len()).find(|&c| m.chans[c].id.eq_ignore_ascii_case(&b) || m.chan_leaf(c).eq_ignore_ascii_case(&b)));
+        if let Some(c) = named {
+            (m.kind, m.band, m.auto_pending) = (crate::layer::Kind::Band, c, true);
+        }
         if let Some(s) = &o.save {
             m.apply(s);
         }
@@ -1064,7 +1075,7 @@ impl App {
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);
                 for (order, l) in s.layers.iter().enumerate() {
                     let req = self.engine.open(l.path.clone());
-                    self.opens.insert(req, Open { pane: id, save: Some(l.clone()), order, path: l.path.clone(), series: vec![] });
+                    self.opens.insert(req, Open { pane: id, save: Some(l.clone()), order, path: l.path.clone(), series: vec![], band: None });
                 }
             }
             self.panes.push(p);

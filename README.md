@@ -54,6 +54,29 @@ Each product opens in its own view. With more than one product, the layout chang
 | Save the workspace | **Save** (Ctrl+S) |
 | Open a workspace | **Load**, Ctrl+O, or drop the `.eoview` file |
 
+### Time
+
+A layer has time steps if its product has a time dimension (Zarr, NetCDF-4), or if it is a list of products:
+**Files as a time series** in the open menus, or `eoview --series <files or URLs>`. The order of a list is
+the time in the name or in the path of each product.
+
+The view then has a timeline at its bottom: step back (`,`), play or pause (Space), step forward (`.`), the
+rate, one cell for each step (click or drag), the number and the time of the step. The view loads the next
+3 steps ahead, at the resolution of the view. The playback waits for a step that is not ready: it does not
+skip steps. The cells show the state of each step: green ready, amber loading, gray open, dark not open.
+The linked views share the time cursor: their layers go to the step nearest in time.
+
+`path#name` opens a product with the variable or band `name` first.
+
+Real data with time, without an account:
+
+```
+# ESA Earth System Data Cube: 42 variables, 1978 steps of 8 days from 1979 to 2021, 0.25 degrees
+eoview "https://deep-esdl-public.s3.eu-central-1.amazonaws.com/esdc-8d-0.25deg-1x720x1440-3.0.1.zarr#air_temperature_2m"
+# 30 Sentinel-2 L2A true color images of tile 31TGK (Alps), March to August 2025, from the Earth Search STAC
+eoview --series $(cat examples/s2_31TGK_2025_tci.txt)
+```
+
 ### S3
 
 `s3://bucket/key` opens an object of an S3 bucket (a file, or a `.zarr` store). The configuration is the
