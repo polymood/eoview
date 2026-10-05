@@ -938,6 +938,51 @@ mod workspace_tests {
         assert_eq!(l(2).kind, Kind::Band);
     }
 
+    /// Names of the groups of a product tree, with the number of channels of each: "a(3) a/b(2) (1)".
+    /// The last entry is the root.
+    fn groups(g: &crate::layer::Group, path: &str, out: &mut Vec<String>) {
+        for s in &g.groups {
+            let p = if path.is_empty() { s.name.clone() } else { format!("{path}/{}", s.name) };
+            out.push(format!("{p}({}{})", s.count(), if s.color.is_some() { " color" } else { "" }));
+            groups(s, &p, out);
+        }
+    }
+
+    fn tree_of(app: &mut App, path: String) -> (String, usize) {
+        app.open(1, path, false);
+        wait(app, |a| a.panes[0].layers.first().is_some_and(|l| !l.inputs.is_empty()));
+        let l = &app.panes[0].layers[0];
+        let mut out = vec![];
+        groups(&l.contents, "", &mut out);
+        (out.join(" "), l.contents.chans.len())
+    }
+
+    /// The product tree has the groups of each format: the path of a Zarr or NetCDF variable, the bands of
+    /// a variable with more than one band (a color image if they are colors), the groups of the SAFE readers.
+    #[test]
+    fn product_tree_has_the_groups_of_the_format() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        assert_eq!(tree_of(&mut app, format!("{dir}zarr_v3.zarr")), ("measurements(1)".into(), 0));
+        assert_eq!(tree_of(&mut app, format!("{dir}rgb_jpeg.tif")), ("rgb_jpeg.tif(3 color)".into(), 0));
+        assert_eq!(tree_of(&mut app, format!("{dir}cf32.tif")), ("cf32.tif(4)".into(), 0));
+        assert_eq!(tree_of(&mut app, format!("{dir}nc4_swath.nc")), (String::new(), 3));
+        // Real products (see README): Sentinel-2 and Sentinel-3 SAFE.
+        let Ok(d) = std::env::var("EOVIEW_TEST_PRODUCTS") else { return };
+        let find = |pat: &str| std::fs::read_dir(&d).unwrap().flatten().map(|e| e.path().to_string_lossy().into_owned()).find(|p| p.contains(pat));
+        if let Some(p) = find("MSIL2A") {
+            assert_eq!(tree_of(&mut app, p), ("Reflectance(12) TCI (10 m)(3 color)".into(), 3));
+        }
+        if let Some(p) = find("OL_1_E") {
+            let (t, root) = tree_of(&mut app, p);
+            assert_eq!(root, 0, "{t}");
+            for g in ["radiance(21)", "radiance_unc(21)", "geo_coordinates(3)", "tie_geometries(", "tie_meteo(", "instrument_data(", "qualityFlags(1)", "removed_pixels("] {
+                assert!(t.contains(g), "{g} not in {t}");
+            }
+        }
+    }
+
     /// Save a workspace with two views, then open it: the layout, the cameras, the layers and their
     /// settings are the same. The file contains no URL query (credentials, signed tokens).
     #[test]

@@ -4,7 +4,7 @@
 //! Rules: each frequent action is one click or one key, on the view under the mouse. Each button shows its
 //! key in its tooltip. The command palette (Ctrl+K) finds all commands by name.
 use crate::app::{App, Cmp, Dialog, Pane, WORKSPACE_EXT};
-use crate::layer::{self, BINS, CMAPS, Kind, PRESETS, Stretch};
+use crate::layer::{self, BINS, CMAPS, Kind, MapLayer, PRESETS, Stretch};
 use eo_render::{Compare, CompositeUniforms, View2d};
 use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, vec2};
 use egui_dock::tab_viewer::OnCloseResponse;
@@ -338,6 +338,82 @@ fn histogram(ui: &mut egui::Ui, h: &(Vec<u32>, f32, f32), st: &mut Stretch, colo
     }
     let resp = resp.on_hover_text("Drag the limits, or drag between them to move both. Double-click: automatic stretch (A)");
     (changed, resp.double_clicked())
+}
+
+/// A click in the product tree.
+enum Pick {
+    /// A variable or a band.
+    Chan(usize),
+    /// Channel k (red, green or blue) of the RGB composite gets a band.
+    Rgb(usize, usize),
+    /// The red, green and blue bands of a color image.
+    Color([usize; 3]),
+}
+
+/// Product tree of a layer: the groups and the variables of the product, with a filter.
+fn contents_ui(ui: &mut egui::Ui, l: &mut MapLayer) -> Option<Pick> {
+    let mut pick = None;
+    ui.horizontal(|ui| {
+        ui.strong("Product");
+        ui.add(egui::TextEdit::singleline(&mut l.filter).hint_text(format!("Filter {} variables", l.chans.len())).desired_width(ui.available_width()));
+    });
+    let l = &*l;
+    egui::ScrollArea::vertical().id_salt(("contents", l.uid)).max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+        let f = l.filter.trim().to_lowercase();
+        if f.is_empty() {
+            group_ui(ui, l, &l.contents, "", &mut pick);
+        } else {
+            // With a filter: a flat list of the names that contain the text.
+            for c in 0..l.chans.len() {
+                let name = l.chan_label(c);
+                if name.to_lowercase().contains(&f) || l.chans[c].id.to_lowercase().contains(&f) {
+                    leaf_ui(ui, l, c, &name, &mut pick);
+                }
+            }
+        }
+    });
+    pick
+}
+
+fn group_ui(ui: &mut egui::Ui, l: &MapLayer, g: &layer::Group, path: &str, pick: &mut Option<Pick>) {
+    for sub in &g.groups {
+        let p = format!("{path}/{}", sub.name);
+        // Open at the start: the groups of the bands in use, and all groups of a small product.
+        let open = l.chans.len() <= 16 || sub.has_any(&l.used);
+        egui::CollapsingHeader::new(format!("{}  ({})", sub.name, sub.count())).id_salt((l.uid, &p)).default_open(open).show(ui, |ui| {
+            if let Some(c) = sub.color {
+                let on = l.kind == Kind::Rgb && (0..3).all(|k| l.rgb[k].trim() == l.chans[c[k]].id);
+                if ui.selectable_label(on, "Color image").on_hover_text("Show the red, green and blue bands as they are").clicked() {
+                    *pick = Some(Pick::Color(c));
+                }
+            }
+            group_ui(ui, l, sub, &p, pick);
+        });
+    }
+    for &c in &g.chans {
+        leaf_ui(ui, l, c, &l.chan_leaf(c), pick);
+    }
+}
+
+fn leaf_ui(ui: &mut egui::Ui, l: &MapLayer, c: usize, label: &str, pick: &mut Option<Pick>) {
+    let id = &l.chans[c].id;
+    let tip = format!("{}\nName in expressions: {id}", l.chan_label(c));
+    ui.horizontal(|ui| {
+        if l.kind == Kind::Rgb {
+            for (k, n) in ["R", "G", "B"].iter().enumerate() {
+                let b = egui::Button::selectable(l.rgb[k].trim() == id, *n).small();
+                if ui.add(b).on_hover_text(format!("Use as {}", ["red", "green", "blue"][k])).clicked() {
+                    *pick = Some(Pick::Rgb(k, c));
+                }
+            }
+            ui.label(label).on_hover_text(tip);
+        } else {
+            let on = if l.kind == Kind::Band { l.band == c } else { l.used.contains(&c) };
+            if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
+                *pick = Some(Pick::Chan(c));
+            }
+        }
+    });
 }
 
 /// Color map swatches: one click selects.
@@ -815,18 +891,7 @@ impl App {
             }
         });
         match l.kind {
-            Kind::Band => {
-                let mut b = l.band;
-                egui::ComboBox::from_id_salt("band").selected_text(l.chan_label(b)).width(ui.available_width() - 60.0).show_ui(ui, |ui| {
-                    for c in 0..l.chans.len() {
-                        ui.selectable_value(&mut b, c, l.chan_label(c));
-                    }
-                });
-                if b != l.band {
-                    (l.band, l.auto_pending) = (b, true);
-                    changed = true;
-                }
-            }
+            Kind::Band => {}
             Kind::Rgb => {
                 for (k, lbl) in ["R", "G", "B"].iter().enumerate() {
                     ui.horizontal(|ui| {
@@ -849,13 +914,32 @@ impl App {
                 }
             }
         });
-        if l.kind != Kind::Band {
-            let n = l.names();
-            let more = if n.len() > 24 { format!(" and {} more", n.len() - 24) } else { String::new() };
-            ui.small(format!("Bands: {}{more}", n[..n.len().min(24)].join(" ")));
-        }
         if let Some(e) = &l.err {
             ui.colored_label(RED, e);
+        }
+        // Product tree: one click shows a variable (band mode), sets a channel (RGB mode) or adds the
+        // name to the expression (band math mode).
+        match contents_ui(ui, l) {
+            Some(Pick::Chan(c)) if l.kind == Kind::Expr => {
+                if !l.expr.is_empty() && !l.expr.ends_with([' ', '(']) {
+                    l.expr.push(' ');
+                }
+                l.expr += &l.chans[c].id;
+                changed = true;
+            }
+            Some(Pick::Chan(c)) => {
+                (l.kind, l.band, l.auto_pending) = (Kind::Band, c, true);
+                changed = true;
+            }
+            Some(Pick::Rgb(k, c)) => {
+                (l.rgb[k], l.auto_pending) = (l.chans[c].id.clone(), true);
+                changed = true;
+            }
+            Some(Pick::Color(c)) => {
+                (l.kind, l.rgb, l.auto_pending) = (Kind::Rgb, c.map(|c| l.chans[c].id.clone()), true);
+                changed = true;
+            }
+            None => {}
         }
 
         ui.separator();

@@ -277,6 +277,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     );
     let var = Variable {
         name: kind.into(),
+        group: String::new(),
         bands: if nbv == 1 { vec![kind.into()] } else { (1..=nbv).map(|b| format!("Band {b}")).collect() },
         levels,
         // SAR products: value 0 is outside the image.

@@ -29,6 +29,7 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>)> {
         vars.push(Variable {
             bands: vec![name.rsplit('/').next().unwrap_or(&name).to_string()],
             name,
+            group: String::new(),
             levels: vec![a],
             fill: d.num("_FillValue"),
             scale: d.num("scale_factor").unwrap_or(1.0),

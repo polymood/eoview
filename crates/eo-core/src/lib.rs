@@ -255,6 +255,9 @@ pub fn bilinear(xs: &[f64], ys: &[f64], v: &[f64], x: f64, y: f64) -> f64 {
 #[derive(Clone, Debug)]
 pub struct Variable {
     pub name: String,
+    /// Group of the variable in the product tree, as a path with '/'. The reader sets it: the groups
+    /// depend on the format. Empty: the tree uses the directory part of `name`.
+    pub group: String,
     /// Level 0 has the full resolution. The next levels are overviews, from fine to coarse.
     /// All levels have the same dimensions in the same order.
     pub levels: Vec<Array>,

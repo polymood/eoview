@@ -127,6 +127,8 @@ fn s2(dir: &Path, rt: &Handle) -> Result<Dataset> {
         let bands = if name == "TCI" { vec!["red".into(), "green".into(), "blue".into()] } else { (1..=nb).map(|b| format!("{name} {b}")).collect() };
         vars.push(Variable {
             name: format!("{name} ({res} m)"),
+            // Product tree: the spectral bands in one group, then AOT, SCL, TCI and WVP.
+            group: if name.starts_with('B') { "Reflectance".into() } else { String::new() },
             levels,
             bands: if nb == 1 { vec![name.clone()] } else { bands },
             fill: Some(0.0),
@@ -223,7 +225,15 @@ fn s3(dir: &Path, rt: &Handle) -> Result<Dataset> {
         match netcdf::variables(&src, idx) {
             Ok((mut v, one_d)) => {
                 let stem = f.file_stem().map_or(String::new(), |s| s.to_string_lossy().into());
+                // Product tree: one group for each file. The files of the bands (Oa01_radiance,
+                // S7_BT_in, F1_BT_fn) go in one group for each measurement (radiance, BT_in, BT_fn).
+                let band = stem.split_once('_').filter(|(b, _)| {
+                    let d = b.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+                    b.len() <= 4 && d.len() < b.len() && !d.is_empty() && d.chars().all(|c| c.is_ascii_digit())
+                });
+                let group = band.map_or(stem.clone(), |(_, rest)| rest.to_string());
                 for x in &mut v {
+                    x.group = group.clone();
                     if vars.iter().any(|o| o.name == x.name) {
                         x.name = format!("{stem}/{}", x.name);
                     }

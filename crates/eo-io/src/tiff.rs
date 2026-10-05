@@ -187,6 +187,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     );
     let var = Variable {
         name: name.clone(),
+        group: String::new(),
         bands,
         fill,
         scale: num("scale").unwrap_or(1.0),

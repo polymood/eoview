@@ -471,6 +471,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         vars.push(Variable {
             bands: if nb == 1 { vec![name.to_string()] } else { (1..=nb).map(|b| format!("Band {b}")).collect() },
             name: short,
+            group: String::new(),
             levels,
             fill,
             scale: get("scale_factor").unwrap_or(1.0),

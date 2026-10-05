@@ -1054,6 +1054,7 @@ mod tests {
         };
         Variable {
             name: "t".into(),
+            group: String::new(),
             levels: std::iter::once(arr(w, h)).chain(levels.iter().map(|&(w, h)| arr(w, h))).collect(),
             bands: vec!["b".into()],
             fill: None,

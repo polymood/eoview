@@ -37,8 +37,6 @@ pub const PRESETS: &[(&str, Kind, [&str; 3], &str, bool)] = &[
     ("NDWI", Kind::Expr, ["(B03 - B08) / (B03 + B08)", "", ""], "RdBu", false),
     ("Dual-pol SAR", Kind::Rgb, ["VV", "VH", "VV / VH"], "Gray", true),
     ("OLCI true color", Kind::Rgb, ["Oa08_radiance", "Oa06_radiance", "Oa04_radiance"], "Gray", false),
-    // The 8-bit color image of a Sentinel-2 product. It shows as it is (see `MapLayer::is_color`).
-    ("TCI", Kind::Rgb, ["red", "green", "blue"], "Gray", false),
 ];
 
 /// Presets that a new layer uses first, if its bands exist.
@@ -74,6 +72,69 @@ fn ident(s: &str) -> String {
     let s: String = s.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
     let s = s.trim_matches('_').to_string();
     if s.starts_with(|c: char| c.is_ascii_digit()) { format!("b{s}") } else { s }
+}
+
+/// Node of the product tree of the side panel: a group of the product, with its groups and its channels.
+/// The readers give the groups (`Variable::group`): they depend on the format.
+#[derive(Clone, Default)]
+pub struct Group {
+    pub name: String,
+    pub groups: Vec<Group>,
+    pub chans: Vec<usize>,
+    /// The group is a color image (a variable with 3 bands, or 4 bands of 8 bits): its red, green and
+    /// blue channels.
+    pub color: Option<[usize; 3]>,
+}
+
+impl Group {
+    fn child(&mut self, name: &str) -> &mut Group {
+        let i = match self.groups.iter().position(|g| g.name == name) {
+            Some(i) => i,
+            None => {
+                self.groups.push(Group { name: name.into(), ..Default::default() });
+                self.groups.len() - 1
+            }
+        };
+        &mut self.groups[i]
+    }
+
+    /// Number of channels in the group and its groups.
+    pub fn count(&self) -> usize {
+        self.chans.len() + self.groups.iter().map(Group::count).sum::<usize>()
+    }
+
+    /// True if the group or one of its groups contains one of `chans`.
+    pub fn has_any(&self, chans: &[usize]) -> bool {
+        self.chans.iter().any(|c| chans.contains(c)) || self.groups.iter().any(|g| g.has_any(chans))
+    }
+}
+
+/// True if the bands of a variable are the colors of an image.
+fn is_color_var(v: &eo_core::Variable) -> bool {
+    let t = v.levels[0].dtype;
+    !t.is_complex() && (v.bands.len() == 3 || (v.bands.len() == 4 && t == eo_core::DType::U8))
+}
+
+/// Product tree: the group of each variable is its `group`, or the directory part of its name. A variable
+/// with more than one band is a group of its bands.
+fn contents(p: &eo_core::Product, chans: &[Chan]) -> Group {
+    let mut root = Group::default();
+    for (var, v) in p.vars.iter().enumerate() {
+        let (dir, leaf) = v.name.rsplit_once('/').unwrap_or(("", &v.name));
+        let mut g = &mut root;
+        for part in (if v.group.is_empty() { dir } else { &v.group }).split('/').filter(|s| !s.is_empty()) {
+            g = g.child(part);
+        }
+        let cs: Vec<usize> = (0..chans.len()).filter(|&i| chans[i].var == var).collect();
+        if cs.len() > 1 {
+            let sub = g.child(leaf);
+            sub.color = is_color_var(v).then(|| [cs[0], cs[1], cs[2]]);
+            sub.chans = cs;
+        } else {
+            g.chans.extend(cs);
+        }
+    }
+    root
 }
 
 fn channels(p: &eo_core::Product) -> Vec<Chan> {
@@ -149,6 +210,9 @@ pub struct MapLayer {
     pub auto_pending: bool,
     /// Histograms of the values of each channel (sample of the product), and their range.
     pub hist: Vec<(Vec<u32>, f32, f32)>,
+    /// Product tree, and the filter text of the side panel.
+    pub contents: Group,
+    pub filter: String,
 }
 
 impl MapLayer {
@@ -179,7 +243,10 @@ impl MapLayer {
             inputs: vec![],
             auto_pending: true,
             hist: vec![],
+            contents: Group::default(),
+            filter: String::new(),
         };
+        m.contents = contents(&first.ds.product, &m.chans);
         if first.var().levels[0].dtype.is_complex() {
             m.st[0].db = first.part == eo_cache::Part::Amp;
         }
@@ -199,9 +266,7 @@ impl MapLayer {
     fn color_bands(&self) -> Option<[String; 3]> {
         let p = &self.any()?.ds.product;
         let [v] = &p.vars[..] else { return None };
-        let t = v.levels[0].dtype;
-        let color = !t.is_complex() && (v.bands.len() == 3 || (v.bands.len() == 4 && t == eo_core::DType::U8));
-        (color && self.chans.len() >= 3).then(|| [0, 1, 2].map(|k| self.chans[k].id.clone()))
+        (is_color_var(v) && self.chans.len() >= 3).then(|| [0, 1, 2].map(|k| self.chans[k].id.clone()))
     }
 
     /// True if the pixels are colors: an RGB composite, each channel one band of 8-bit data. Then the
@@ -461,6 +526,15 @@ impl MapLayer {
     }
 
     /// Name of channel `c` for the user: the variable, and the band if the variable has more than one.
+    /// Name of channel `c` in the product tree: the band of a variable with more than one band, else the
+    /// last part of the variable name.
+    pub fn chan_leaf(&self, c: usize) -> String {
+        let (Some(ch), Some(l)) = (self.chans.get(c), self.any()) else { return String::new() };
+        let v = &l.ds.product.vars[ch.var];
+        let names = Layer::choices(v);
+        if names.len() > 1 { names[ch.choice].clone() } else { v.name.rsplit('/').next().unwrap_or(&v.name).to_string() }
+    }
+
     pub fn chan_label(&self, c: usize) -> String {
         let (Some(ch), Some(l)) = (self.chans.get(c), self.any()) else { return String::new() };
         let v = &l.ds.product.vars[ch.var];
