@@ -10,6 +10,7 @@ license.workspace = true
 eo-core.workspace = true
 bytes.workspace = true
 tokio.workspace = true
+futures-util = "0.3"
 libdeflater = "1.26.1"
 memmap2 = "0.9.11"
 object_store = { version = "0.14.2", default-features = false, features = ["http"] }

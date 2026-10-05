@@ -2,7 +2,8 @@
 //! A remote object (HTTP, HTTPS) uses range requests through `object_store`.
 use bytes::Bytes;
 use eo_core::{Error, Result};
-use object_store::{ObjectStore, ObjectStoreExt, path::Path};
+use eo_core::ChunkLoc;
+use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt, path::Path};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
@@ -18,6 +19,11 @@ pub struct Source {
     rt: Handle,
     state: OnceLock<std::result::Result<Inner, Error>>,
     len: OnceLock<std::result::Result<u64, Error>>,
+    /// The source is a shard of the Zarr sharding codec: number of inner chunks, true if the index is at
+    /// the end, bytes of the index checksum.
+    shard: Option<(u64, bool, u64)>,
+    /// Shard index: (offset, length) of each inner chunk. Empty: the shard does not exist.
+    index: tokio::sync::OnceCell<Vec<u64>>,
 }
 
 enum Inner {
@@ -62,7 +68,62 @@ pub fn is_remote(url: &str) -> bool {
 impl Source {
     /// Source for a local path or an HTTP(S) URL. No I/O: the source opens at the first use.
     pub fn new(url: &str, rt: &Handle) -> Source {
-        Source { name: url.into(), rt: rt.clone(), state: OnceLock::new(), len: OnceLock::new() }
+        Source { name: url.into(), rt: rt.clone(), state: OnceLock::new(), len: OnceLock::new(), shard: None, index: Default::default() }
+    }
+
+    /// Source for a shard of the Zarr sharding codec with `n` inner chunks. No I/O: the index is read at
+    /// the first use of a chunk.
+    pub fn shard(url: &str, rt: &Handle, n: u64, index_at_end: bool, checksum: u64) -> Source {
+        Source { shard: Some((n, index_at_end, checksum)), ..Source::new(url, rt) }
+    }
+
+    /// Byte range of inner chunk `k` of a shard. None: the shard or the chunk does not exist (fill value).
+    /// The first call reads the index: one request, a suffix range for an index at the end.
+    pub async fn inner_chunk(&self, k: u64) -> Result<Option<Range<u64>>> {
+        let (n, end, crc) = self.shard.ok_or_else(|| Error(format!("{}: not a shard", self.name)))?;
+        let idx = self
+            .index
+            .get_or_try_init(|| async {
+                let size = n * 16 + crc;
+                let b = match self.inner()? {
+                    Inner::Missing => None,
+                    Inner::File { map, .. } if (map.len() as u64) < size => None,
+                    Inner::File { map, .. } => {
+                        let at = if end { map.len() - size as usize } else { 0 };
+                        Some(map.slice(at..at + (n * 16) as usize))
+                    }
+                    Inner::Remote { store, path } => {
+                        let range = if end { GetRange::Suffix(size) } else { GetRange::Bounded(0..size) };
+                        match store.get_opts(path, GetOptions::new().with_range(Some(range))).await {
+                            Ok(r) => Some(r.bytes().await.map_err(|e| Error(format!("{}: {e}", self.name)))?),
+                            Err(object_store::Error::NotFound { .. }) => None,
+                            Err(e) => return Err(Error(format!("{}: shard index: {e}", self.name))),
+                        }
+                    }
+                };
+                // u64 little-endian pairs. u64::MAX: no chunk.
+                let v: Vec<u64> = b.iter().flat_map(|b| b.chunks_exact(8)).take(2 * n as usize).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+                Ok::<_, Error>(if v.len() == 2 * n as usize { v } else { vec![] })
+            })
+            .await?;
+        Ok(match (idx.get(2 * k as usize), idx.get(2 * k as usize + 1)) {
+            (Some(&o), Some(&l)) if o != u64::MAX => Some(o..o + l),
+            _ => None,
+        })
+    }
+
+    /// Encoded bytes of the chunk at `loc` in this source. Empty: the chunk does not exist. Blocks for a
+    /// remote source: for tools, tests and the open of a product, not for the engine.
+    pub fn read_chunk(&self, loc: ChunkLoc) -> Result<Bytes> {
+        match loc.len {
+            0 => Ok(Bytes::new()),
+            ChunkLoc::WHOLE => Ok(self.rt.block_on(self.get_whole())?.unwrap_or_default()),
+            ChunkLoc::SHARD => match self.rt.block_on(self.inner_chunk(loc.off))? {
+                Some(r) => self.read(r),
+                None => Ok(Bytes::new()),
+            },
+            len => self.read(loc.off..loc.off + len),
+        }
     }
 
     /// Open a source now, and get its length. For a remote source this blocks: do not call it on the UI thread.

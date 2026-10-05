@@ -1,5 +1,5 @@
 //! Zarr v2 and v3 stores (EOPF products, GeoZarr). Each chunk object is a source. With the sharding codec,
-//! each inner chunk is a byte range of its shard: the reader reads the shard indexes.
+//! each inner chunk is a byte range of its shard: the index of a shard is read at the first use of the shard.
 //!
 //! Specifications:
 //! - Zarr v2: <https://zarr-specs.readthedocs.io/en/latest/v2/v2.0.html>
@@ -37,8 +37,16 @@ pub fn is_zarr(url: &str, rt: &Handle) -> bool {
 /// All nodes: consolidated metadata, or (local store) a walk of the directories.
 fn nodes(url: &str, rt: &Handle) -> Result<(Nodes, u8)> {
     let mut out = Nodes::new();
-    let v3 = Source::new(&join(url, "zarr.json"), rt);
-    if let Ok(root) = json(&v3) {
+    let (s3, s2) = (Source::new(&join(url, "zarr.json"), rt), Source::new(&join(url, ".zmetadata"), rt));
+    // A remote store: ask for the metadata of the two versions at the same time (one round trip).
+    let (b3, b2) = if s3.is_local() {
+        (s3.read_whole().ok(), s2.read_whole().ok())
+    } else {
+        let (a, b) = rt.block_on(async { tokio::join!(s3.get_whole(), s2.get_whole()) });
+        (a.ok().flatten(), b.ok().flatten())
+    };
+    let parse = |b: &bytes::Bytes| serde_json::from_slice::<Value>(b).ok();
+    if let Some(root) = b3.as_ref().and_then(parse) {
         let attrs = root.get("attributes").cloned().unwrap_or(Value::Null);
         out.insert(String::new(), (false, root.clone(), attrs));
         let cm = root.pointer("/consolidated_metadata/metadata").and_then(Value::as_object);
@@ -53,8 +61,8 @@ fn nodes(url: &str, rt: &Handle) -> Result<(Nodes, u8)> {
         }
         return Ok((out, 3));
     }
-    match json(&Source::new(&join(url, ".zmetadata"), rt)) {
-        Ok(z) => {
+    match b2.as_ref().and_then(parse) {
+        Some(z) => {
             let m = z.get("metadata").and_then(Value::as_object).ok_or("bad .zmetadata")?;
             for (k, v) in m {
                 let (dir, f) = k.rsplit_once('/').unwrap_or(("", k.as_str()));
@@ -66,7 +74,7 @@ fn nodes(url: &str, rt: &Handle) -> Result<(Nodes, u8)> {
                 }
             }
         }
-        Err(_) => walk(url, "", rt, 2, &mut out)?,
+        None => walk(url, "", rt, 2, &mut out)?,
     }
     Ok((out, 2))
 }
@@ -277,32 +285,19 @@ fn array(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle, sources: &mu
             let nper = per.iter().product::<u64>() as usize;
             let sgrid: Vec<u64> = shape.iter().zip(&outer).map(|(s, o)| s.div_ceil(*o)).collect();
             let nshards = sgrid.iter().product::<u64>();
-            // Shard index: (offset, length) of each inner chunk, u64 little-endian. u64::MAX: no chunk.
-            let isize = (nper * 16 + crc) as u64;
-            let mut index: Vec<Option<(u32, Vec<u64>)>> = vec![];
-            for s in 0..nshards {
-                let src = Source::new(&join(&base, &key(&pos(s, &sgrid), &sep, v3def)), rt);
-                let len = src.len().unwrap_or(0);
-                if len < isize {
-                    index.push(None);
-                    continue;
-                }
-                let at = if end { len - isize } else { 0 };
-                let b = src.read(at..at + nper as u64 * 16)?;
-                let v: Vec<u64> = b.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
-                sources.push(Arc::new(src));
-                index.push(Some((sources.len() as u32 - 1, v)));
+            // One source for each shard. The engine reads the index of a shard at the first use of one of
+            // its chunks: the open of a product reads no shard (a remote product has many).
+            let first = sources.len() as u32;
+            for sh in 0..nshards {
+                sources.push(Arc::new(Source::shard(&join(&base, &key(&pos(sh, &sgrid), &sep, v3def)), rt, nper as u64, end, crc as u64)));
             }
             for i in 0..total as u64 {
                 let p = pos(i, &grid);
                 let sp: Vec<u64> = p.iter().zip(&per).map(|(p, n)| p / n).collect();
                 let ip: Vec<u64> = p.iter().zip(&per).map(|(p, n)| p % n).collect();
-                let s = sp.iter().zip(&sgrid).fold(0, |a, (p, n)| a * n + p) as usize;
-                let k = ip.iter().zip(&per).fold(0, |a, (p, n)| a * n + p) as usize;
-                chunks.push(match &index[s] {
-                    Some((src, v)) if v[2 * k] != u64::MAX => ChunkLoc { src: *src, off: v[2 * k], len: v[2 * k + 1] },
-                    _ => ChunkLoc { src: 0, off: 0, len: 0 },
-                });
+                let sh = sp.iter().zip(&sgrid).fold(0, |a, (p, n)| a * n + p);
+                let k = ip.iter().zip(&per).fold(0, |a, (p, n)| a * n + p);
+                chunks.push(ChunkLoc { src: first + sh as u32, off: k, len: ChunkLoc::SHARD });
             }
         }
     }
@@ -311,29 +306,63 @@ fn array(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle, sources: &mu
     Ok(a)
 }
 
-/// Values of a small 1D array (coordinates): first two, last, and count.
-fn coords(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle) -> Option<(f64, f64, f64, usize)> {
-    let mut srcs = vec![];
-    let a = array(url, path, meta, ver, rt, &mut srcs).ok()?;
-    let n = a.shape[0];
-    if a.shape.len() != 1 || n < 2 {
-        return None;
-    }
-    let at = |i: u64| -> Option<f64> {
-        let loc = a.chunks[(i / a.chunk[0]) as usize];
-        let b = srcs[loc.src as usize].read_whole().ok()?;
-        let b = if loc.len == ChunkLoc::WHOLE { b } else { b.slice(loc.off as usize..(loc.off + loc.len) as usize) };
-        let d = codec::decode(&a, &b).ok()?;
-        let e = (i % a.chunk[0]) as usize * a.dtype.size();
-        let v: [u8; 8] = std::array::from_fn(|k| d.get(e + k).copied().unwrap_or(0));
-        let get = |w: usize| if a.le { v[..w].to_vec() } else { v[..w].iter().rev().copied().collect() };
+/// First two values of a 1D coordinate array: one request (a range, if the chunk is not compressed).
+async fn first_two(a: Array, srcs: Vec<Arc<Source>>) -> Option<(f64, f64)> {
+    let w = a.dtype.size();
+    let loc = a.chunks[0];
+    let src = srcs.get(loc.src as usize)?;
+    let raw = a.codecs.is_empty() && loc.len == ChunkLoc::WHOLE;
+    let b = match loc.len {
+        0 => return None,
+        ChunkLoc::WHOLE if raw => src.get_ranges(&[0..2 * w as u64]).await.ok()?.remove(0),
+        ChunkLoc::WHOLE => src.get_whole().await.ok()??,
+        ChunkLoc::SHARD => {
+            let r = src.inner_chunk(loc.off).await.ok()??;
+            src.get_ranges(&[r]).await.ok()?.remove(0)
+        }
+        len => src.get_ranges(&[loc.off..loc.off + len]).await.ok()?.remove(0),
+    };
+    let d = if raw { b.to_vec() } else { codec::decode(&a, &b).ok()?.to_vec() };
+    let at = |i: usize| -> Option<f64> {
+        let v = d.get(i * w..(i + 1) * w)?;
+        let v: Vec<u8> = if a.le { v.to_vec() } else { v.iter().rev().copied().collect() };
         Some(match a.dtype {
-            DType::F32 => f32::from_le_bytes(get(4).try_into().ok()?) as f64,
-            DType::F64 => f64::from_le_bytes(get(8).try_into().ok()?),
+            DType::F32 => f32::from_le_bytes(v.try_into().ok()?) as f64,
+            DType::F64 => f64::from_le_bytes(v.try_into().ok()?),
             _ => return None,
         })
     };
-    Some((at(0)?, at(1)?, at(n - 1)?, n as usize))
+    Some((at(0)?, at(1)?))
+}
+
+/// Affine transforms (GDAL order) of the groups that have x and y coordinate arrays (pixel centers).
+/// The coordinates of all groups are read at the same time: a remote product has many groups.
+fn transforms(url: &str, nodes: &Nodes, ver: u8, rt: &Handle) -> std::collections::HashMap<String, [f64; 6]> {
+    let mut jobs = vec![];
+    for g in nodes.iter().filter(|n| !n.1.0).map(|n| n.0) {
+        let arr = |n: &str| {
+            let p = join(g, n).trim_start_matches('/').to_string();
+            let m = nodes.get(&p).filter(|m| m.0)?;
+            let mut srcs = vec![];
+            let a = array(url, &p, &m.1, ver, rt, &mut srcs).ok()?;
+            (a.shape.len() == 1 && a.shape[0] >= 2 && a.chunk[0] >= 2).then_some((a, srcs))
+        };
+        if let (Some(x), Some(y)) = (arr("x"), arr("y")) {
+            jobs.push((g.clone(), x, y));
+        }
+    }
+    // No spawned tasks: `block_on` of a handle does not run the tasks of a current-thread runtime.
+    let got = rt.block_on(futures_util::future::join_all(jobs.into_iter().map(|(g, x, y)| async move {
+        let (x, y) = tokio::join!(first_two(x.0, x.1), first_two(y.0, y.1));
+        (g, x, y)
+    })));
+    got.into_iter()
+        .filter_map(|(g, x, y)| {
+            let (x, y) = (x?, y?);
+            let (dx, dy) = (x.1 - x.0, y.1 - y.0);
+            Some((g, [x.0 - dx / 2.0, dx, 0.0, y.0 - dy / 2.0, 0.0, dy]))
+        })
+        .collect()
 }
 
 /// First value of `key` in the attributes of the node, its parents, and the root (recursive search).
@@ -363,14 +392,8 @@ fn epsg(nodes: &Nodes, path: &str) -> Option<u32> {
     }
 }
 
-/// Affine transform (GDAL order) of the arrays of a group: from the x and y coordinate arrays
-/// (pixel centers), else from the `spatial:transform` attribute.
-fn transform(url: &str, nodes: &Nodes, group: &str, ver: u8, rt: &Handle) -> Option<[f64; 6]> {
-    let c = |n: &str| nodes.get(&join(group, n).trim_start_matches('/').to_string()).and_then(|m| coords(url, &join(group, n), &m.1, ver, rt));
-    if let (Some(x), Some(y)) = (c("x"), c("y")) {
-        let (dx, dy) = (x.1 - x.0, y.1 - y.0);
-        return Some([x.0 - dx / 2.0, dx, 0.0, y.0 - dy / 2.0, 0.0, dy]);
-    }
+/// Affine transform (GDAL order) of a group without coordinate arrays: the `spatial:transform` attribute.
+fn attr_transform(nodes: &Nodes, group: &str) -> Option<[f64; 6]> {
     let t = find_attr(nodes, group, &["spatial:transform"])?.as_array()?;
     let t: Vec<f64> = t.iter().filter_map(Value::as_f64).collect();
     (t.len() >= 6).then(|| [t[2], t[0], t[1], t[5], t[3], t[4]])
@@ -405,6 +428,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     let (nodes, ver) = nodes(url, rt)?;
     let mut sources: Vec<Arc<Source>> = vec![];
     let mut vars: Vec<Variable> = vec![];
+    let tf = transforms(url, &nodes, ver, rt);
     // Arrays at a multiscale level: (parent group, array name) to level groups.
     let mut done = std::collections::HashSet::new();
     let arrays: Vec<(&String, &Value)> = nodes.iter().filter(|n| n.1.0).map(|(k, v)| (k, &v.1)).collect();
@@ -430,7 +454,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             done.insert(p.clone());
             match array(url, &p, &nodes[&p].1, ver, rt, &mut sources) {
                 Ok(a) => {
-                    gts.push(transform(url, &nodes, g, ver, rt));
+                    gts.push(tf.get(g).copied().or_else(|| attr_transform(&nodes, g)));
                     levels.push(a);
                 }
                 Err(e) if levels.is_empty() => {

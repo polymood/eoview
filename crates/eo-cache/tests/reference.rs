@@ -47,11 +47,7 @@ fn read(ds: &Dataset, v: &Variable, level: usize, band: u64, p: Part, x: u64, y:
     let (ch, cw) = (a.chunk[a.axis("y").unwrap()], a.chunk[a.axis("x").unwrap()]);
     let c = a.chunks[chunk_at(a, band, y / ch, x / cw)];
     let s = &ds.sources[c.src as usize];
-    let raw = match c.len {
-        0 => bytes::Bytes::new(),
-        eo_core::ChunkLoc::WHOLE => s.read_whole().unwrap_or_default(),
-        l => s.read(c.off..c.off + l).unwrap(),
-    };
+    let raw = s.read_chunk(c).unwrap();
     // A chunk that was not written: all values are the fill value.
     if raw.is_empty() {
         return v.fill.unwrap_or(0.0);

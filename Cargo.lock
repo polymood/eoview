@@ -892,6 +892,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "eo-core",
+ "futures-util",
  "jpeg2k",
  "libdeflater",
  "lz4_flex",

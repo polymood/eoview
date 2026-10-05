@@ -598,6 +598,26 @@ impl Inner {
     }
 
     async fn raw_ds(&self, ds: &Dataset, ds_id: u64, locs: &[ChunkLoc]) -> Result<Vec<Bytes>> {
+        // Chunks of shards: get their byte ranges from the shard indexes. A shard index is read one time,
+        // at the first use of the shard.
+        let resolved: Vec<ChunkLoc>;
+        let locs = if locs.iter().any(|c| c.len == ChunkLoc::SHARD) {
+            let r = join_all(locs.iter().map(|c| async move {
+                if c.len != ChunkLoc::SHARD {
+                    return Ok(*c);
+                }
+                let s = ds.sources.get(c.src as usize).ok_or("bad source index")?;
+                Ok::<_, Error>(match s.inner_chunk(c.off).await? {
+                    Some(r) => ChunkLoc { src: c.src, off: r.start, len: r.end - r.start },
+                    None => ChunkLoc { src: c.src, off: 0, len: 0 },
+                })
+            }))
+            .await;
+            resolved = r.into_iter().collect::<Result<Vec<_>>>()?;
+            &resolved[..]
+        } else {
+            locs
+        };
         let mut out = vec![Bytes::new(); locs.len()];
         let (mut miss, mut whole): (HashMap<u32, Vec<usize>>, Vec<usize>) = (HashMap::new(), vec![]);
         let mut local = vec![];

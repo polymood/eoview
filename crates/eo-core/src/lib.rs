@@ -118,11 +118,15 @@ pub struct ChunkLoc {
     pub src: u32,
     pub off: u64,
     /// Length in bytes. `WHOLE`: all bytes of the source (for example a Zarr chunk object).
+    /// `SHARD`: the chunk is inner chunk number `off` of the source, which is a shard of the Zarr sharding
+    /// codec. The byte range is in the index of the shard: the reader of the chunk reads the index at the
+    /// first use, not when the product opens.
     pub len: u64,
 }
 
 impl ChunkLoc {
     pub const WHOLE: u64 = u64::MAX;
+    pub const SHARD: u64 = u64::MAX - 1;
 }
 
 /// Chunked N-dimensional array. Dimension names include "y", "x", "band" and "time".
