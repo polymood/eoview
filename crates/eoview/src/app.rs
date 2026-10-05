@@ -1017,6 +1017,10 @@ mod workspace_tests {
         assert_eq!(tree_of(&mut app, format!("{dir}zarr_v3.zarr")), ("measurements(1)".into(), 0));
         assert_eq!(tree_of(&mut app, format!("{dir}rgb_jpeg.tif")), ("rgb_jpeg.tif(3 color)".into(), 0));
         assert_eq!(tree_of(&mut app, format!("{dir}cf32.tif")), ("cf32.tif(4)".into(), 0));
+        // Three bands are not a sign of colors: a file with three data bands is not a color image, and
+        // it shows its first band with the color map.
+        assert_eq!(tree_of(&mut app, format!("{dir}f32_3band_data.tif")), ("f32_3band_data.tif(3)".into(), 0));
+        assert_eq!(app.panes[0].layers[0].kind, crate::layer::Kind::Band);
         assert_eq!(tree_of(&mut app, format!("{dir}nc4_swath.nc")), (String::new(), 3));
         // Real products (see README): Sentinel-2 and Sentinel-3 SAFE.
         let Ok(d) = std::env::var("EOVIEW_TEST_PRODUCTS") else { return };

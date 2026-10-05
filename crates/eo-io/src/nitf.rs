@@ -45,6 +45,8 @@ struct Seg {
     rows: u64,
     cols: u64,
     pvtype: String,
+    /// Image representation: MONO, RGB, MULTI, NODISPLY, ...
+    irep: String,
     icat: String,
     icords: String,
     igeolo: String,
@@ -68,7 +70,7 @@ fn segment(src: &Source, sub: u64, lish: u64) -> Result<Seg> {
     let mut c = Cur { b: &b, p: 333 };
     let (rows, cols) = (c.num(8)?, c.num(8)?);
     let pvtype = c.str(3)?.to_string();
-    c.skip(8); // IREP
+    let irep = c.str(8)?.trim().to_string();
     let icat = c.str(8)?.to_string();
     c.skip(2 + 1); // ABPP PJUST
     let icords = c.str(1)?.to_string();
@@ -101,7 +103,7 @@ fn segment(src: &Source, sub: u64, lish: u64) -> Result<Seg> {
     let iloc_row = c.num(5)?;
     let iq = nbands == 2 && subcat[0] == "I" && subcat[1] == "Q";
     let (bw, bh) = (if bw == 0 { cols } else { bw }, if bh == 0 { rows } else { bh });
-    Ok(Seg { rows, cols, pvtype, icat, icords, igeolo, nbpp, nbands, iq, imode, ic, bpr, bpc, bw, bh, idlvl, ialvl, iloc_row, data: sub + lish })
+    Ok(Seg { rows, cols, pvtype, irep, icat, icords, igeolo, nbpp, nbands, iq, imode, ic, bpr, bpc, bw, bh, idlvl, ialvl, iloc_row, data: sub + lish })
 }
 
 /// Chunk locations of an uncompressed (NC) or masked (NM) segment. `step`: bytes of one block (all
@@ -278,7 +280,12 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     let var = Variable {
         name: kind.into(),
         group: String::new(),
-        bands: if nbv == 1 { vec![kind.into()] } else { (1..=nbv).map(|b| format!("Band {b}")).collect() },
+        bands: match nbv {
+            1 => vec![kind.into()],
+            // IREP RGB: the three bands are colors.
+            3 if f.irep == "RGB" => ["red", "green", "blue"].map(String::from).to_vec(),
+            _ => (1..=nbv).map(|b| format!("Band {b}")).collect(),
+        },
         levels,
         // SAR products: value 0 is outside the image.
         fill: (f.icat == "SAR").then_some(0.0),

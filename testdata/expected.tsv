@@ -260,3 +260,22 @@ v	zarr_v3.zarr#measurements/b1	1	0	5	5	1331
 v	zarr_v3.zarr#measurements/b1	1	0	66	75	952
 g	zarr_v3.zarr#measurements/b1	600000.0 10.0 0.0 5000000.0 0.0 -10.0	32631
 p	zarr_v3.zarr#measurements/b1	0.0001	-0.1	0
+s	f32_3band_data.tif	120	90	3	1	F32
+v	f32_3band_data.tif	0	0	0	0	5.0
+v	f32_3band_data.tif	0	0	119	89	-10.78756046295166
+v	f32_3band_data.tif	0	0	60	30	2.957915782928467
+v	f32_3band_data.tif	0	0	119	0	-4.6139750480651855
+v	f32_3band_data.tif	0	0	0	89	-1.1735851764678955
+v	f32_3band_data.tif	0	0	40	45	-8.298247337341309
+v	f32_3band_data.tif	0	1	0	0	25.0
+v	f32_3band_data.tif	0	1	119	89	26.22569465637207
+v	f32_3band_data.tif	0	1	60	30	24.803049087524414
+v	f32_3band_data.tif	0	1	119	0	32.3992805480957
+v	f32_3band_data.tif	0	1	0	89	18.826414108276367
+v	f32_3band_data.tif	0	1	40	45	7.4995622634887695
+v	f32_3band_data.tif	0	2	0	0	45.0
+v	f32_3band_data.tif	0	2	119	89	44.92475891113281
+v	f32_3band_data.tif	0	2	60	30	39.1645622253418
+v	f32_3band_data.tif	0	2	119	0	51.09834289550781
+v	f32_3band_data.tif	0	2	0	89	38.826416015625
+v	f32_3band_data.tif	0	2	40	45	27.445634841918945

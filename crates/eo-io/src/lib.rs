@@ -51,7 +51,8 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         tiff::open(&src, 0)?
     } else if jp2::is_jp2(&head) {
         let levels = jp2::arrays(&src, 0)?;
-        let bands = (1..=levels[0].len_of("band")).map(|b| format!("Band {b}")).collect();
+        let rgb = levels[0].len_of("band") >= 3 && jp2::is_rgb(&src);
+        let bands = (1..=levels[0].len_of("band") as usize).map(|b| if rgb && b <= 3 { ["red", "green", "blue"][b - 1].into() } else { format!("Band {b}") }).collect();
         let (w, h) = (levels[0].len_of("x"), levels[0].len_of("y"));
         let desc = format!("JPEG 2000 {:?}, {w} x {h}, {} level(s)", levels[0].dtype, levels.len());
         let var = Variable { name: name.clone(), group: String::new(), levels, bands, fill: None, scale: 1.0, offset: 0.0, units: String::new(), georef: Georef::None };

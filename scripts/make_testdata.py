@@ -275,6 +275,15 @@ for ver, req in (("v2", "zarr<3"), ("v3", "zarr>=3")):
     r = subprocess.run(["uv", "run", "--with", req, "--with", "numpy", "python", os.path.join(here, "testdata_zarr.py"), ver],
                        check=True, capture_output=True, text=True)
     out.extend(r.stdout.strip().splitlines())
+# Three bands of data that are not colors (photometric interpretation "min is black"): the viewer must
+# show one band with the color map, not an RGB composite. No random values: the file does not depend on
+# the files before it.
+y, x = np.mgrid[0:90, 0:120]
+a = np.stack([20.0 * b + 10.0 * np.sin(x / (7.0 + b)) + 5.0 * np.cos(y / 11.0) for b in range(3)], axis=-1).astype(np.float32)
+tifffile.imwrite(os.path.join(D, "f32_3band_data.tif"), a, photometric="minisblack", planarconfig="contig", tile=(64, 64), compression="zlib")
+shape("f32_3band_data.tif", 120, 90, 3, 1, "F32")
+for b in range(3):
+    values("f32_3band_data.tif", 0, a[..., b], str(b))
 
 with open(os.path.join(D, "expected.tsv"), "w") as f:
     f.write("\n".join(out) + "\n")

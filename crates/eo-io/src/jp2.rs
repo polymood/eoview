@@ -59,6 +59,17 @@ fn siz(h: &[u8]) -> Result<(usize, Siz)> {
     Err("JPEG 2000 without SIZ marker".into())
 }
 
+/// True if the colour specification box of a JP2 file says sRGB or sYCC: the components are colors.
+/// JP2 box structure: ISO/IEC 15444-1 Annex I (jp2h superbox, colr box: method 1, then the enumerated
+/// colourspace: 16 sRGB, 17 greyscale, 18 sYCC).
+pub fn is_rgb(src: &Source) -> bool {
+    let Ok(len) = src.len() else { return false };
+    let Ok(b) = src.read(0..4096.min(len)) else { return false };
+    let Some(h) = b.windows(4).position(|w| w == b"jp2h") else { return false };
+    let Some(c) = b[h..].windows(4).position(|w| w == b"colr").map(|c| h + c + 4) else { return false };
+    b.get(c) == Some(&1) && matches!(be32(&b, c + 3), Ok(16 | 18))
+}
+
 /// Open a JPEG 2000 source: the levels of one variable. `idx` is the index of `src` in the dataset sources.
 pub fn arrays(src: &Source, idx: u32) -> Result<Vec<Array>> {
     arrays_at(src, idx, None)

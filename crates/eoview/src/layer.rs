@@ -81,8 +81,7 @@ pub struct Group {
     pub name: String,
     pub groups: Vec<Group>,
     pub chans: Vec<usize>,
-    /// The group is a color image (a variable with 3 bands, or 4 bands of 8 bits): its red, green and
-    /// blue channels.
+    /// The group is a color image (see `is_color_var`): its red, green and blue channels.
     pub color: Option<[usize; 3]>,
 }
 
@@ -109,10 +108,11 @@ impl Group {
     }
 }
 
-/// True if the bands of a variable are the colors of an image.
+/// True if the bands of a variable are the colors of an image: the reader names the first three bands
+/// red, green and blue (TIFF photometric interpretation, JP2 colourspace, NITF IREP, Sentinel-2 TCI).
+/// The number of bands is not a sign: three bands can be data, for example angles.
 fn is_color_var(v: &eo_core::Variable) -> bool {
-    let t = v.levels[0].dtype;
-    !t.is_complex() && (v.bands.len() == 3 || (v.bands.len() == 4 && t == eo_core::DType::U8))
+    v.bands.len() >= 3 && v.bands.iter().zip(["red", "green", "blue"]).all(|(b, c)| b.eq_ignore_ascii_case(c))
 }
 
 /// Product tree: the group of each variable is its `group`, or the directory part of its name. A variable
@@ -260,9 +260,8 @@ impl MapLayer {
         m
     }
 
-    /// Bands of a color image: the product has one variable with 3 bands, or with 4 bands of 8 bits (the
-    /// fourth band is alpha).
-    // ponytail: the alpha band is not used. Add it to the composite if images with transparency need it.
+    /// Bands of a color image: the product has one variable, and its bands are colors.
+    // ponytail: an alpha band is not used. Add it to the composite if images with transparency need it.
     fn color_bands(&self) -> Option<[String; 3]> {
         let p = &self.any()?.ds.product;
         let [v] = &p.vars[..] else { return None };

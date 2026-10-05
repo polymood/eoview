@@ -392,8 +392,10 @@ fn histogram(ui: &mut egui::Ui, h: &(Vec<u32>, f32, f32), st: &mut Stretch, colo
 
 /// A click in the product tree.
 enum Pick {
-    /// A variable or a band.
+    /// Show a variable or a band as data (one band with the color map).
     Chan(usize),
+    /// Add the name of a band to the band math expression.
+    Insert(usize),
     /// Channel k (red, green or blue) of the RGB composite gets a band.
     Rgb(usize, usize),
     /// The red, green and blue bands of a color image.
@@ -447,22 +449,31 @@ fn group_ui(ui: &mut egui::Ui, l: &MapLayer, g: &layer::Group, path: &str, pick:
 
 fn leaf_ui(ui: &mut egui::Ui, l: &MapLayer, c: usize, label: &str, pick: &mut Option<Pick>) {
     let id = &l.chans[c].id;
-    let tip = format!("{}\nName in expressions: {id}", l.chan_label(c));
     ui.horizontal(|ui| {
-        if l.kind == Kind::Rgb {
-            for (k, n) in ["R", "G", "B"].iter().enumerate() {
-                let b = egui::Button::selectable(l.rgb[k].trim() == id, *n).small();
-                if ui.add(b).on_hover_text(format!("Use as {}", ["red", "green", "blue"][k])).clicked() {
-                    *pick = Some(Pick::Rgb(k, c));
+        // The name shows the variable as data, with the color map: not all variables are colors.
+        let on = l.kind == Kind::Band && l.band == c;
+        let tip = format!("{}\nShow as one band with the color map. Name in expressions: {id}", l.chan_label(c));
+        if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
+            *pick = Some(Pick::Chan(c));
+        }
+        // To make a composite: the channel buttons (RGB mode) or the insert button (band math mode).
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match l.kind {
+            Kind::Rgb => {
+                for k in [2, 1, 0] {
+                    let b = egui::Button::selectable(l.rgb[k].trim() == id, ["R", "G", "B"][k]).small();
+                    if ui.add(b).on_hover_text(format!("Use as the {} channel of the RGB composite", ["red", "green", "blue"][k])).clicked() {
+                        *pick = Some(Pick::Rgb(k, c));
+                    }
                 }
             }
-            ui.label(label).on_hover_text(tip);
-        } else {
-            let on = if l.kind == Kind::Band { l.band == c } else { l.used.contains(&c) };
-            if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
-                *pick = Some(Pick::Chan(c));
+            Kind::Expr => {
+                let b = egui::Button::selectable(l.used.contains(&c), "+").small();
+                if ui.add(b).on_hover_text(format!("Add {id} to the expression")).clicked() {
+                    *pick = Some(Pick::Insert(c));
+                }
             }
-        }
+            Kind::Band => {}
+        });
     });
 }
 
@@ -1006,10 +1017,10 @@ impl App {
         if let Some(e) = &l.err {
             ui.colored_label(RED, e);
         }
-        // Product tree: one click shows a variable (band mode), sets a channel (RGB mode) or adds the
-        // name to the expression (band math mode).
+        // Product tree: a click on a name shows the variable as data. The buttons of a row set a channel
+        // (RGB mode) or add the name to the expression (band math mode).
         match contents_ui(ui, l) {
-            Some(Pick::Chan(c)) if l.kind == Kind::Expr => {
+            Some(Pick::Insert(c)) => {
                 if !l.expr.is_empty() && !l.expr.ends_with([' ', '(']) {
                     l.expr.push(' ');
                 }

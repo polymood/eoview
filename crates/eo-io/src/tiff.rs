@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 const BLOCK: u64 = 64 << 10;
 /// Tags that the viewer uses. The reader ignores all other tags.
 const USED: &[u16] = &[
-    254, 256, 257, 258, 259, 273, 277, 278, 279, 284, 317, 322, 323, 324, 325, 339, 347, 33550, 33922, 34264, 34735, 34736,
+    254, 256, 257, 258, 259, 262, 273, 277, 278, 279, 284, 317, 322, 323, 324, 325, 339, 347, 33550, 33922, 34264, 34735, 34736,
     34737, 42112, 42113,
 ];
 
@@ -173,7 +173,12 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     let nb = a.len_of("band") as usize;
     let md = first.get(&42112).map(|t| gdal_metadata(&t.ascii())).unwrap_or_default();
     let item = |role: &str, b: usize| md.iter().find(|m| m.0 == role && m.1 == b).map(|m| m.2.clone());
-    let bands = (0..nb).map(|b| item("description", b).unwrap_or_else(|| format!("Band {}", b + 1))).collect();
+    // Photometric interpretation RGB (2) or YCbCr (6): the first three bands are colors. Their names tell
+    // the viewer that the image is a color image.
+    let rgb = nb >= 3 && matches!(one(first, 262, 1), 2 | 6);
+    let bands = (0..nb)
+        .map(|b| item("description", b).unwrap_or_else(|| if rgb && b < 3 { ["red", "green", "blue"][b].into() } else { format!("Band {}", b + 1) }))
+        .collect();
     let num = |role| item(role, 0).and_then(|s| s.parse::<f64>().ok());
     let fill = first.get(&42113).and_then(|t| t.ascii().parse::<f64>().ok());
     let name = src.name().rsplit(['/', '\\']).next().unwrap_or("").to_string();
