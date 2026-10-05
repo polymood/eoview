@@ -23,13 +23,19 @@ pub const NO_DATA: f32 = -3.0e38;
 pub const LUT_ROWS: u32 = 5;
 /// Subdivisions of each side of a tile when the warp is not affine.
 const MESH: u32 = 8;
+/// Subdivisions of each side of a tile on the globe: a tile can be a large part of the sphere.
+pub const GLOBE_MESH: u32 = 16;
+/// Globe camera: 1 / tan(field of view / 2), for a vertical field of view of 45 degrees.
+pub const GLOBE_F: f64 = 2.414213562373095;
+/// WGS84: square of the first eccentricity.
+pub const WGS84_E2: f64 = 0.0066943799901413165;
 
 const LAYER_SHADER: &str = r#"
 struct U {
     off: vec2f, scale: f32, n: u32,
     view: vec2f, a: f32, b: f32,
     wsize: vec2f, fill: f32, flags: u32,
-    grid: vec2u, p0: u32, p1: u32,
+    grid: vec2u, lat0: f32, dist: f32,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var smp: sampler;
@@ -41,7 +47,33 @@ struct VO {
     @location(0) uv: vec2f,
     @location(1) @interpolate(flat) uvmax: vec2f,
     @location(2) @interpolate(flat) layer: u32,
+    @location(3) facing: f32,
 };
+
+const GLOBE_F: f32 = 2.4142135;
+const E2: f32 = 0.00669438;
+
+// Globe view. `rel`: longitude and latitude minus those of the view center, in radians. The camera is
+// above the view center and looks down, north is up. Result: the position east, north and up of the view
+// center point on the WGS84 ellipsoid (unit: the equatorial radius), and a value that is positive if the
+// surface at the point faces the camera (the far side of the globe is not drawn).
+// ponytail: f32 positions give about 0.5 m. Compute the position relative to the camera for more zoom.
+fn globe(rel: vec2f) -> vec4f {
+    let s0 = sin(u.lat0);
+    let c0 = cos(u.lat0);
+    let lat = u.lat0 + rel.y;
+    let s = sin(lat);
+    let c = cos(lat);
+    let n0 = 1.0 / sqrt(1.0 - E2 * s0 * s0);
+    let n = 1.0 / sqrt(1.0 - E2 * s * s);
+    // Earth-centered coordinates, with the meridian of the view center at longitude 0.
+    let normal = vec3f(c * cos(rel.x), c * sin(rel.x), s);
+    let p = vec3f(n * normal.x, n * normal.y, n * (1.0 - E2) * s);
+    let p0 = vec3f(n0 * c0, 0.0, n0 * (1.0 - E2) * s0);
+    let up = vec3f(c0, 0.0, s0);
+    let q = p - p0;
+    return vec4f(q.y, c0 * q.z - s0 * q.x, dot(up, q), dot(normal, p0 + up * u.dist - p));
+}
 
 fn node(i: vec2u) -> vec2f {
     return textureLoad(warp, min(i, u.grid - 1u), 0).rg;
@@ -63,12 +95,22 @@ fn warped(p: vec2f) -> vec2f {
     let k = vi % 6u;
     let corner = array(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0));
     let t = (vec2f(f32(q % u.n), f32(q / u.n)) + corner[k]) / f32(u.n);
-    let d = (warped(mix(rect.xy, rect.zw, t)) + u.off) * u.scale / (u.view * 0.5);
-    return VO(vec4f(d.x, d.y, 0.0, 1.0), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z));
+    let w = warped(mix(rect.xy, rect.zw, t)) + u.off;
+    if ((u.flags & 8u) != 0u) {
+        // A point outside the domain of the projection is not on the globe.
+        if (abs(w.x) > 1.0e4 || abs(w.y) > 1.0e4) {
+            return VO(vec4f(0.0, 0.0, 0.0, 1.0), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), -1.0);
+        }
+        let g = globe(w * 0.017453293);
+        return VO(vec4f(g.x * GLOBE_F * u.view.y / u.view.x, g.y * GLOBE_F, 0.0, u.dist - g.z), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), g.w);
+    }
+    let d = w * u.scale / (u.view * 0.5);
+    return VO(vec4f(d.x, d.y, 0.0, 1.0), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), 1.0);
 }
 
 @fragment fn fs(v: VO) -> @location(0) vec4f {
     let s = textureSample(tiles, smp, min(v.uv, v.uvmax), v.layer).r;
+    if (v.facing < 0.0) { discard; }
     // NaN is no data. Test the bits: a compiler can remove the test s != s.
     if ((bitcast<u32>(s) & 0x7fffffffu) > 0x7f800000u) { discard; }
     if ((u.flags & 4u) != 0u && abs(s - u.fill) < 0.5 / 255.0) { discard; }
@@ -302,10 +344,13 @@ pub struct LayerUniforms {
     /// Level-0 size of the layer in pixels.
     pub wsize: [f32; 2],
     pub fill: f32,
-    /// 4: u8 fill value is no data.
+    /// 4: u8 fill value is no data. 8: globe view (the display coordinates are longitude and latitude).
     pub flags: u32,
     pub grid: [u32; 2],
-    pub pad: [u32; 2],
+    /// Globe view: latitude of the view center in radians, and distance of the camera from the surface
+    /// in equatorial radii.
+    pub lat0: f32,
+    pub dist: f32,
 }
 
 #[repr(C)]
@@ -910,5 +955,9 @@ mod tests {
             }
         }
         assert_eq!(std::mem::size_of::<CompositeUniforms>(), 48 + 4 * 64);
+        // The layer shader (2D and globe).
+        let m = naga::front::wgsl::parse_str(LAYER_SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(LAYER_SHADER)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default()).validate(&m).unwrap();
+        assert_eq!(std::mem::size_of::<LayerUniforms>(), 64);
     }
 }

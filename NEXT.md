@@ -19,8 +19,17 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
    NetCDF) from public buckets. A STAC search dialog (catalog, collection, area of the view, dates).
 3. **Interface layout.** Done: a menu bar (File, Edit, View, Layer, Compare, Time, Help) and a toolbar
    with drawn icons. To do: a preferences dialog (budgets, cache directory), undo for display settings.
-4. **3D globe.** A globe view with the layers on it (Phase 4 of the specification): WGS84 ellipsoid,
-   quadtree tiles, reversed-Z depth, camera-relative coordinates, link with the 2D views.
+4. **3D globe.** Done: a view can be a globe (toolbar, G, `--globe`). The layer shader projects the
+   tiles on the WGS84 ellipsoid from their longitude and latitude, the far side is not drawn, the view has
+   meridians and parallels, and the globe uses the same camera as the 2D view (so links, layers, compare
+   modes and the timeline work). To do:
+   - Tilt and turn the camera (now it looks down, north up).
+   - A base map or coastlines, to see where the data is.
+   - Depth buffer (reversed Z) and DEM terrain.
+   - Positions relative to the camera (now f32: about 0.5 m).
+   - Data on the two sides of the 180 degree meridian in a zoomed view.
+   - Tile requests from the real footprint of the view, and the level from the distance of each tile.
+   - Checks: a globe view in a link group with 2D views, and 4 layers at 60 frames per second.
 
 ## Asked by Jules, not started
 

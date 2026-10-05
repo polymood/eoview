@@ -1,13 +1,87 @@
-//! One 2D view: inputs (layers with their warp grids), camera in display coordinates, tile requests.
+//! One view: inputs (layers with their warp grids), camera in display coordinates, tile requests.
+//! A globe view shows the same inputs on the WGS84 ellipsoid: its display coordinates are longitude and
+//! latitude (EPSG:4326), and its camera is above the view center.
 use eo_cache::{Engine, Layer, TILE, TileKey};
 use eo_core::geo::Warp;
-use eo_render::{Gpu, Inst, LayerUniforms, View2d};
+use eo_render::{GLOBE_F as F, Gpu, Inst, LayerUniforms, View2d, WGS84_E2 as E2};
 use egui::Rect;
 use std::sync::Arc;
 
 pub struct Input {
     pub layer: Arc<Layer>,
     pub warp: Option<(Arc<Warp>, u64)>,
+}
+
+/// Camera of a globe view: above the point (lon0, lat0) of the ellipsoid, at the distance `dist` from the
+/// surface, looking down, north up. Unit of length: the equatorial radius. `w`, `h`: view size in pixels.
+/// The layer shader of `eo_render` has the same projection.
+#[derive(Clone, Copy)]
+pub struct Globe {
+    lon0: f64,
+    lat0: f64,
+    pub dist: f64,
+    w: f64,
+    h: f64,
+}
+
+impl Globe {
+    /// Earth-centered position of (longitude - lon0, latitude) in radians, and the normal of the ellipsoid.
+    fn ecef(dlon: f64, lat: f64) -> ([f64; 3], [f64; 3]) {
+        let (s, c) = lat.sin_cos();
+        let n = 1.0 / (1.0 - E2 * s * s).sqrt();
+        let nm = [c * dlon.cos(), c * dlon.sin(), s];
+        ([n * nm[0], n * nm[1], n * (1.0 - E2) * s], nm)
+    }
+
+    /// View position (pixels from the top-left corner) of a longitude and latitude in degrees. None: the
+    /// point is on the far side of the globe.
+    pub fn project(&self, lon: f64, lat: f64) -> Option<[f64; 2]> {
+        let (s0, c0) = self.lat0.to_radians().sin_cos();
+        let (p, nm) = Globe::ecef((lon - self.lon0).to_radians(), lat.to_radians());
+        let (p0, _) = Globe::ecef(0.0, self.lat0.to_radians());
+        let q = [p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]];
+        let (e, n, u) = (q[1], c0 * q[2] - s0 * q[0], c0 * q[0] + s0 * q[2]);
+        let eye = [p0[0] + c0 * self.dist, p0[1], p0[2] + s0 * self.dist];
+        let facing = nm[0] * (eye[0] - p[0]) + nm[1] * (eye[1] - p[1]) + nm[2] * (eye[2] - p[2]);
+        let z = self.dist - u;
+        (facing > 0.0).then(|| [self.w / 2.0 + e * F / z * self.h / 2.0, self.h / 2.0 - n * F / z * self.h / 2.0])
+    }
+
+    /// Longitude and latitude in degrees at a view position. None: the position is not on the globe.
+    pub fn unproject(&self, p: [f64; 2]) -> Option<[f64; 2]> {
+        let (s0, c0) = self.lat0.to_radians().sin_cos();
+        let (p0, _) = Globe::ecef(0.0, self.lat0.to_radians());
+        // Ray of the pixel in the frame east, north, up, then in Earth-centered coordinates.
+        let (de, dn, du) = ((p[0] - self.w / 2.0) / (F * self.h / 2.0), (self.h / 2.0 - p[1]) / (F * self.h / 2.0), -1.0);
+        let d = [-s0 * dn + c0 * du, de, c0 * dn + s0 * du];
+        let o = [p0[0] + c0 * self.dist, p0[1], p0[2] + s0 * self.dist];
+        // With z divided by the polar radius, the ellipsoid is the unit sphere.
+        let k = 1.0 / (1.0 - E2).sqrt();
+        let (o2, d2) = ([o[0], o[1], o[2] * k], [d[0], d[1], d[2] * k]);
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let (a, b, c) = (dot(d2, d2), 2.0 * dot(o2, d2), dot(o2, o2) - 1.0);
+        let disc = b * b - 4.0 * a * c;
+        if disc < 0.0 {
+            return None;
+        }
+        let t = (-b - disc.sqrt()) / (2.0 * a);
+        let x = [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]];
+        let lat = x[2].atan2((1.0 - E2) * x[0].hypot(x[1]));
+        Some([self.lon0 + x[1].atan2(x[0]).to_degrees(), lat.to_degrees()])
+    }
+
+    /// Radius in degrees of the part of the globe that the view can show (the horizon, or the view corners).
+    pub fn cap(&self) -> f64 {
+        let d = 1.0 + self.dist;
+        let corner = ((1.0 + (self.w / self.h).powi(2)).sqrt() / F).atan();
+        if d * corner.sin() >= 1.0 { (1.0 / d).acos().to_degrees() } else { ((d * corner.sin()).asin() - corner).to_degrees() }
+    }
+
+    /// Radius of the globe in the view, in pixels.
+    pub fn radius_px(&self) -> f64 {
+        let s = 1.0 / (1.0 + self.dist);
+        s / (1.0 - s * s).sqrt() * F * self.h / 2.0
+    }
 }
 
 /// An input of one of the next time steps (prefetch): the view asks for its tiles, and does not draw it.
@@ -29,6 +103,9 @@ pub struct View {
     /// View area in physical pixels (rounded as egui rounds the viewport of a paint callback).
     pub px: Rect,
     pub fit: bool,
+    /// Globe view: the display CRS is EPSG:4326, `center` is the point below the camera, and `scale` is
+    /// the scale at this point.
+    pub globe: bool,
     pub inputs: Vec<Input>,
     /// Inputs of the next time steps, the nearest step first.
     pub ahead: Vec<Ahead>,
@@ -48,6 +125,7 @@ impl View {
             scale: 1.0,
             px: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1.0, 1.0)),
             fit: false,
+            globe: false,
             inputs: vec![],
             ahead: vec![],
             gpu: None,
@@ -57,14 +135,44 @@ impl View {
         }
     }
 
+    /// Camera of the globe view. The distance gives the scale of the view at the view center.
+    pub fn globe_cam(&self) -> Globe {
+        let (w, h) = (self.px.width().max(1.0) as f64, self.px.height().max(1.0) as f64);
+        // `scale` is pixels for each degree: one radian of arc at the center is one unit of length.
+        Globe { lon0: self.center[0], lat0: self.center[1], dist: F * h / (2.0 * self.scale * 180.0 / std::f64::consts::PI), w, h }
+    }
+
+    /// Keep the camera of a globe view in its limits: the latitude, the longitude in -180 to 180, and a
+    /// distance of not more than 2 radii (the globe is then 85 % of the view height).
+    pub fn clamp_globe(&mut self) {
+        if self.globe {
+            self.center = [(self.center[0] + 180.0).rem_euclid(360.0) - 180.0, self.center[1].clamp(-89.9, 89.9)];
+            self.scale = self.scale.max(F * self.px.height().max(1.0) as f64 * std::f64::consts::PI / (360.0 * 2.0));
+        }
+    }
+
     /// Display coordinates of view position `p` (physical pixels from the top-left corner of the view).
+    /// Globe view: NaN if the position is not on the globe.
     pub fn to_display(&self, p: [f64; 2]) -> [f64; 2] {
+        if self.globe {
+            return self.globe_cam().unproject(p).unwrap_or([f64::NAN; 2]);
+        }
         let (w, h) = (self.px.width() as f64, self.px.height() as f64);
         [self.center[0] + (p[0] - w / 2.0) / self.scale, self.center[1] - (p[1] - h / 2.0) / self.scale]
     }
 
-    /// Visible display rectangle (x0, y0, x1, y1).
+    /// Visible display rectangle (x0, y0, x1, y1). Globe view: the limits in longitude and latitude of
+    /// the visible part of the globe.
+    // ponytail: a globe view that is near the 180 degree meridian, and shows less than 90 degrees of
+    // longitude, does not show the data on the other side of the meridian. Draw the inputs two times
+    // (longitude + 360) if this is necessary.
     pub fn rect(&self) -> [f64; 4] {
+        if self.globe {
+            let (cap, [lon, lat]) = (self.globe_cam().cap(), self.center);
+            let dl = if lat.abs() + cap >= 89.0 { 360.0 } else { cap / lat.to_radians().cos() };
+            let (x0, x1) = if dl >= 90.0 { (-180.0, 180.0) } else { (lon - dl, lon + dl) };
+            return [x0, (lat - cap).max(-90.0), x1, (lat + cap).min(90.0)];
+        }
         let (a, b) = (self.to_display([0.0, self.px.height() as f64]), self.to_display([self.px.width() as f64, 0.0]));
         [a[0], a[1], b[0], b[1]]
     }
@@ -94,6 +202,7 @@ impl View {
         self.center = [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0];
         let (w, h) = ((b[2] - b[0]).max(1e-12), (b[3] - b[1]).max(1e-12));
         self.scale = (self.px.width() as f64 / w).min(self.px.height() as f64 / h);
+        self.clamp_globe();
         true
     }
 
@@ -202,8 +311,16 @@ impl View {
         }
     }
 
-    /// Screen position (points) of display point `d`. `rect` is the view in points.
+    /// Screen position (points) of display point `d`. `rect` is the view in points. Globe view: a position
+    /// far from the screen for a point on the far side of the globe.
     pub fn to_screen(&self, d: [f64; 2], rect: Rect) -> egui::Pos2 {
+        if self.globe {
+            let k = rect.width() / self.px.width().max(1.0);
+            return match self.globe_cam().project(d[0], d[1]) {
+                Some(p) => egui::pos2(rect.left() + p[0] as f32 * k, rect.top() + p[1] as f32 * k),
+                None => egui::pos2(-1e6, -1e6),
+            };
+        }
         let k = self.scale * (rect.width() / self.px.width().max(1.0)) as f64;
         egui::pos2(rect.center().x + ((d[0] - self.center[0]) * k) as f32, rect.center().y - ((d[1] - self.center[1]) * k) as f32)
     }
@@ -221,15 +338,16 @@ impl View {
                     Some((wp, _)) => LayerUniforms {
                         off: [(wp.origin[0] - self.center[0]) as f32, (wp.origin[1] - self.center[1]) as f32],
                         scale: self.scale as f32,
-                        n: eo_render::mesh(wp.nx == 2),
+                        n: if self.globe { eo_render::GLOBE_MESH } else { eo_render::mesh(wp.nx == 2) },
                         view: [w, h],
                         a,
                         b,
                         wsize: [lw as f32, lh as f32],
                         fill: fill.unwrap_or(-1.0),
-                        flags: (fill.is_some() as u32) << 2,
+                        flags: (fill.is_some() as u32) << 2 | (self.globe as u32) << 3,
                         grid: [wp.nx as u32, wp.ny as u32],
-                        pad: [0; 2],
+                        lat0: self.center[1].to_radians() as f32,
+                        dist: self.globe_cam().dist as f32,
                     },
                     None => LayerUniforms::default(),
                 };
@@ -245,4 +363,34 @@ fn tile_range(lv: &eo_cache::Level, pb: [f64; 4]) -> (u64, u64, u64, u64) {
     let (nx, ny) = (lv.w.div_ceil(TILE), lv.h.div_ceil(TILE));
     let t = |v: f64, s: f64, m: u64| ((v / s).max(0.0) as u64).min(m);
     (t(pb[0] - lv.ox, sx, nx), t(pb[1] - lv.oy, sy, ny), t(pb[2] - lv.ox, sx, nx - 1) + 1, t(pb[3] - lv.oy, sy, ny - 1) + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A globe position goes to the same longitude and latitude and back. The view center is at the center
+    /// of the view, north is up, and the far side of the globe has no position.
+    #[test]
+    fn globe_projects_and_goes_back() {
+        let mut v = View::new(1);
+        v.globe = true;
+        v.px = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        (v.center, v.scale) = ([12.0, 45.0], 8.0);
+        let g = v.globe_cam();
+        let c = g.project(12.0, 45.0).unwrap();
+        assert!((c[0] - 600.0).abs() < 1e-9 && (c[1] - 400.0).abs() < 1e-9, "{c:?}");
+        // The scale at the center: 8 pixels for each degree.
+        let n = g.project(12.0, 45.1).unwrap();
+        assert!(((c[1] - n[1]) / 0.1 - 8.0).abs() < 0.08 && (n[0] - 600.0).abs() < 1e-9, "{n:?}");
+        for (lon, lat) in [(12.0, 45.0), (30.0, 60.0), (-20.0, 10.0), (12.0, 89.0)] {
+            let p = g.project(lon, lat).unwrap();
+            let b = g.unproject(p).unwrap();
+            assert!((b[0] - lon).abs() < 1e-7 && (b[1] - lat).abs() < 1e-7, "{lon} {lat}: {b:?}");
+        }
+        assert!(g.project(-168.0, -45.0).is_none());
+        assert!(g.unproject([0.0, 0.0]).is_none() || g.cap() < 90.0);
+        let r = v.rect();
+        assert!(r[0] < 12.0 && r[2] > 12.0 && r[1] < 45.0 && r[3] > 45.0);
+    }
 }
