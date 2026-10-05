@@ -3,7 +3,7 @@
 //!
 //! Rules: each frequent action is one click or one key, on the view under the mouse. Each button shows its
 //! key in its tooltip. The command palette (Ctrl+K) finds all commands by name.
-use crate::app::{App, Cmp, Dialog, Pane, WORKSPACE_EXT};
+use crate::app::{App, Cmp, Dialog, Pane, WORKSPACE_EXT, What};
 use crate::layer::{self, BINS, CMAPS, Kind, MapLayer, PRESETS, Stretch};
 use eo_render::{Compare, CompositeUniforms, View2d};
 use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, vec2};
@@ -24,10 +24,8 @@ const ACCENT: Color32 = Color32::from_rgb(90, 170, 255);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
-    Open,
-    AddLayer,
-    /// Open or add directories (SAFE, SEN3, Zarr). True: add as layers.
-    OpenDir(bool),
+    /// Open products in the view (true: add them as layers).
+    Open(bool, What),
     Save,
     Load,
     NewView,
@@ -79,10 +77,12 @@ fn mb(b: usize) -> String {
 /// Commands of the palette: name, key, command. Some depend on the selected layer of view `id`.
 fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     let mut v: Vec<(String, &'static str, Cmd)> = [
-        ("Open...", "Ctrl+O", Cmd::Open),
-        ("Open folder (SAFE, SEN3, Zarr)...", "Ctrl+Alt+O", Cmd::OpenDir(false)),
-        ("Add layer...", "Ctrl+Shift+O", Cmd::AddLayer),
-        ("Add layer from folder (SAFE, SEN3, Zarr)...", "", Cmd::OpenDir(true)),
+        ("Open files...", "Ctrl+O", Cmd::Open(false, What::Files)),
+        ("Open folder (SAFE, SEN3, Zarr)...", "Ctrl+Alt+O", Cmd::Open(false, What::Dirs)),
+        ("Open URL...", "Ctrl+L", Cmd::Open(false, What::Url)),
+        ("Add layer: files...", "Ctrl+Shift+O", Cmd::Open(true, What::Files)),
+        ("Add layer: folder (SAFE, SEN3, Zarr)...", "", Cmd::Open(true, What::Dirs)),
+        ("Add layer: URL...", "", Cmd::Open(true, What::Url)),
         ("Save workspace...", "Ctrl+S", Cmd::Save),
         ("Open workspace...", "", Cmd::Load),
         ("New view", "Ctrl+N", Cmd::NewView),
@@ -107,6 +107,12 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     .into_iter()
     .map(|(n, k, c)| (n.to_string(), k, c))
     .collect();
+    for (i, k) in OPEN_KINDS.iter().enumerate() {
+        v.push((format!("Open {}...", k.0), "", Cmd::Open(false, What::Kind(i))));
+    }
+    for r in &app.recent {
+        v.push((format!("Open recent: {r}"), "", Cmd::Open(false, What::Path(r.clone()))));
+    }
     for (c, n, k) in Cmp::ALL {
         v.push((format!("Compare: {n}"), k, Cmd::Compare(c)));
     }
@@ -158,7 +164,7 @@ impl TabViewer for Tabs<'_> {
     }
 
     fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut u32, _: egui_dock::NodePath) {
-        view_menu(ui, *tab, &mut self.cmds);
+        view_menu(ui, *tab, &self.app.recent, &mut self.cmds);
     }
 
     fn on_close(&mut self, tab: &mut u32) -> OnCloseResponse {
@@ -171,18 +177,62 @@ impl TabViewer for Tabs<'_> {
     }
 }
 
-fn view_menu(ui: &mut egui::Ui, id: u32, cmds: &mut Vec<(Cmd, u32)>) {
+/// Product types of the open menus: name, true if the product is a directory, file extensions.
+/// The type sets the dialog (files or directories, file filter): the user does not need to know what to select.
+pub const OPEN_KINDS: &[(&str, bool, &[&str])] = &[
+    ("Sentinel-1 SAFE", true, &[]),
+    ("Sentinel-2 SAFE", true, &[]),
+    ("Sentinel-3 SEN3", true, &[]),
+    ("Zarr store (EOPF, GeoZarr)", true, &[]),
+    ("GeoTIFF, COG", false, &["tif", "tiff", "gtiff", "cog"]),
+    ("JPEG 2000", false, &["jp2", "j2k", "jpx"]),
+    ("NITF (SICD, SIDD)", false, &["ntf", "nitf", "nsf"]),
+    ("NetCDF, HDF5", false, &["nc", "nc4", "h5", "hdf5", "he5"]),
+];
+
+/// File extensions of the dialog for files of all formats.
+const ALL_EXT: &[&str] = &["tif", "tiff", "gtiff", "cog", "jp2", "j2k", "ntf", "nitf", "nsf", "nc", "nc4", "h5", "hdf5", "he5", "xml", "safe", "zarr", WORKSPACE_EXT];
+
+/// Open menu: files of all formats, directories, a URL, the product types, the recent products.
+/// `add`: the products are new layers of the view.
+fn open_menu(ui: &mut egui::Ui, add: bool, id: u32, recent: &[String], cmds: &mut Vec<(Cmd, u32)>) {
+    let mut item = |ui: &mut egui::Ui, name: &str, key: &str, w: What| {
+        if ui.add(egui::Button::new(name).shortcut_text(key)).clicked() {
+            cmds.push((Cmd::Open(add, w), id));
+            ui.close();
+        }
+    };
+    item(ui, "Files...", if add { "Ctrl+Shift+O" } else { "Ctrl+O" }, What::Files);
+    item(ui, "Folder (SAFE, SEN3, Zarr)...", if add { "" } else { "Ctrl+Alt+O" }, What::Dirs);
+    item(ui, "URL...", if add { "" } else { "Ctrl+L" }, What::Url);
+    ui.separator();
+    for (i, k) in OPEN_KINDS.iter().enumerate() {
+        item(ui, &format!("{}...", k.0), "", What::Kind(i));
+    }
+    if !recent.is_empty() {
+        ui.separator();
+        ui.menu_button("Recent", |ui| {
+            for r in recent {
+                let name = r.trim_end_matches('/').rsplit('/').next().unwrap_or(r);
+                if ui.button(name).on_hover_text(r).clicked() {
+                    cmds.push((Cmd::Open(add, What::Path(r.clone())), id));
+                    ui.close();
+                }
+            }
+        });
+    }
+}
+
+fn view_menu(ui: &mut egui::Ui, id: u32, recent: &[String], cmds: &mut Vec<(Cmd, u32)>) {
+    ui.menu_button("Open", |ui| open_menu(ui, false, id, recent, cmds));
+    ui.menu_button("Add layer", |ui| open_menu(ui, true, id, recent, cmds));
+    ui.separator();
     let mut item = |ui: &mut egui::Ui, name: &str, key: &str, c: Cmd| {
         if ui.add(egui::Button::new(name).shortcut_text(key)).clicked() {
             cmds.push((c, id));
             ui.close();
         }
     };
-    item(ui, "Open...", "Ctrl+O", Cmd::Open);
-    item(ui, "Open folder...", "Ctrl+Alt+O", Cmd::OpenDir(false));
-    item(ui, "Add layer...", "Ctrl+Shift+O", Cmd::AddLayer);
-    item(ui, "Add layer from folder...", "", Cmd::OpenDir(true));
-    ui.separator();
     item(ui, "Fit", "F", Cmd::Fit);
     item(ui, "Zoom 1:1", "1", Cmd::OneToOne);
     item(ui, "Automatic stretch", "A", Cmd::Auto);
@@ -220,8 +270,8 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     if resp.contains_pointer() {
         app.hovered = Some(id);
     }
+    resp.context_menu(|ui| view_menu(ui, id, &app.recent, cmds));
     let p = app.pane_mut(id).unwrap();
-    resp.context_menu(|ui| view_menu(ui, id, cmds));
     if p.layers.is_empty() {
         let c = rect.center();
         if app.opening(id) {
@@ -230,7 +280,7 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
             ui.painter().text(c - vec2(0.0, 24.0), Align2::CENTER_CENTER, "Drop files here", FontId::proportional(18.0), Color32::GRAY);
             let b = ui.put(Rect::from_center_size(c + vec2(0.0, 12.0), vec2(120.0, 26.0)), egui::Button::new("Open...  Ctrl+O"));
             if b.clicked() {
-                cmds.push((Cmd::Open, id));
+                cmds.push((Cmd::Open(false, What::Files), id));
             }
         }
     }
@@ -355,7 +405,7 @@ fn contents_ui(ui: &mut egui::Ui, l: &mut MapLayer) -> Option<Pick> {
     let mut pick = None;
     ui.horizontal(|ui| {
         ui.strong("Product");
-        ui.add(egui::TextEdit::singleline(&mut l.filter).hint_text(format!("Filter {} variables", l.chans.len())).desired_width(ui.available_width()));
+        ui.add(egui::TextEdit::singleline(&mut l.filter).hint_text(format!("Filter {} variables", l.chans.len())).desired_width(f32::INFINITY));
     });
     let l = &*l;
     egui::ScrollArea::vertical().id_salt(("contents", l.uid)).max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -499,6 +549,7 @@ impl App {
         if self.palette.is_some() {
             self.palette_ui(&ctx);
         }
+        self.url_ui(&ctx);
 
         if let Some(b) = &mut self.bench {
             if let Some(p) = self.panes.first_mut()
@@ -524,9 +575,10 @@ impl App {
         let t = self.target();
         let (cmd, sh, alt, none) = (Modifiers::COMMAND, Modifiers::COMMAND | Modifiers::SHIFT, Modifiers::ALT, Modifiers::NONE);
         let table: &[(Modifiers, Key, Cmd)] = &[
-            (Modifiers::COMMAND | Modifiers::ALT, Key::O, Cmd::OpenDir(false)),
-            (sh, Key::O, Cmd::AddLayer),
-            (cmd, Key::O, Cmd::Open),
+            (Modifiers::COMMAND | Modifiers::ALT, Key::O, Cmd::Open(false, What::Dirs)),
+            (sh, Key::O, Cmd::Open(true, What::Files)),
+            (cmd, Key::O, Cmd::Open(false, What::Files)),
+            (cmd, Key::L, Cmd::Open(false, What::Url)),
             (cmd, Key::S, Cmd::Save),
             (cmd, Key::K, Cmd::Palette),
             (cmd, Key::N, Cmd::NewView),
@@ -568,9 +620,9 @@ impl App {
 
     pub fn run(&mut self, c: Cmd, id: u32) {
         match c {
-            Cmd::Open => self.dialog = Some(Dialog::Open { pane: id, add: false, dirs: false }),
-            Cmd::AddLayer => self.dialog = Some(Dialog::Open { pane: id, add: true, dirs: false }),
-            Cmd::OpenDir(add) => self.dialog = Some(Dialog::Open { pane: id, add, dirs: true }),
+            Cmd::Open(add, What::Url) => self.url = Some((String::new(), add, id)),
+            Cmd::Open(add, What::Path(p)) => self.open(id, p, add),
+            Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
             Cmd::Load => self.dialog = Some(Dialog::Load),
             Cmd::NewView => drop(self.split(id)),
@@ -660,6 +712,28 @@ impl App {
         }
     }
 
+    /// Dialog for a URL: Enter opens it, Esc closes the dialog.
+    fn url_ui(&mut self, ctx: &egui::Context) {
+        let Some((text, add, id)) = &mut self.url else { return };
+        let mut go = false;
+        let r = egui::Modal::new(egui::Id::new("url")).show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.label(if *add { "Add a layer from a URL" } else { "Open a URL" });
+            let te = ui.add(egui::TextEdit::singleline(text).hint_text("https://... (COG, JPEG 2000, NetCDF, .zarr store)").desired_width(f32::INFINITY));
+            te.request_focus();
+            go = ui.input(|i| i.key_pressed(Key::Enter));
+        });
+        if go {
+            let (text, add, id) = (text.trim().trim_matches('"').to_string(), *add, *id);
+            self.url = None;
+            if !text.is_empty() {
+                self.open(id, text, add);
+            }
+        } else if r.should_close() {
+            self.url = None;
+        }
+    }
+
     fn palette_ui(&mut self, ctx: &egui::Context) {
         let id = self.target();
         let list = commands(self, id);
@@ -702,14 +776,25 @@ impl App {
     fn toolbar(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
         ui.horizontal(|ui| {
+            // Split buttons: the name opens files of all formats, the arrow has the product types.
+            for (add, name, tip) in [
+                (false, "Open", "Open files in the active view (Ctrl+O). Drop files or directories on a view to open them there"),
+                (true, "Add layer", "Add files as layers of the active view (Ctrl+Shift+O, or Shift + drop)"),
+            ] {
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    if ui.button(name).on_hover_text(tip).clicked() {
+                        cmds.push((Cmd::Open(add, What::Files), id));
+                    }
+                    let m = ui.menu_button("\u{23F7}", |ui| open_menu(ui, add, id, &self.recent, cmds));
+                    m.response.on_hover_text("Product types (SAFE, SEN3, Zarr, GeoTIFF, ...), folders, URL, recent products");
+                });
+            }
             let mut b = |ui: &mut egui::Ui, t: &str, tip: &str, c: Cmd| {
                 if ui.button(t).on_hover_text(tip).clicked() {
                     cmds.push((c, id));
                 }
             };
-            b(ui, "Open", "Open products in the active view (Ctrl+O). Drop files on a view to open them there", Cmd::Open);
-            b(ui, "Open folder", "Open product directories in the active view: SAFE, SEN3, Zarr (Ctrl+Alt+O). You can also drop them on a view", Cmd::OpenDir(false));
-            b(ui, "Add layer", "Add products as layers of the active view (Ctrl+Shift+O, or Shift + drop)", Cmd::AddLayer);
             b(ui, "Save", "Save the workspace: layout, views, layers, settings (Ctrl+S)", Cmd::Save);
             b(ui, "Load", "Open a workspace file", Cmd::Load);
             ui.separator();
@@ -805,7 +890,7 @@ impl App {
             ui.strong("Layers");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ Add").on_hover_text("Add layers to this view (Ctrl+Shift+O, or Shift + drop)").clicked() {
-                    cmds.push((Cmd::AddLayer, id));
+                    cmds.push((Cmd::Open(true, What::Files), id));
                 }
             });
         });
@@ -828,19 +913,23 @@ impl App {
                 let l = &mut p.layers[k];
                 rebuild |= ui.checkbox(&mut l.visible, "").on_hover_text("Show or hide").changed();
                 let name = format!("{tag}{}", l.label(200));
-                let w = ui.available_width() - 70.0;
-                if ui.add_sized([w, 18.0], egui::Button::selectable(p.sel == k, name).truncate()).on_hover_text(&l.path).clicked() {
-                    p.sel = k;
-                }
-                if ui.add_enabled(k + 1 < n, egui::Button::new("^").small()).on_hover_text("Move up").clicked() {
-                    action = Some((k, 1));
-                }
-                if ui.add_enabled(k > 0, egui::Button::new("v").small()).on_hover_text("Move down").clicked() {
-                    action = Some((k, -1));
-                }
-                if ui.small_button("x").on_hover_text("Remove").clicked() {
-                    action = Some((k, 0));
-                }
+                // The buttons from the right, then the name in the rest of the row (a fixed sum of widths
+                // can be more than the row: the panel then grows at each frame).
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("\u{00D7}").on_hover_text("Remove").clicked() {
+                        action = Some((k, 0));
+                    }
+                    if ui.add_enabled(k > 0, egui::Button::new("\u{23F7}").small()).on_hover_text("Move down").clicked() {
+                        action = Some((k, -1));
+                    }
+                    if ui.add_enabled(k + 1 < n, egui::Button::new("\u{23F6}").small()).on_hover_text("Move up").clicked() {
+                        action = Some((k, 1));
+                    }
+                    let w = ui.available_width();
+                    if ui.add_sized([w, 18.0], egui::Button::selectable(p.sel == k, name).truncate()).on_hover_text(&l.path).clicked() {
+                        p.sel = k;
+                    }
+                });
             });
         }
         match action {
@@ -896,13 +985,13 @@ impl App {
                 for (k, lbl) in ["R", "G", "B"].iter().enumerate() {
                     ui.horizontal(|ui| {
                         ui.label(*lbl);
-                        let r = ui.add(egui::TextEdit::singleline(&mut l.rgb[k]).desired_width(ui.available_width()));
+                        let r = ui.add(egui::TextEdit::singleline(&mut l.rgb[k]).desired_width(f32::INFINITY));
                         changed |= r.lost_focus();
                     });
                 }
             }
             Kind::Expr => {
-                let r = ui.add(egui::TextEdit::singleline(&mut l.expr).hint_text("(B08 - B04) / (B08 + B04)").desired_width(ui.available_width()));
+                let r = ui.add(egui::TextEdit::singleline(&mut l.expr).hint_text("(B08 - B04) / (B08 + B04)").desired_width(f32::INFINITY));
                 changed |= r.lost_focus();
             }
         }
@@ -1341,14 +1430,13 @@ pub fn dialogs(app: &mut App) {
     let Some(d) = app.dialog.take() else { return };
     let ws = [WORKSPACE_EXT];
     match d {
-        Dialog::Open { pane, add, dirs } => {
-            let f = if dirs {
-                rfd::FileDialog::new().set_title("Open SAFE, SEN3 or Zarr directories").pick_folders()
-            } else {
-                rfd::FileDialog::new()
-                    .add_filter("EO data and workspaces", &["tif", "tiff", "gtiff", "cog", "jp2", "ntf", "nitf", "nc", "h5", "xml", "safe", "zarr", WORKSPACE_EXT])
-                    .add_filter("All files", &["*"])
-                    .pick_files()
+        Dialog::Open { pane, add, what } => {
+            let d = rfd::FileDialog::new();
+            let f = match what {
+                What::Kind(k) if OPEN_KINDS[k].1 => d.set_title(format!("Open {}: select the product directories", OPEN_KINDS[k].0)).pick_folders(),
+                What::Kind(k) => d.set_title(format!("Open {}", OPEN_KINDS[k].0)).add_filter(OPEN_KINDS[k].0, OPEN_KINDS[k].2).add_filter("All files", &["*"]).pick_files(),
+                What::Dirs => d.set_title("Open product directories (SAFE, SEN3, Zarr)").pick_folders(),
+                _ => d.add_filter("EO data and workspaces", ALL_EXT).add_filter("All files", &["*"]).pick_files(),
             };
             if let Some(v) = f {
                 app.open_many(pane, v.into_iter().map(|p| p.to_string_lossy().into_owned()).collect(), add);

@@ -15,6 +15,9 @@ use std::sync::{Arc, mpsc};
 /// Bytes of tile data that go to the GPU in one frame. More waits for the next frame.
 const UPLOAD_BYTES: usize = 8 << 20;
 
+/// Length of the recent list.
+const RECENT: usize = 12;
+
 /// Extension of workspace files (JSON).
 pub const WORKSPACE_EXT: &str = "eoview";
 
@@ -233,9 +236,23 @@ struct Open {
     path: String,
 }
 
+/// What an open command opens.
+#[derive(Clone, Debug, PartialEq)]
+pub enum What {
+    /// Files of all supported formats.
+    Files,
+    /// Product directories (SAFE, SEN3, Zarr). A file dialog cannot select files and directories.
+    Dirs,
+    /// One product type of `ui::OPEN_KINDS`.
+    Kind(usize),
+    /// A URL that the user types.
+    Url,
+    /// This path or URL (a recent product).
+    Path(String),
+}
+
 pub enum Dialog {
-    /// Files, or directories (SAFE, SEN3, Zarr): a file dialog cannot select both.
-    Open { pane: u32, add: bool, dirs: bool },
+    Open { pane: u32, add: bool, what: What },
     Save,
     Load,
 }
@@ -301,6 +318,11 @@ pub struct App {
     pub panel: bool,
     pub dialog: Option<Dialog>,
     pub palette: Option<crate::ui::Palette>,
+    /// URL field of the "open URL" dialog: text, add as a layer, view.
+    pub url: Option<(String, bool, u32)>,
+    /// Recent products and workspaces, newest first, and their file. Without credentials (see `clean_path`).
+    pub recent: Vec<String>,
+    pub recent_file: Option<std::path::PathBuf>,
     pub gpu_budget: usize,
     pub bench: Option<Bench>,
 }
@@ -334,6 +356,9 @@ impl App {
             palette: None,
             gpu_budget,
             bench,
+            url: None,
+            recent: vec![],
+            recent_file: None,
         }
     }
 
@@ -421,6 +446,7 @@ impl App {
 
     /// Open a product in view `pane`: replace its layers, or add a layer.
     pub fn open(&mut self, pane: u32, path: String, add: bool) {
+        self.remember(&path);
         if path.ends_with(&format!(".{WORKSPACE_EXT}")) {
             return self.load_workspace(&path);
         }
@@ -434,6 +460,30 @@ impl App {
         }
         let req = self.engine.open(path.clone());
         self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path });
+    }
+
+    /// Put a path at the top of the recent list, and write the list.
+    fn remember(&mut self, path: &str) {
+        let p = crate::layer::clean_path(path);
+        self.recent.retain(|r| *r != p);
+        self.recent.insert(0, p);
+        self.recent.truncate(RECENT);
+        if let Some(f) = &self.recent_file {
+            let _ = f.parent().map(std::fs::create_dir_all);
+            let _ = std::fs::write(f, serde_json::to_string_pretty(&self.recent).unwrap_or_default());
+        }
+    }
+
+    /// Read the recent list of the user (not in tests and benchmarks: they do not change it).
+    pub fn load_recent(&mut self) {
+        let dir = if cfg!(windows) {
+            std::env::var_os("APPDATA").map(std::path::PathBuf::from)
+        } else {
+            std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
+        };
+        let Some(f) = dir.map(|d| d.join(crate::APP).join("recent.json")) else { return };
+        self.recent = std::fs::read_to_string(&f).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        self.recent_file = Some(f);
     }
 
     /// Open several products: the first in view `pane`, the others in the empty views, then in new views.

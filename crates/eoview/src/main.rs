@@ -229,6 +229,7 @@ impl ApplicationHandler<Ev> for App {
         }
         self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some()));
         if self.bench.is_none() {
+            self.load_recent();
             let files: Vec<String> = std::env::args().skip(1).collect();
             if !files.is_empty() {
                 self.open_many(self.active, files, false);

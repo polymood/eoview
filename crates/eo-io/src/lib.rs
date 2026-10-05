@@ -34,7 +34,9 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     }
     if !source::is_remote(url) {
         if path.is_dir() {
-            return safe::open(path, rt);
+            // A directory in a SAFE product (for example GRANULE) opens the product.
+            let dir = path.ancestors().find(|d| safe::kind(d).is_some()).unwrap_or(path);
+            return safe::open(dir, rt);
         }
         if let Some(dir) = path.parent().filter(|d| safe::kind(d).is_some()) {
             return safe::open(dir, rt);

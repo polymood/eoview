@@ -45,11 +45,17 @@ Each product opens in its own view. With more than one product, the layout chang
 
 | Action | How |
 |---|---|
-| Open products in the view under the mouse | Drop the files on the view, or **Open** (Ctrl+O). More files open in more views |
-| Open product directories (SAFE, SEN3, Zarr) | Drop the directory on the view, or **Open folder** (Ctrl+Alt+O). **Open** also accepts a file in the directory, for example `manifest.safe` or `xfdumanifest.xml` |
-| Add products as layers of a view | Shift + drop, or **Add layer** (Ctrl+Shift+O) |
+| Open files in the view under the mouse | Drop the files on the view, or **Open** (Ctrl+O). More files open in more views |
+| Open a product of a known type | The arrow of **Open**: Sentinel-1 SAFE, Sentinel-2 SAFE, Sentinel-3 SEN3, Zarr store, GeoTIFF/COG, JPEG 2000, NITF, NetCDF/HDF5. The type sets the dialog: it selects directories or files, with the file filter of the type |
+| Open product directories (SAFE, SEN3, Zarr) | Drop the directory on the view, or the arrow of **Open**, then **Folder** (Ctrl+Alt+O). **Open** also accepts a file in the directory, for example `manifest.safe` or `xfdumanifest.xml`. A directory in the product (for example `GRANULE`) opens the product |
+| Open a URL | The arrow of **Open**, then **URL** (Ctrl+L) |
+| Open a recent product or workspace | The arrow of **Open**, then **Recent**, or the command palette |
+| Add products as layers of a view | Shift + drop, or **Add layer** (Ctrl+Shift+O). Its arrow has the same menu |
 | Save the workspace | **Save** (Ctrl+S) |
 | Open a workspace | **Load**, Ctrl+O, or drop the `.eoview` file |
+
+The recent list is in the configuration directory of the user (`eoview/recent.json`). It contains paths
+and URLs without the query, the fragment and the user information.
 
 A workspace file (JSON) contains the layout, the views, the cameras, the layers and their settings. It
 does not contain data. It does not contain the query, the fragment or the user information of URLs (they
