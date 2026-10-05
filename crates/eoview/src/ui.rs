@@ -730,7 +730,7 @@ impl App {
         let r = egui::Modal::new(egui::Id::new("url")).show(ctx, |ui| {
             ui.set_width(560.0);
             ui.label(if *add { "Add a layer from a URL" } else { "Open a URL" });
-            let te = ui.add(egui::TextEdit::singleline(text).hint_text("https://... (COG, JPEG 2000, NetCDF, .zarr store)").desired_width(f32::INFINITY));
+            let te = ui.add(egui::TextEdit::singleline(text).hint_text("https://... or s3://bucket/key (COG, JPEG 2000, NetCDF, .zarr store)").desired_width(f32::INFINITY));
             te.request_focus();
             go = ui.input(|i| i.key_pressed(Key::Enter));
         });

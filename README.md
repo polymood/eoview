@@ -10,7 +10,7 @@ Phases 0, 1 and 2 of the specification are complete:
 
 - Chunk engine: tokio does the I/O, rayon decodes, the UI thread never waits. Priorities from the views
   (coarse level first, screen center first), cancellation of tiles that are not visible.
-- Byte sources: local files (memory map, zero-copy reads of uncompressed data) and HTTP(S) range requests.
+- Byte sources: local files (memory map, zero-copy reads of uncompressed data), HTTP(S) and S3 range requests.
 - Caches with budgets: raw bytes, decoded chunks, GPU tiles.
 - Readers: GeoTIFF/COG, JPEG 2000, NITF (SICD, SIDD), EOPF Zarr v2 and v3, Sentinel-1, -2 and -3 SAFE, NetCDF-4/HDF5.
 - Georeferencing: affine, geolocation arrays, geolocation grids (GCPs). Reprojection on the GPU with a warp mesh.
@@ -53,6 +53,36 @@ Each product opens in its own view. With more than one product, the layout chang
 | Add products as layers of a view | Shift + drop, or **Add layer** (Ctrl+Shift+O). Its arrow has the same menu |
 | Save the workspace | **Save** (Ctrl+S) |
 | Open a workspace | **Load**, Ctrl+O, or drop the `.eoview` file |
+
+### S3
+
+`s3://bucket/key` opens an object of an S3 bucket (a file, or a `.zarr` store). The configuration is the
+standard AWS configuration:
+
+- Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`,
+  `AWS_ENDPOINT_URL`.
+- The profile `AWS_PROFILE` (or `default`) of `~/.aws/credentials` and `~/.aws/config`. The environment
+  variables are stronger.
+- Without credentials, the requests have no signature: public buckets open without an account. The viewer
+  asks AWS for the region of the bucket.
+
+Copernicus Data Space Ecosystem (CDSE): make S3 keys in the CDSE S3 key manager, then use a profile:
+
+```
+# ~/.aws/credentials
+[cdse]
+aws_access_key_id = <key>
+aws_secret_access_key = <secret>
+# ~/.aws/config
+[profile cdse]
+endpoint_url = https://eodata.dataspace.copernicus.eu
+```
+
+```
+AWS_PROFILE=cdse eoview s3://eodata/<path of a file of a product>
+```
+
+The viewer does not write the credentials to logs, to the cache or to workspace files.
 
 The recent list is in the configuration directory of the user (`eoview/recent.json`). It contains paths
 and URLs without the query, the fragment and the user information.

@@ -1,5 +1,10 @@
 //! Byte sources. A local file is memory-mapped: reads are zero-copy slices.
-//! A remote object (HTTP, HTTPS) uses range requests through `object_store`.
+//! A remote object (HTTP, HTTPS, S3) uses range requests through `object_store`.
+//!
+//! S3 (`s3://bucket/key`): the configuration comes from the AWS environment variables (AWS_ACCESS_KEY_ID,
+//! AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_REGION, AWS_ENDPOINT_URL) and from the profile AWS_PROFILE
+//! (or `default`) of the AWS configuration files. Without credentials the requests have no signature
+//! (public buckets). The credentials stay in the store: they are not in logs, caches or error messages.
 use bytes::Bytes;
 use eo_core::{Error, Result};
 use eo_core::ChunkLoc;
@@ -45,24 +50,79 @@ impl AsRef<[u8]> for Map {
 /// One store for each host. All requests to a host share the same request limit.
 static STORES: LazyLock<Mutex<HashMap<String, Arc<dyn ObjectStore>>>> = LazyLock::new(Default::default);
 
-fn store(origin: &str) -> Result<Arc<dyn ObjectStore>> {
+/// Store of an HTTP origin (`https://host`) or of an S3 bucket (`s3://bucket`).
+fn store(origin: &str, rt: &Handle) -> Result<Arc<dyn ObjectStore>> {
     let mut m = STORES.lock().unwrap();
     if let Some(s) = m.get(origin) {
         return Ok(s.clone());
     }
+    let err = |e: object_store::Error| Error(format!("{origin}: {e}"));
     let opts = object_store::ClientOptions::new().with_allow_http(true);
-    let http = object_store::http::HttpBuilder::new()
-        .with_url(origin)
-        .with_client_options(opts)
-        .build()
-        .map_err(|e| Error(format!("{origin}: {e}")))?;
-    let s: Arc<dyn ObjectStore> = Arc::new(object_store::limit::LimitStore::new(http, PER_HOST));
+    let s: Arc<dyn ObjectStore> = match origin.strip_prefix("s3://") {
+        Some(bucket) => Arc::new(object_store::limit::LimitStore::new(s3(bucket, opts, rt).map_err(err)?, PER_HOST)),
+        None => {
+            let http = object_store::http::HttpBuilder::new().with_url(origin).with_client_options(opts).build().map_err(err)?;
+            Arc::new(object_store::limit::LimitStore::new(http, PER_HOST))
+        }
+    };
     m.insert(origin.into(), s.clone());
     Ok(s)
 }
 
+/// Keys of a profile in the AWS configuration files (`~/.aws/credentials` and `~/.aws/config`, or the files
+/// that AWS_SHARED_CREDENTIALS_FILE and AWS_CONFIG_FILE give).
+fn aws_profile() -> HashMap<String, String> {
+    let profile = std::env::var("AWS_PROFILE").unwrap_or_else(|_| "default".into());
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(std::path::PathBuf::from).unwrap_or_default();
+    let file = |var: &str, name: &str| std::env::var_os(var).map_or_else(|| home.join(".aws").join(name), Into::into);
+    let mut out = HashMap::new();
+    for f in [file("AWS_CONFIG_FILE", "config"), file("AWS_SHARED_CREDENTIALS_FILE", "credentials")] {
+        ini_section(&std::fs::read_to_string(f).unwrap_or_default(), &profile, &mut out);
+    }
+    out
+}
+
+/// Keys of section `[profile]` or `[profile <profile>]` of an AWS configuration file.
+fn ini_section(text: &str, profile: &str, out: &mut HashMap<String, String>) {
+    let mut on = false;
+    for l in text.lines().map(str::trim) {
+        if let Some(sec) = l.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            on = sec.trim().trim_start_matches("profile ").trim() == profile;
+        } else if let Some((k, v)) = l.split_once('=').filter(|_| on && !l.starts_with(['#', ';'])) {
+            out.insert(k.trim().to_lowercase(), v.trim().to_string());
+        }
+    }
+}
+
+fn s3(bucket: &str, opts: object_store::ClientOptions, rt: &Handle) -> object_store::Result<object_store::aws::AmazonS3> {
+    use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey as K};
+    let mut cfg: HashMap<K, String> = HashMap::new();
+    // The environment variables are stronger than the profile.
+    let env = std::env::vars().filter(|(k, _)| k.starts_with("AWS_")).map(|(k, v)| (k.to_lowercase(), v));
+    for (k, v) in aws_profile().into_iter().chain(env) {
+        if let Ok(k) = k.parse::<K>() {
+            cfg.insert(k, v);
+        }
+    }
+    let has = |k: K| cfg.contains_key(&k);
+    let signed = has(K::AccessKeyId) || has(K::ContainerCredentialsRelativeUri) || has(K::ContainerCredentialsFullUri) || has(K::WebIdentityTokenFile);
+    let aws = !has(K::Endpoint) && !has(K::S3Endpoint);
+    let mut b = AmazonS3Builder::new().with_bucket_name(bucket).with_client_options(opts.clone());
+    if !has(K::Region) && !has(K::DefaultRegion) {
+        // An AWS bucket answers only in its region: ask for it (one request for each bucket). On a thread
+        // without a runtime: the caller can be a task. Other S3 services do not use the region.
+        let region = if aws { std::thread::scope(|s| s.spawn(|| rt.block_on(object_store::aws::resolve_bucket_region(bucket, &opts))).join().unwrap())? } else { "default".into() };
+        b = b.with_region(region);
+    }
+    for (k, v) in cfg {
+        b = b.with_config(k, v);
+    }
+    // ponytail: no credentials from the EC2 instance metadata service: without keys, the bucket is public.
+    b.with_skip_signature(!signed).build()
+}
+
 pub fn is_remote(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://")
+    ["http://", "https://", "s3://"].iter().any(|s| url.starts_with(s))
 }
 
 impl Source {
@@ -155,7 +215,8 @@ impl Source {
                 }
                 let u = url::Url::parse(url).map_err(|e| Error(format!("{url}: {e}")))?;
                 let path = Path::from_url_path(u.path()).map_err(|e| Error(format!("{url}: {e}")))?;
-                Ok(Inner::Remote { store: store(&u.origin().ascii_serialization())?, path })
+                let origin = if u.scheme() == "s3" { format!("s3://{}", u.host_str().unwrap_or("")) } else { u.origin().ascii_serialization() };
+                Ok(Inner::Remote { store: store(&origin, &self.rt)?, path })
             })
             .as_ref()
             .map_err(Clone::clone)
@@ -240,4 +301,21 @@ fn slice(name: &str, map: &Bytes, r: &Range<u64>) -> Result<Bytes> {
         return Err(Error(format!("{name}: range {r:?} is after end of data ({} bytes)", map.len())));
     }
     Ok(map.slice(r.start as usize..r.end as usize))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_of_aws_files() {
+        let text = "[default]\nregion = eu-west-1\n# note\n[profile cdse]\nendpoint_url = https://eodata.example\naws_access_key_id=K\n[other]\nregion = x\n";
+        let mut m = HashMap::new();
+        ini_section(text, "cdse", &mut m);
+        assert_eq!(m.len(), 2);
+        assert_eq!((m["endpoint_url"].as_str(), m["aws_access_key_id"].as_str()), ("https://eodata.example", "K"));
+        let mut m = HashMap::new();
+        ini_section(text, "default", &mut m);
+        assert_eq!(m, HashMap::from([("region".to_string(), "eu-west-1".to_string())]));
+    }
 }

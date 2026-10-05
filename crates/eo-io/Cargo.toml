@@ -13,7 +13,7 @@ tokio.workspace = true
 futures-util = "0.3"
 libdeflater = "1.26.1"
 memmap2 = "0.9.11"
-object_store = { version = "0.14.2", default-features = false, features = ["http"] }
+object_store = { version = "0.14.2", default-features = false, features = ["http", "aws"] }
 url = "2"
 serde_json = "1"
 weezl = "0.2.1"
