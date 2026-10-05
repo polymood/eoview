@@ -48,6 +48,10 @@ pub enum Cmd {
     Cmap(usize),
     Space(Option<u32>),
     Palette,
+    /// Time steps: forward or back, go to a step, play or pause.
+    Step(i32),
+    SetStep(usize),
+    Play,
 }
 
 #[derive(Default)]
@@ -103,6 +107,10 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         ("Link or unlink view", "L", Cmd::Link),
         ("Link mode: geographic or pixel", "Shift+L", Cmd::LinkMode),
         ("Swipe line: vertical or horizontal", "V", Cmd::SwipeOrient),
+        ("Open files as a time series...", "", Cmd::Open(false, What::Series)),
+        ("Time: next step", ".", Cmd::Step(1)),
+        ("Time: previous step", ",", Cmd::Step(-1)),
+        ("Time: play or pause", "Space", Cmd::Play),
     ]
     .into_iter()
     .map(|(n, k, c)| (n.to_string(), k, c))
@@ -205,6 +213,7 @@ fn open_menu(ui: &mut egui::Ui, add: bool, id: u32, recent: &[String], cmds: &mu
     item(ui, "Files...", if add { "Ctrl+Shift+O" } else { "Ctrl+O" }, What::Files);
     item(ui, "Folder (SAFE, SEN3, Zarr)...", if add { "" } else { "Ctrl+Alt+O" }, What::Dirs);
     item(ui, "URL...", if add { "" } else { "Ctrl+L" }, What::Url);
+    item(ui, "Files as a time series...", "", What::Series);
     ui.separator();
     for (i, k) in OPEN_KINDS.iter().enumerate() {
         item(ui, &format!("{}...", k.0), "", What::Kind(i));
@@ -255,7 +264,13 @@ fn view_menu(ui: &mut egui::Ui, id: u32, recent: &[String], cmds: &mut Vec<(Cmd,
 
 /// Input of one view: pan, zoom, swipe line, cursor. The drawing comes after the link sync (`paint`).
 fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &mut Vec<(Cmd, u32)>) {
-    let rect = ui.available_rect_before_wrap();
+    let mut rect = ui.available_rect_before_wrap();
+    // A view with time steps has its timeline at the bottom.
+    if app.pane(id).is_some_and(|p| p.timed().is_some()) && rect.height() > 80.0 {
+        let (view, bar) = rect.split_top_bottom_at_y(rect.bottom() - 28.0);
+        rect = view;
+        timeline(app, ui, id, bar, cmds);
+    }
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
     let ppp = ui.ctx().pixels_per_point();
     let active = app.active == id;
@@ -338,6 +353,61 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         if ui.put(r, b).on_hover_text(tip).clicked() {
             cmds.push((Cmd::Link, id));
         }
+    }
+}
+
+/// Timeline of a view: step back, play or pause, step forward, rate, the steps with their buffer state
+/// (click or drag to go to a step), the number and the time of the selected step.
+fn timeline(app: &mut App, ui: &mut egui::Ui, id: u32, bar: Rect, cmds: &mut Vec<(Cmd, u32)>) {
+    let Some(p) = app.pane_mut(id) else { return };
+    let Some(l) = p.timed() else { return };
+    let (n, step) = (l.steps.len(), l.step);
+    let states: Vec<u8> = (0..n).map(|s| p.buffer(l, s)).collect();
+    let text = format!("{} / {n}   {}{}", step + 1, l.step_label(step), if l.shown != step { "   loading" } else { "" });
+    let play = p.play;
+    ui.painter().rect_filled(bar, 0.0, Color32::from_gray(30));
+    let mut x = bar.left() + 4.0;
+    let mut slot = |w: f32| {
+        let r = Rect::from_min_size(egui::pos2(x, bar.top() + 3.0), vec2(w, bar.height() - 6.0));
+        x += w + 4.0;
+        r
+    };
+    if ui.put(slot(24.0), egui::Button::new("\u{23F4}")).on_hover_text("Step back (,)").clicked() {
+        cmds.push((Cmd::Step(-1), id));
+    }
+    let b = egui::Button::selectable(play, if play { "Pause" } else { "Play" });
+    if ui.put(slot(50.0), b).on_hover_text("Play or pause (Space). The playback waits for a step that is not ready: it does not skip steps").clicked() {
+        cmds.push((Cmd::Play, id));
+    }
+    if ui.put(slot(24.0), egui::Button::new("\u{23F5}")).on_hover_text("Step forward (.)").clicked() {
+        cmds.push((Cmd::Step(1), id));
+    }
+    ui.put(slot(64.0), egui::DragValue::new(&mut p.fps).range(0.2..=30.0).speed(0.1).suffix(" /s")).on_hover_text("Playback rate: steps for each second");
+    let g = ui.painter().layout_no_wrap(text, FontId::proportional(12.0), Color32::WHITE);
+    let track = Rect::from_min_max(egui::pos2(slot(0.0).left() + 4.0, bar.top() + 7.0), egui::pos2(bar.right() - g.size().x - 16.0, bar.bottom() - 7.0));
+    ui.painter().galley(egui::pos2(track.right() + 8.0, bar.center().y - g.size().y / 2.0), g, Color32::WHITE);
+    if track.width() < 20.0 {
+        return;
+    }
+    let w = track.width() / n as f32;
+    for (s, st) in states.iter().enumerate() {
+        let c = [Color32::from_gray(60), Color32::from_gray(115), Color32::from_rgb(225, 165, 40), Color32::from_rgb(80, 190, 110)][*st as usize];
+        let r = Rect::from_min_size(egui::pos2(track.left() + s as f32 * w, track.top()), vec2((w - 1.0).max(1.0), track.height()));
+        ui.painter().rect_filled(r, 1.0, c);
+    }
+    let cur = Rect::from_min_size(egui::pos2(track.left() + step as f32 * w, track.top()), vec2(w.max(2.0), track.height()));
+    ui.painter().rect_stroke(cur.expand(2.0), 1.0, Stroke::new(2.0, Color32::WHITE), egui::StrokeKind::Outside);
+    let resp = ui.interact(track.expand2(vec2(2.0, 7.0)), ui.id().with(("timeline", id)), Sense::click_and_drag());
+    let at = |q: Pos2| (((q.x - track.left()) / w).max(0.0) as usize).min(n - 1);
+    if let Some(q) = resp.interact_pointer_pos().filter(|_| resp.clicked() || resp.dragged())
+        && at(q) != step
+    {
+        cmds.push((Cmd::SetStep(at(q)), id));
+    }
+    if let Some(s) = resp.hover_pos().map(at) {
+        let state = ["not open", "open", "tiles load", "ready"][states[s] as usize];
+        let label = app.pane(id).and_then(|p| p.timed()).map_or(String::new(), |l| l.step_label(s));
+        resp.on_hover_text_at_pointer(format!("{} / {n}   {label}\n{state}\nGreen: ready for this view. Amber: tiles load. Gray: open. Dark: not open.", s + 1));
     }
 }
 
@@ -578,6 +648,9 @@ impl App {
             let (g, id) = (self.panes[i].link, self.panes[i].id);
             self.cursor = self.cam(i, Some(c)).map(|cam| (g, id, cam));
         }
+        if let Some(dt) = self.play(ctx.input(|i| i.time)) {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(dt.max(0.0)));
+        }
         self.sync();
         self.paint(&ctx);
     }
@@ -615,6 +688,9 @@ impl App {
             (none, Key::K, Cmd::Compare(Cmp::Flicker)),
             (none, Key::Escape, Cmd::Compare(Cmp::Off)),
             (none, Key::V, Cmd::SwipeOrient),
+            (none, Key::Period, Cmd::Step(1)),
+            (none, Key::Comma, Cmd::Step(-1)),
+            (none, Key::Space, Cmd::Play),
         ];
         ctx.input_mut(|i| {
             for (m, k, c) in table {
@@ -647,6 +723,18 @@ impl App {
             Cmd::LinkMode => self.link_px ^= true,
             Cmd::Palette => self.palette = Some(Palette::default()),
             Cmd::Space(s) => self.set_space(id, s),
+            Cmd::SetStep(s) => self.set_time(id, s),
+            Cmd::Step(d) => {
+                if let Some(l) = self.pane(id).and_then(|p| p.timed()) {
+                    self.set_time(id, (l.step as i32 + d).rem_euclid(l.steps.len() as i32) as usize);
+                }
+            }
+            Cmd::Play => {
+                let now = self.ctx.input(|i| i.time);
+                if let Some(p) = self.pane_mut(id).filter(|p| p.timed().is_some()) {
+                    (p.play, p.next_step) = (!p.play, now);
+                }
+            }
             _ => {
                 let Some(p) = self.pane_mut(id) else { return };
                 let sel = p.sel;
@@ -1449,10 +1537,12 @@ pub fn dialogs(app: &mut App) {
                 What::Kind(k) if OPEN_KINDS[k].1 => d.set_title(format!("Open {}: select the product directories", OPEN_KINDS[k].0)).pick_folders(),
                 What::Kind(k) => d.set_title(format!("Open {}", OPEN_KINDS[k].0)).add_filter(OPEN_KINDS[k].0, OPEN_KINDS[k].2).add_filter("All files", &["*"]).pick_files(),
                 What::Dirs => d.set_title("Open product directories (SAFE, SEN3, Zarr)").pick_folders(),
+                What::Series => d.set_title("Open files as the time steps of one layer").add_filter("EO data", ALL_EXT).add_filter("All files", &["*"]).pick_files(),
                 _ => d.add_filter("EO data and workspaces", ALL_EXT).add_filter("All files", &["*"]).pick_files(),
             };
             if let Some(v) = f {
-                app.open_many(pane, v.into_iter().map(|p| p.to_string_lossy().into_owned()).collect(), add);
+                let v = v.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                if what == What::Series { app.open_series(pane, v, add) } else { app.open_many(pane, v, add) }
             }
         }
         Dialog::Save => {

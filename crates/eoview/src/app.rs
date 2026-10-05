@@ -2,7 +2,7 @@
 //! events and workspace files.
 use crate::bench::Bench;
 use crate::layer::{LayerSave, MapLayer};
-use crate::view::{Input, View};
+use crate::view::{Ahead, Input, View};
 use crate::Win;
 use eo_cache::{Engine, Event, Layer};
 use eo_core::geo::{Proj, Warp};
@@ -17,6 +17,9 @@ const UPLOAD_BYTES: usize = 8 << 20;
 
 /// Length of the recent list.
 const RECENT: usize = 12;
+
+/// Time steps after the visible step that a view loads (prefetch).
+pub const AHEAD: usize = 3;
 
 /// Extension of workspace files (JSON).
 pub const WORKSPACE_EXT: &str = "eoview";
@@ -132,6 +135,10 @@ pub struct Pane {
     pub swipe_drag: bool,
     pub missing: bool,
     pub err: Option<String>,
+    /// Playback of the time steps: on or off, steps for each second, time of the next step (egui time).
+    pub play: bool,
+    pub fps: f32,
+    pub next_step: f64,
 }
 
 impl Pane {
@@ -162,7 +169,35 @@ impl Pane {
             swipe_drag: false,
             missing: false,
             err: None,
+            play: false,
+            fps: 4.0,
+            next_step: 0.0,
         }
+    }
+
+    /// The layer that the timeline of the view shows: the lowest layer with time steps.
+    pub fn timed(&self) -> Option<&MapLayer> {
+        self.layers.iter().find(|l| l.steps.len() > 1)
+    }
+
+    /// True if the view can show the next time step now: the layers of the step are open, and their tiles
+    /// for this view are on the GPU. Playback waits for this: it does not skip a step.
+    pub fn next_ready(&self) -> bool {
+        self.layers.iter().filter(|l| l.visible && l.steps.len() > 1).all(|l| {
+            let next = l.inputs_at((l.step + 1) % l.steps.len());
+            l.shown == l.step && next.is_some_and(|v| v.iter().all(|x| self.v.inputs.iter().any(|i| i.layer.id == x.id) || self.v.ahead.iter().any(|a| a.input.layer.id == x.id && !a.miss)))
+        })
+    }
+
+    /// Buffer state of step `s` of layer `l` for the timeline: 0 not open, 1 open, 2 its tiles load,
+    /// 3 its tiles for this view are on the GPU.
+    pub fn buffer(&self, l: &MapLayer, s: usize) -> u8 {
+        let Some(v) = l.inputs_at(s) else { return 0 };
+        if s == l.shown {
+            return if self.missing { 2 } else { 3 };
+        }
+        let a: Vec<&Ahead> = v.iter().filter_map(|x| self.v.ahead.iter().find(|a| a.input.layer.id == x.id)).collect();
+        if a.len() < v.len() { 1 } else if a.iter().any(|a| a.miss) { 2 } else { 3 }
     }
 
     pub fn title(&self) -> String {
@@ -178,7 +213,8 @@ impl Pane {
     }
 
     /// Make the view inputs and the composite layers from the visible layers (at most 4 layers and
-    /// `MAX_INPUTS` inputs; layers that use the same data share the inputs). Return the inputs without a warp.
+    /// `MAX_INPUTS` inputs; layers that use the same data share the inputs), and the inputs of the next time
+    /// steps. Return the inputs without a warp.
     pub fn rebuild(&mut self, warps: &HashMap<(u64, Option<u32>), (Arc<Warp>, u64)>) -> Vec<Arc<Layer>> {
         let mut inputs: Vec<Arc<Layer>> = vec![];
         self.specs.clear();
@@ -211,7 +247,20 @@ impl Pane {
         }
         let space = self.v.space;
         self.v.inputs = inputs.into_iter().map(|layer| Input { warp: warps.get(&(layer.id, space)).cloned(), layer }).collect();
-        self.v.inputs.iter().filter(|i| i.warp.is_none()).map(|i| i.layer.clone()).collect()
+        // The next time steps of the layers with a timeline, the nearest step first.
+        let mut ahead: Vec<Ahead> = vec![];
+        for k in 1..=AHEAD {
+            for l in self.layers.iter().filter(|l| l.visible && l.steps.len() > k) {
+                for x in l.inputs_at((l.step + k) % l.steps.len()).into_iter().flatten() {
+                    if !self.v.inputs.iter().any(|i| i.layer.id == x.id) && !ahead.iter().any(|a| a.input.layer.id == x.id) {
+                        ahead.push(Ahead { miss: true, input: Input { warp: warps.get(&(x.id, space)).cloned(), layer: x } });
+                    }
+                }
+            }
+        }
+        self.v.ahead = ahead;
+        let all = self.v.inputs.iter().chain(self.v.ahead.iter().map(|a| &a.input));
+        all.filter(|i| i.warp.is_none()).map(|i| i.layer.clone()).collect()
     }
 
     /// Default range of the difference from the stretch of A and B.
@@ -234,6 +283,8 @@ struct Open {
     save: Option<LayerSave>,
     order: usize,
     path: String,
+    /// The layer is a series of products: path and time of each step (`path` is the first).
+    series: Vec<(String, f64)>,
 }
 
 /// What an open command opens.
@@ -247,6 +298,8 @@ pub enum What {
     Kind(usize),
     /// A URL that the user types.
     Url,
+    /// Files that are the time steps of one layer.
+    Series,
     /// This path or URL (a recent product).
     Path(String),
 }
@@ -303,8 +356,10 @@ pub struct App {
     next_pane: u32,
     next_uid: u64,
     opens: HashMap<u64, Open>,
-    /// Channel requests: request id to (view, layer uid, (variable, choice)).
-    requests: HashMap<u64, (u32, u64, (usize, usize))>,
+    /// Channel requests: request id to (view, layer uid, time step, (variable, choice)).
+    requests: HashMap<u64, (u32, u64, usize, (usize, usize))>,
+    /// Open requests for the products of time steps: request id to (view, layer uid, time step).
+    step_opens: HashMap<u64, (u32, u64, usize)>,
     pub warps: HashMap<(u64, Option<u32>), (Arc<Warp>, u64)>,
     warp_req: HashSet<(u64, Option<u32>)>,
     next_warp: u64,
@@ -343,6 +398,7 @@ impl App {
             next_uid: 1,
             opens: HashMap::new(),
             requests: HashMap::new(),
+            step_opens: HashMap::new(),
             warps: HashMap::new(),
             warp_req: HashSet::new(),
             next_warp: 0,
@@ -444,6 +500,28 @@ impl App {
         self.next_uid
     }
 
+    /// Open products as one layer with a timeline in view `pane`: each product is a time step. The order
+    /// is the time in the name of each product, or in its path (see `eo_core::time::in_name`), then the paths.
+    pub fn open_series(&mut self, pane: u32, paths: Vec<String>, add: bool) {
+        let name = |p: &str| p.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
+        let time = |p: &str| eo_core::time::in_name(&name(p)).or_else(|| eo_core::time::in_name(p)).unwrap_or(f64::NAN);
+        let mut list: Vec<(String, f64)> = paths.into_iter().map(|p| (time(&p), p)).map(|(t, p)| (p, t)).collect();
+        list.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        self.open_steps(pane, list, add);
+    }
+
+    /// As `open_series`, with the time of each step, in the order of the list.
+    pub fn open_steps(&mut self, pane: u32, list: Vec<(String, f64)>, add: bool) {
+        let Some(first) = list.first().map(|l| l.0.clone()) else { return };
+        self.open(pane, first, add);
+        // `open` made the request for the first product: it carries the list.
+        if list.len() > 1
+            && let Some(o) = self.opens.values_mut().find(|o| o.pane == pane && o.path == list[0].0)
+        {
+            o.series = list;
+        }
+    }
+
     /// Open a product in view `pane`: replace its layers, or add a layer.
     pub fn open(&mut self, pane: u32, path: String, add: bool) {
         self.remember(&path);
@@ -455,11 +533,12 @@ impl App {
         if !add && let Some(p) = self.pane_mut(pane) {
             p.layers.clear();
             p.cmp = Cmp::Off;
+            p.play = false;
             self.opens.retain(|_, o| o.pane != pane);
             self.rebuild(pane);
         }
         let req = self.engine.open(path.clone());
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![] });
     }
 
     /// Put a path at the top of the recent list, and write the list.
@@ -575,17 +654,87 @@ impl App {
     pub fn compile(&mut self, id: u32, layer: usize) {
         let Some(p) = self.panes.iter_mut().find(|p| p.id == id) else { return };
         let Some(l) = p.layers.get_mut(layer) else { return };
-        let missing = l.compile();
-        let (uid, any) = (l.uid, l.any().cloned());
-        if let Some(any) = any {
-            for key in missing {
-                if !self.requests.values().any(|r| r.1 == uid && r.2 == key) {
-                    let r = self.engine.select(&any, key.0, key.1, 0);
-                    self.requests.insert(r, (id, uid, key));
+        l.compile();
+        self.load_steps(id, layer);
+        self.rebuild(id);
+    }
+
+    /// Ask the engine for the layers that layer `layer` of view `id` needs and does not have: the channels
+    /// of its selected time step, and of the next steps (prefetch). The product of a step opens first.
+    pub fn load_steps(&mut self, id: u32, layer: usize) {
+        let Some(l) = self.pane(id).and_then(|p| p.layers.get(layer)) else { return };
+        let (uid, n) = (l.uid, l.steps.len().max(1));
+        let (mut select, mut open) = (vec![], vec![]);
+        for k in 0..=AHEAD.min(n - 1) {
+            let s = (l.step + k) % n;
+            match l.base(s) {
+                Some(b) => {
+                    for key in l.missing(s) {
+                        if !self.requests.values().any(|r| (r.1, r.2, r.3) == (uid, s, key)) {
+                            select.push((b.clone(), s, key, l.time_of(s, key.0)));
+                        }
+                    }
+                }
+                None if !self.step_opens.values().any(|o| (o.1, o.2) == (uid, s)) => open.push((s, l.steps[s].path.clone())),
+                None => {}
+            }
+        }
+        for (b, s, key, t) in select {
+            let r = self.engine.select(&b, key.0, key.1, t);
+            self.requests.insert(r, (id, uid, s, key));
+        }
+        for (s, path) in open {
+            let r = self.engine.open(path);
+            self.step_opens.insert(r, (id, uid, s));
+        }
+    }
+
+    /// Show time step `s` in view `id`: the step of its lowest layer with time steps. The other layers
+    /// with time steps of the view, and of the views of its link group, show their step nearest in time
+    /// (the linked views share the time cursor).
+    pub fn set_time(&mut self, id: u32, s: usize) {
+        let Some((p, m)) = self.pane(id).and_then(|p| Some((p, p.timed()?))) else { return };
+        let s = s.min(m.steps.len() - 1);
+        let (t, uid, link) = (m.steps[s].t, m.uid, p.link);
+        let mut changed = vec![];
+        for p in self.panes.iter_mut().filter(|p| p.id == id || (link != 0 && p.link == link)) {
+            for (li, l) in p.layers.iter_mut().enumerate().filter(|x| x.1.steps.len() > 1) {
+                let to = if l.uid == uid { s } else { l.nearest(t, s) };
+                if to != l.step {
+                    l.set_step(to);
+                    changed.push((p.id, li));
                 }
             }
         }
-        self.rebuild(id);
+        for &(pid, li) in &changed {
+            self.load_steps(pid, li);
+        }
+        for pid in changed.iter().map(|c| c.0).collect::<HashSet<_>>() {
+            self.rebuild(pid);
+        }
+    }
+
+    /// Playback: each view that plays goes to its next time step when the time of the step comes and the
+    /// step is ready. If the step is not ready, the view waits. Return the time until the next step.
+    pub fn play(&mut self, now: f64) -> Option<f64> {
+        let mut wait: Option<f64> = None;
+        for i in 0..self.panes.len() {
+            let p = &self.panes[i];
+            let Some(m) = p.timed().filter(|_| p.play) else {
+                self.panes[i].play = false;
+                continue;
+            };
+            let (id, next, dt) = (p.id, (m.step + 1) % m.steps.len(), 1.0 / p.fps.max(0.1) as f64);
+            if now >= p.next_step && p.next_ready() {
+                // A late step does not make the next steps faster.
+                self.panes[i].next_step = (p.next_step + dt).max(now);
+                self.set_time(id, next);
+            }
+            // Not ready: the tiles that come in wake the application. This is a second, slower check.
+            let p = &self.panes[i];
+            wait = Some(wait.unwrap_or(f64::MAX).min(if now >= p.next_step { 0.1 } else { p.next_step - now }));
+        }
+        wait
     }
 
     pub fn set_space(&mut self, id: u32, s: Option<u32>) {
@@ -626,7 +775,8 @@ impl App {
             };
             match ev {
                 Event::Tile { key, w, h, px, done } => {
-                    if !self.panes.iter().any(|p| p.v.inputs.iter().any(|i| i.layer.id == key.layer)) {
+                    let used = |p: &Pane| p.v.inputs.iter().chain(p.v.ahead.iter().map(|a| &a.input)).any(|i| i.layer.id == key.layer);
+                    if !self.panes.iter().any(used) {
                         continue;
                     }
                     if *bytes >= UPLOAD_BYTES {
@@ -650,15 +800,36 @@ impl App {
                             Ok(l) => self.opened(o, l),
                             Err(e) => self.error = Some(format!("{}: {}", o.path, e.0)),
                         }
-                    } else if let Some((pane, uid, _)) = self.requests.remove(&req) {
+                    } else if let Some((pane, uid, s, _)) = self.requests.remove(&req) {
                         match res {
                             Ok(l) => {
-                                let done = self.pane_mut(pane).and_then(|p| p.layers.iter_mut().find(|m| m.uid == uid)).is_some_and(|m| m.loaded(l));
+                                let done = self.pane_mut(pane).and_then(|p| p.layers.iter_mut().find(|m| m.uid == uid)).is_some_and(|m| m.loaded(s, l));
                                 if done {
                                     self.rebuild(pane);
                                 }
                             }
                             Err(e) => self.error = Some(e.0),
+                        }
+                    } else if let Some((pane, uid, s)) = self.step_opens.remove(&req) {
+                        // The product of a time step is open: ask for its other channels.
+                        let at = self.pane(pane).and_then(|p| p.layers.iter().position(|m| m.uid == uid));
+                        match (res, at) {
+                            (Ok(l), Some(at)) => {
+                                let m = &mut self.pane_mut(pane).unwrap().layers[at];
+                                if let Some(st) = m.steps.get_mut(s) {
+                                    st.ds = Some(l.clone());
+                                }
+                                let done = m.loaded(s, l);
+                                self.load_steps(pane, at);
+                                if done {
+                                    self.rebuild(pane);
+                                }
+                            }
+                            (Err(e), Some(at)) => {
+                                let m = &self.panes.iter().find(|p| p.id == pane).unwrap().layers[at];
+                                self.error = Some(format!("{}: {}", m.step_label(s), e.0));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -670,7 +841,7 @@ impl App {
                             let e = (w, self.next_warp);
                             self.warps.insert((layer, dst), e.clone());
                             for p in self.panes.iter_mut().filter(|p| p.v.space == dst) {
-                                for i in p.v.inputs.iter_mut().filter(|i| i.layer.id == layer) {
+                                for i in p.v.inputs.iter_mut().chain(p.v.ahead.iter_mut().map(|a| &mut a.input)).filter(|i| i.layer.id == layer) {
                                     i.warp = Some(e.clone());
                                 }
                             }
@@ -696,6 +867,9 @@ impl App {
         let uid = self.uid();
         let mut m = MapLayer::new(uid, o.path, l);
         m.order = o.order;
+        if !o.series.is_empty() {
+            m.set_series(o.series);
+        }
         if let Some(s) = &o.save {
             m.apply(s);
         }
@@ -708,6 +882,8 @@ impl App {
         let at = p.layers.iter().position(|x| x.order > m.order).unwrap_or(p.layers.len());
         p.layers.insert(at, m);
         p.sel = at;
+        // EOVIEW_PLAY: the playback starts when a product opens (for checks without a keyboard).
+        p.play |= std::env::var_os("EOVIEW_PLAY").is_some();
         self.active = o.pane;
         self.compile(o.pane, at);
         if let Some(w) = &self.win {
@@ -869,6 +1045,7 @@ impl App {
         }
         self.opens.clear();
         self.requests.clear();
+        self.step_opens.clear();
         self.dock = ws.dock;
         self.link_px = ws.link_px;
         self.error = None;
@@ -887,7 +1064,7 @@ impl App {
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);
                 for (order, l) in s.layers.iter().enumerate() {
                     let req = self.engine.open(l.path.clone());
-                    self.opens.insert(req, Open { pane: id, save: Some(l.clone()), order, path: l.path.clone() });
+                    self.opens.insert(req, Open { pane: id, save: Some(l.clone()), order, path: l.path.clone(), series: vec![] });
                 }
             }
             self.panes.push(p);
