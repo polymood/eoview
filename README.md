@@ -6,7 +6,9 @@ Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
 
 ## Status
 
-Phases 0, 1 and 2 of the specification are complete:
+Phases 0, 1 and 2 of the specification are complete. Parts of phases 3 and 4 are done: remote data
+(HTTP, S3, disk cache), time series with a timeline, and a first 3D globe view. `NEXT.md` lists the work
+that is not done.
 
 - Chunk engine: tokio does the I/O, rayon decodes, the UI thread never waits. Priorities from the views
   (coarse level first, screen center first), cancellation of tiles that are not visible.
@@ -36,6 +38,8 @@ Phases 0, 1 and 2 of the specification are complete:
 
 ```
 eoview [files, SAFE directories, Zarr stores, URLs or a workspace file]
+eoview --series <files or URLs>      # the products are the time steps of one layer
+eoview --globe <products>            # the first view is a 3D globe
 eoview --info <path>     # structure of a product: variables, levels, chunks, georeferencing
 ```
 
@@ -136,6 +140,16 @@ click. Link modes:
 
 A new view joins the link group only if it shows data at the position of the group. Else it shows all its
 data and stays unlinked. The views of a group show the cursor of the view under the mouse as a crosshair.
+
+### 3D globe
+
+**Globe** in the toolbar (G) shows the active view on a 3D globe: the layers are on the WGS84 ellipsoid,
+with meridians and parallels. Drag to turn the globe, use the mouse wheel to change the distance. The view
+stays at the same place when it changes between the map and the globe. A globe view can be in a link
+group with 2D views (geographic link mode), and it has the same layers, compare modes and timeline.
+`eoview --globe <products>` starts with a globe view.
+
+The camera is above the view center and looks down, with north up. There is no terrain and no base map.
 
 ### Layers and compare modes
 

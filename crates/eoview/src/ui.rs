@@ -60,6 +60,8 @@ pub enum Cmd {
     CopyExtent,
     Help,
     Quit,
+    /// Globe view or 2D view.
+    Globe,
 }
 
 #[derive(Default)]
@@ -122,6 +124,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         ("Zoom in", "+", Cmd::Zoom(1.5)),
         ("Zoom out", "-", Cmd::Zoom(1.0 / 1.5)),
         ("Copy view extent (west, south, east, north)", "Ctrl+Shift+C", Cmd::CopyExtent),
+        ("3D globe: on or off", "G", Cmd::Globe),
         ("Keys...", "F1", Cmd::Help),
         ("Quit", "Ctrl+Q", Cmd::Quit),
     ]
@@ -351,8 +354,11 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         }
     } else if resp.dragged() {
         let d = resp.drag_delta() * ppp;
-        p.v.center[0] -= d.x as f64 / p.v.scale;
+        // Globe: a degree of longitude is shorter away from the equator.
+        let kx = if p.v.globe { p.v.center[1].to_radians().cos().max(0.05) } else { 1.0 };
+        p.v.center[0] -= d.x as f64 / (p.v.scale * kx);
         p.v.center[1] += d.y as f64 / p.v.scale;
+        p.v.clamp_globe();
         p.moved = true;
     }
     if resp.double_clicked() {
@@ -367,12 +373,17 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         if f != 1.0 {
             let before = p.v.to_display(q);
             p.v.scale = (p.v.scale * f).clamp(1e-12, 1e12);
+            p.v.clamp_globe();
             let after = p.v.to_display(q);
-            p.v.center[0] += before[0] - after[0];
-            p.v.center[1] += before[1] - after[1];
+            // Globe: the cursor can be off the globe.
+            if before[0].is_finite() && after[0].is_finite() {
+                p.v.center[0] += before[0] - after[0];
+                p.v.center[1] += before[1] - after[1];
+                p.v.clamp_globe();
+            }
             p.moved = true;
         }
-        p.v.cursor = Some(p.v.to_display(q));
+        p.v.cursor = Some(p.v.to_display(q)).filter(|c| c[0].is_finite());
     }
     // Link badge: one click links or unlinks the view.
     if !p.layers.is_empty() {
@@ -698,6 +709,7 @@ impl App {
             (cmd, Key::Q, Cmd::Quit),
             (sh, Key::C, Cmd::CopyExtent),
             (none, Key::F1, Cmd::Help),
+            (none, Key::G, Cmd::Globe),
             (none, Key::Plus, Cmd::Zoom(1.5)),
             (none, Key::Equals, Cmd::Zoom(1.5)),
             (none, Key::Minus, Cmd::Zoom(1.0 / 1.5)),
@@ -759,6 +771,10 @@ impl App {
             Cmd::LinkMode => self.link_px ^= true,
             Cmd::Palette => self.palette = Some(Palette::default()),
             Cmd::Space(s) => self.set_space(id, s),
+            Cmd::Globe => {
+                let on = self.pane(id).is_some_and(|p| !p.v.globe);
+                self.set_globe(id, on);
+            }
             Cmd::Quit => self.quit = true,
             Cmd::Help => self.help ^= true,
             Cmd::CopyExtent => {
@@ -929,6 +945,7 @@ impl App {
     fn menus(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
         let (link, cmp, space, play, timed) = self.pane(id).map_or((0, Cmp::Off, None, false, false), |p| (p.link, p.cmp, p.v.space, p.play, p.timed().is_some()));
+        let globe = self.pane(id).is_some_and(|p| p.v.globe);
         let sel = self.pane(id).and_then(|p| p.layers.get(p.sel));
         let own = self.pane(id).and_then(|p| p.layers.first()).and_then(|l| l.default_space());
         let presets: Vec<usize> = (0..PRESETS.len()).filter(|&i| sel.is_some_and(|l| l.preset_ok(&PRESETS[i]))).collect();
@@ -974,6 +991,7 @@ impl App {
                 entry(ui, cmds, id, "Zoom 1:1", "1", Cmd::OneToOne);
                 entry(ui, cmds, id, "Zoom in", "+", Cmd::Zoom(1.5));
                 entry(ui, cmds, id, "Zoom out", "-", Cmd::Zoom(1.0 / 1.5));
+                check(ui, cmds, id, globe, "3D globe", "G", Cmd::Globe);
                 ui.menu_button("Display CRS", |ui| {
                     if let Some(e) = own.filter(|_| SPACES.iter().all(|x| x.0 != own)) {
                         check(ui, cmds, id, space == own, &format!("Layer CRS (EPSG:{e})"), "", Cmd::Space(own));
@@ -1111,10 +1129,14 @@ impl App {
             }
             ui.separator();
             let Some(p) = self.pane(id) else { return };
-            let (link, cmp, space) = (p.link, p.cmp, p.v.space);
+            let (link, cmp, space, globe) = (p.link, p.cmp, p.v.space, p.v.globe);
             if icons::button(ui, Icon::Link, "Link", link > 0).on_hover_text("Link the active view: it pans and zooms with the other linked views (L)").clicked() {
                 cmds.push((Cmd::Link, id));
             }
+            if icons::button(ui, Icon::Globe, "Globe", globe).on_hover_text("Show the active view on a 3D globe, or as a 2D map (G)").clicked() {
+                cmds.push((Cmd::Globe, id));
+            }
+            ui.separator();
             let mut px = self.link_px;
             ui.selectable_value(&mut px, false, "Geo").on_hover_text("Link by center latitude, longitude and ground resolution: views in different CRSs stay aligned (Shift+L)");
             ui.selectable_value(&mut px, true, "Pixel").on_hover_text("Link by pixel region: for products on the same grid (Shift+L)");
@@ -1532,6 +1554,10 @@ impl App {
                 p.v.gpu = Some(View2d::new(&win.gpu));
                 p.luts.clear();
             }
+            p.v.clamp_globe();
+            if p.v.globe {
+                globe_backdrop(&p.v, &painter.with_clip_rect(p.rect), p.rect);
+            }
             let (miss, changed) = p.v.draws(&mut win.gpu, &self.engine);
             p.missing = miss || p.v.inputs.iter().any(|i| i.warp.is_none());
             missing |= p.missing;
@@ -1587,6 +1613,9 @@ impl App {
                 Ok(None) => {}
                 Err(e) => p.err = Some(e),
             }
+            if p.v.globe {
+                graticule(&p.v, &painter.with_clip_rect(p.rect), p.rect);
+            }
             overlays(p, &painter, ppp, mpp, cross);
         }
         if let Some(b) = &mut self.bench {
@@ -1595,6 +1624,48 @@ impl App {
         if let Some(dt) = next_flip {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(dt.max(0.001)));
         }
+    }
+}
+
+/// Globe view, below the data: the space, and the globe where no layer has data.
+fn globe_backdrop(v: &crate::view::View, pt: &egui::Painter, r: Rect) {
+    let rad = v.globe_cam().radius_px() as f32 * r.width() / v.px.width().max(1.0);
+    pt.rect_filled(r, 0.0, Color32::from_rgb(5, 7, 12));
+    pt.circle_filled(r.center(), rad + 2.0, Color32::from_rgb(52, 84, 128));
+    pt.circle_filled(r.center(), rad, Color32::from_rgb(20, 30, 46));
+}
+
+/// Globe view, above the data: meridians and parallels. The interval depends on the visible part.
+fn graticule(v: &crate::view::View, pt: &egui::Painter, r: Rect) {
+    let g = v.globe_cam();
+    let (cap, [lon0, lat0]) = (g.cap(), v.center);
+    let step = [30.0, 15.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02].into_iter().find(|s| cap / s >= 2.5).unwrap_or(0.01);
+    let k = r.width() / v.px.width().max(1.0);
+    let span = if lat0.abs() + cap >= 89.0 { 180.0 } else { (cap / lat0.to_radians().cos()).min(180.0) };
+    let (la0, la1) = ((lat0 - cap).max(-90.0), (lat0 + cap).min(90.0));
+    let line = |pts: &mut dyn Iterator<Item = (f64, f64)>, strong: bool| {
+        let s = Stroke::new(1.0, Color32::from_white_alpha(if strong { 70 } else { 34 }));
+        let mut last: Option<Pos2> = None;
+        for (lon, lat) in pts {
+            let q = g.project(lon, lat).map(|p| r.min + vec2(p[0] as f32, p[1] as f32) * k);
+            if let (Some(a), Some(b)) = (last, q) {
+                pt.line_segment([a, b], s);
+            }
+            last = q;
+        }
+    };
+    const N: usize = 48;
+    let mut lon = ((lon0 - span) / step).ceil() * step;
+    while lon <= lon0 + span && lon < lon0 - span + 360.0 {
+        line(&mut (0..=N).map(|i| (lon, la0 + (la1 - la0) * i as f64 / N as f64)), lon.rem_euclid(360.0) == 0.0);
+        lon += step;
+    }
+    let mut lat = (la0 / step).ceil() * step;
+    while lat <= la1 {
+        if lat.abs() < 90.0 {
+            line(&mut (0..=2 * N).map(|i| (lon0 - span + 2.0 * span * i as f64 / (2 * N) as f64, lat)), lat == 0.0);
+        }
+        lat += step;
     }
 }
 

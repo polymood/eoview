@@ -234,7 +234,12 @@ impl ApplicationHandler<Ev> for App {
         self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some()));
         if self.bench.is_none() {
             self.load_recent();
-            let files: Vec<String> = std::env::args().skip(1).collect();
+            let mut files: Vec<String> = std::env::args().skip(1).collect();
+            // --globe: the first view is a globe view.
+            if let Some(i) = files.iter().position(|f| f == "--globe") {
+                files.remove(i);
+                self.set_globe(self.active, true);
+            }
             // --series: the products are the time steps of one layer.
             if files.first().is_some_and(|f| f == "--series") {
                 self.open_series(self.active, files[1..].to_vec(), false);

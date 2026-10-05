@@ -135,6 +135,8 @@ pub struct Pane {
     pub swipe_drag: bool,
     pub missing: bool,
     pub err: Option<String>,
+    /// Display CRS of the view before it became a globe view.
+    pub flat_space: Option<Option<u32>>,
     /// Playback of the time steps: on or off, steps for each second, time of the next step (egui time).
     pub play: bool,
     pub fps: f32,
@@ -169,6 +171,7 @@ impl Pane {
             swipe_drag: false,
             missing: false,
             err: None,
+            flat_space: None,
             play: false,
             fps: 4.0,
             next_step: 0.0,
@@ -330,6 +333,8 @@ struct PaneSave {
     dcmap: String,
     dinvert: bool,
     layers: Vec<LayerSave>,
+    #[serde(default)]
+    globe: bool,
 }
 
 /// Workspace file: layout, views, layers, settings and cameras. No data, no credentials.
@@ -752,11 +757,36 @@ impl App {
 
     pub fn set_space(&mut self, id: u32, s: Option<u32>) {
         let Some(p) = self.pane_mut(id) else { return };
-        if p.v.space == s {
+        // A globe view has longitude and latitude only.
+        if p.v.space == s || p.v.globe {
             return;
         }
         p.v.space = s;
         p.v.fit = true;
+        self.rebuild(id);
+    }
+
+    /// Change view `id` to a globe view, or back to a 2D view. The view stays at the same place on the
+    /// Earth, with the same ground resolution at its center.
+    pub fn set_globe(&mut self, id: u32, on: bool) {
+        let Some(i) = self.panes.iter().position(|p| p.id == id && p.v.globe != on) else { return };
+        let was_px = self.link_px;
+        self.link_px = false;
+        let cam = self.cam(i, None);
+        let p = &mut self.panes[i];
+        let to = if on {
+            p.flat_space = Some(p.v.space);
+            Some(4326)
+        } else {
+            p.flat_space.take().unwrap_or(p.v.space)
+        };
+        (p.v.globe, p.v.space, p.v.fit) = (on, to, true);
+        if let Some((c, s)) = cam.and_then(|c| self.uncam(i, c)) {
+            let p = &mut self.panes[i];
+            (p.v.center, p.v.scale, p.v.fit) = (c, s, false);
+            p.v.clamp_globe();
+        }
+        self.link_px = was_px;
         self.rebuild(id);
     }
 
@@ -893,7 +923,10 @@ impl App {
         let space = m.default_space();
         let Some(p) = self.pane_mut(o.pane) else { return };
         if p.layers.is_empty() && o.save.is_none() {
-            p.v.space = space;
+            // A globe view keeps longitude and latitude.
+            if !p.v.globe {
+                p.v.space = space;
+            }
             p.v.fit = true;
         }
         let at = p.layers.iter().position(|x| x.order > m.order).unwrap_or(p.layers.len());
@@ -1043,6 +1076,7 @@ impl App {
                 dcmap: crate::layer::CMAPS[p.dcmap].0.into(),
                 dinvert: p.dinvert,
                 layers: p.layers.iter().map(MapLayer::save).collect(),
+                globe: p.v.globe,
             })
             .collect();
         let ws = Workspace { version: 1, dock: self.dock.clone(), active: self.active, link_px: self.link_px, panes };
@@ -1075,7 +1109,7 @@ impl App {
         for id in ids {
             let mut p = Pane::new(id);
             if let Some(s) = ws.panes.iter().find(|s| s.id == id) {
-                (p.v.space, p.v.center, p.v.scale, p.link) = (s.space, s.center, s.scale, s.link);
+                (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe) = (s.space, s.center, s.scale, s.link, s.globe);
                 (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz) = (s.cmp, s.swipe, s.vertical, s.blend, s.flicker_hz);
                 (p.diff, p.dlo, p.dhi, p.dinvert) = (s.diff, s.dlo, s.dhi, s.dinvert);
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);

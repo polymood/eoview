@@ -16,8 +16,6 @@ pub enum Icon {
     Compare,
     Globe,
     Search,
-    Left,
-    Right,
     Up,
     Down,
     Close,
@@ -110,8 +108,7 @@ pub fn draw(p: &Painter, icon: Icon, r: Rect, c: Color32) {
                 p.add(egui::Shape::line(pts, s));
             }
         }
-        Icon::Left => fill(vec![pos2(l + 0.2 * w, m.y), pos2(rt - 0.2 * w, t + 0.15 * w), pos2(rt - 0.2 * w, b - 0.15 * w)]),
-        Icon::Right | Icon::Play => fill(vec![pos2(rt - 0.2 * w, m.y), pos2(l + 0.2 * w, b - 0.15 * w), pos2(l + 0.2 * w, t + 0.15 * w)]),
+        Icon::Play => fill(vec![pos2(rt - 0.2 * w, m.y), pos2(l + 0.2 * w, b - 0.15 * w), pos2(l + 0.2 * w, t + 0.15 * w)]),
         Icon::Up => fill(vec![pos2(m.x, t + 0.25 * w), pos2(rt - 0.15 * w, b - 0.25 * w), pos2(l + 0.15 * w, b - 0.25 * w)]),
         Icon::Down => fill(vec![pos2(m.x, b - 0.25 * w), pos2(l + 0.15 * w, t + 0.25 * w), pos2(rt - 0.15 * w, t + 0.25 * w)]),
         Icon::Close => {
