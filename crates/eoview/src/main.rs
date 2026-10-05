@@ -231,7 +231,10 @@ impl ApplicationHandler<Ev> for App {
         if self.bench.is_none() {
             self.load_recent();
             let files: Vec<String> = std::env::args().skip(1).collect();
-            if !files.is_empty() {
+            // --series: the products are the time steps of one layer.
+            if files.first().is_some_and(|f| f == "--series") {
+                self.open_series(self.active, files[1..].to_vec(), false);
+            } else if !files.is_empty() {
                 self.open_many(self.active, files, false);
             }
         }

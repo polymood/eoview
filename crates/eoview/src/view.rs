@@ -10,6 +10,13 @@ pub struct Input {
     pub warp: Option<(Arc<Warp>, u64)>,
 }
 
+/// An input of one of the next time steps (prefetch): the view asks for its tiles, and does not draw it.
+pub struct Ahead {
+    pub input: Input,
+    /// Tiles of the input for this view are not on the GPU.
+    pub miss: bool,
+}
+
 pub struct View {
     /// Client id of the view for the tile requests of the engine.
     pub client: u32,
@@ -23,6 +30,8 @@ pub struct View {
     pub px: Rect,
     pub fit: bool,
     pub inputs: Vec<Input>,
+    /// Inputs of the next time steps, the nearest step first.
+    pub ahead: Vec<Ahead>,
     pub gpu: Option<View2d>,
     want: Vec<(Arc<Layer>, TileKey)>,
     sent: Vec<TileKey>,
@@ -40,6 +49,7 @@ impl View {
             px: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1.0, 1.0)),
             fit: false,
             inputs: vec![],
+            ahead: vec![],
             gpu: None,
             want: vec![],
             sent: vec![],
@@ -88,8 +98,9 @@ impl View {
     }
 
     /// Fill the instances of each input with its resident tiles, coarse to fine, and send the missing tiles
-    /// to the engine. Resident coarse tiles fill the gaps while the fine tiles load.
-    /// Return (tiles are missing, the list of missing tiles changed).
+    /// to the engine. Resident coarse tiles fill the gaps while the fine tiles load. Then the tiles of the
+    /// next time steps (prefetch), at the level of the view only.
+    /// Return (tiles of the visible step are missing, the list of missing tiles changed).
     pub fn draws(&mut self, gpu: &mut Gpu, engine: &Engine) -> (bool, bool) {
         let view = self.rect();
         let Some(vg) = &mut self.gpu else { return (false, false) };
@@ -114,10 +125,7 @@ impl View {
             for d in (target..n).rev() {
                 let lv = &l.levels[d];
                 let (sx, sy) = (TILE as f64 * lv.kx, TILE as f64 * lv.ky);
-                let (nx, ny) = (lv.w.div_ceil(TILE), lv.h.div_ceil(TILE));
-                let t = |v: f64, s: f64, m: u64| ((v / s).max(0.0) as u64).min(m);
-                let (px0, py0, px1, py1) = (pb[0] - lv.ox, pb[1] - lv.oy, pb[2] - lv.ox, pb[3] - lv.oy);
-                let (tx0, ty0, tx1, ty1) = (t(px0, sx, nx), t(py0, sy, ny), t(px1, sx, nx - 1) + 1, t(py1, sy, ny - 1) + 1);
+                let (tx0, ty0, tx1, ty1) = tile_range(lv, pb);
                 for ty in ty0..ty1 {
                     for tx in tx0..tx1 {
                         let key = TileKey { layer: l.id, lv: d as u8, tx: tx as u32, ty: ty as u32 };
@@ -156,13 +164,34 @@ impl View {
         }
         merged.sort_by_key(|m| m.0);
         self.want.extend(merged.into_iter().map(|m| m.1));
+        let missing = !self.want.is_empty();
+        for a in self.ahead.iter_mut() {
+            a.miss = true;
+            let (l, Some((warp, _))) = (&a.input.layer, &a.input.warp) else { continue };
+            let before = self.want.len();
+            if let Some(pb) = warp.pixel_bbox(view) {
+                let lim = 1.0 / (self.scale * warp.px_size());
+                let d = l.levels.iter().rposition(|lv| lv.kx <= lim.max(1.0)).unwrap_or(0);
+                let (tx0, ty0, tx1, ty1) = tile_range(&l.levels[d], pb);
+                for ty in ty0..ty1 {
+                    for tx in tx0..tx1 {
+                        let key = TileKey { layer: l.id, lv: d as u8, tx: tx as u32, ty: ty as u32 };
+                        // The lookup also keeps the tile on the GPU.
+                        if !gpu.lookup(&key, l.enc.u8).is_some_and(|t| t.1) {
+                            self.want.push((l.clone(), key));
+                        }
+                    }
+                }
+            }
+            a.miss = self.want.len() > before;
+        }
         let changed = !self.want.iter().map(|w| w.1).eq(self.sent.iter().copied());
         if changed {
             self.sent.clear();
             self.sent.extend(self.want.iter().map(|w| w.1));
             engine.want(self.client, self.want.clone());
         }
-        (!self.want.is_empty(), changed)
+        (missing, changed)
     }
 
     /// The view is not visible: cancel its tile requests.
@@ -208,4 +237,12 @@ impl View {
             })
             .collect()
     }
+}
+
+/// Tiles (tx0, ty0, tx1, ty1) of level `lv` that touch the level-0 pixel rectangle `pb`.
+fn tile_range(lv: &eo_cache::Level, pb: [f64; 4]) -> (u64, u64, u64, u64) {
+    let (sx, sy) = (TILE as f64 * lv.kx, TILE as f64 * lv.ky);
+    let (nx, ny) = (lv.w.div_ceil(TILE), lv.h.div_ceil(TILE));
+    let t = |v: f64, s: f64, m: u64| ((v / s).max(0.0) as u64).min(m);
+    (t(pb[0] - lv.ox, sx, nx), t(pb[1] - lv.oy, sy, ny), t(pb[2] - lv.ox, sx, nx - 1) + 1, t(pb[3] - lv.oy, sy, ny - 1) + 1)
 }

@@ -1,5 +1,6 @@
 //! One layer of a view: a product and its composite (one band, RGB or band math), with its own stretch,
-//! color map and opacity.
+//! color map and opacity. A layer can have time steps: the steps of the time dimension of its product, or
+//! a list of products (one for each step).
 use eo_cache::Layer;
 use eo_render::bandmath::{self, Node};
 use eo_render::{LayerParams, LayerSpec, Mode};
@@ -178,6 +179,24 @@ pub fn lut(stops: &[[u8; 3]]) -> Vec<[u8; 4]> {
 /// Bins of the histograms of the stretch panel.
 pub const BINS: usize = 128;
 
+/// A time step of a layer.
+#[derive(Clone)]
+pub struct Step {
+    /// Product of the step (a path or a URL). Empty: the step is on the time dimension of the product of
+    /// the layer.
+    pub path: String,
+    /// Time of the step (seconds since 1970, see `eo_core::time`). NaN: not known.
+    pub t: f64,
+    /// A layer of the product of the step, when the product is open (a step with its own product).
+    pub ds: Option<Arc<Layer>>,
+}
+
+/// Steps of the time dimension of a product: the variable with the most steps gives them.
+fn time_steps(p: &eo_core::Product) -> Vec<Step> {
+    let Some(v) = p.vars.iter().max_by_key(|v| v.steps()).filter(|v| v.steps() > 1) else { return vec![] };
+    (0..v.steps() as usize).map(|i| Step { path: String::new(), t: v.times.get(i).copied().unwrap_or(f64::NAN), ds: None }).collect()
+}
+
 #[derive(Clone)]
 pub struct MapLayer {
     pub uid: u64,
@@ -187,8 +206,14 @@ pub struct MapLayer {
     pub path: String,
     pub name: String,
     pub chans: Vec<Chan>,
-    /// Layers of the dataset that are ready, by (variable, choice).
-    pub cache: HashMap<(usize, usize), Arc<Layer>>,
+    /// Layers that are ready, by (time step, variable, choice).
+    pub cache: HashMap<(usize, usize, usize), Arc<Layer>>,
+    /// Time steps. Empty or one step: the layer has no timeline.
+    pub steps: Vec<Step>,
+    /// The step that the user selected, and the step that the layer shows (the selected step shows when
+    /// its layers are ready).
+    pub step: usize,
+    pub shown: usize,
     pub kind: Kind,
     pub band: usize,
     pub rgb: [String; 3],
@@ -226,6 +251,9 @@ impl MapLayer {
             name,
             chans: channels(&first.ds.product),
             cache: HashMap::new(),
+            steps: time_steps(&first.ds.product),
+            step: 0,
+            shown: 0,
             kind: Kind::Band,
             band: 0,
             rgb: Default::default(),
@@ -250,7 +278,7 @@ impl MapLayer {
         if first.var().levels[0].dtype.is_complex() {
             m.st[0].db = first.part == eo_cache::Part::Amp;
         }
-        m.cache.insert((first.var, first.choice), first);
+        m.cache.insert((0, first.var, first.choice), first);
         if let Some(p) = PRESETS.iter().find(|p| DEFAULT_PRESETS.contains(&p.0) && m.preset_ok(p)) {
             m.set_preset(p);
         } else if let Some(ids) = m.color_bands() {
@@ -294,8 +322,73 @@ impl MapLayer {
         self.chans.iter().map(|c| c.id.clone()).collect()
     }
 
+    /// A layer of the product (for a list of products: of the product of the selected step, if it is open).
     pub fn any(&self) -> Option<&Arc<Layer>> {
-        self.cache.values().next()
+        self.steps.get(self.step).and_then(|s| s.ds.as_ref()).or_else(|| self.cache.values().next())
+    }
+
+    /// A layer of the product of step `s`: the engine makes the other channels of the step from it.
+    /// None: the product of the step is not open.
+    pub fn base(&self, s: usize) -> Option<&Arc<Layer>> {
+        match self.steps.get(s) {
+            Some(st) if !st.path.is_empty() => st.ds.as_ref(),
+            _ => self.cache.values().next(),
+        }
+    }
+
+    /// Index on the time dimension of variable `var` for step `s`.
+    pub fn time_of(&self, s: usize, var: usize) -> u64 {
+        match (self.steps.get(s), self.cache.values().next()) {
+            (Some(st), Some(l)) if st.path.is_empty() => (s as u64).min(l.ds.product.vars[var].steps() - 1),
+            _ => 0,
+        }
+    }
+
+    /// (variable, choice) of the used channels that are not ready for step `s`.
+    pub fn missing(&self, s: usize) -> Vec<(usize, usize)> {
+        let m: HashSet<(usize, usize)> = self.used.iter().map(|&c| (self.chans[c].var, self.chans[c].choice)).filter(|k| !self.cache.contains_key(&(s, k.0, k.1))).collect();
+        m.into_iter().collect()
+    }
+
+    /// Layers of the used channels for step `s`, if all are ready.
+    pub fn inputs_at(&self, s: usize) -> Option<Vec<Arc<Layer>>> {
+        self.used.iter().map(|&c| self.cache.get(&(s, self.chans[c].var, self.chans[c].choice)).cloned()).collect()
+    }
+
+    /// Go to time step `s`. Until the layers of the step are ready, the layer shows the step before.
+    // ponytail: the layers of all visited steps stay in the cache (a sample of 64 K values each). Remove
+    // the far steps if a long data cube needs the memory.
+    pub fn set_step(&mut self, s: usize) {
+        self.step = s.min(self.steps.len().saturating_sub(1));
+        self.ready();
+    }
+
+    /// Step nearest to time `t`. Without times: step `s`.
+    pub fn nearest(&self, t: f64, s: usize) -> usize {
+        let best = self.steps.iter().enumerate().filter(|x| x.1.t.is_finite()).min_by(|a, b| (a.1.t - t).abs().total_cmp(&(b.1.t - t).abs()));
+        match best {
+            Some((i, _)) if t.is_finite() => i,
+            _ => s.min(self.steps.len().saturating_sub(1)),
+        }
+    }
+
+    /// Text of step `s` for the timeline: its time, else the name of its product, else its number.
+    pub fn step_label(&self, s: usize) -> String {
+        match self.steps.get(s) {
+            Some(st) if st.t.is_finite() => eo_core::time::text(st.t),
+            Some(st) if !st.path.is_empty() => st.path.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string(),
+            _ => format!("step {}", s + 1),
+        }
+    }
+
+    /// Make the layer a series of products: one time step for each (path, time). The first product is the
+    /// product of the layer.
+    pub fn set_series(&mut self, list: Vec<(String, f64)>) {
+        let first = self.cache.values().next().cloned();
+        self.steps = list.into_iter().map(|(path, t)| Step { path, t, ds: None }).collect();
+        if let Some(s) = self.steps.first_mut() {
+            s.ds = first;
+        }
     }
 
     pub fn preset_ok(&self, p: &(&str, Kind, [&str; 3], &str, bool)) -> bool {
@@ -329,8 +422,8 @@ impl MapLayer {
         self.auto_pending = true;
     }
 
-    /// Parse the composite. Return the (variable, choice) of the used channels that are not ready: the
-    /// application asks the engine for them.
+    /// Parse the composite. Return the (variable, choice) of the used channels that are not ready for the
+    /// selected step: the application asks the engine for them.
     pub fn compile(&mut self) -> Vec<(usize, usize)> {
         let names = self.names();
         let exprs: Vec<String> = match self.kind {
@@ -355,30 +448,24 @@ impl MapLayer {
             }
         }
         self.inputs.clear();
-        let missing: Vec<(usize, usize)> = self
-            .used
-            .iter()
-            .map(|&c| (self.chans[c].var, self.chans[c].choice))
-            .filter(|k| !self.cache.contains_key(k))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let missing = self.missing(self.step);
         if missing.is_empty() {
             self.ready();
         }
         missing
     }
 
-    /// A channel layer is ready. Return true if the inputs are complete.
-    pub fn loaded(&mut self, l: Arc<Layer>) -> bool {
-        self.cache.insert((l.var, l.choice), l);
-        self.inputs.is_empty() && self.ready()
+    /// A channel layer of step `s` is ready. Return true if the view must make its inputs again: the
+    /// selected step is complete and shows now, or a next step is complete (prefetch).
+    pub fn loaded(&mut self, s: usize, l: Arc<Layer>) -> bool {
+        self.cache.insert((s, l.var, l.choice), l);
+        if s == self.step { (self.inputs.is_empty() || self.shown != s) && self.ready() } else { self.inputs_at(s).is_some() }
     }
 
     fn ready(&mut self) -> bool {
-        let v: Option<Vec<Arc<Layer>>> = self.used.iter().map(|&c| self.cache.get(&(self.chans[c].var, self.chans[c].choice)).cloned()).collect();
-        let Some(v) = v else { return false };
+        let Some(v) = self.inputs_at(self.step) else { return false };
         self.inputs = v;
+        self.shown = self.step;
         if self.auto_pending {
             self.auto_pending = false;
             if self.is_color() { self.as_is() } else { self.auto() }
@@ -558,6 +645,12 @@ pub struct LayerSave {
     pub invert: bool,
     pub opacity: f32,
     pub visible: bool,
+    /// A series of products: the path and the time of each step. Empty: one product.
+    #[serde(default)]
+    pub series: Vec<(String, Option<f64>)>,
+    /// Selected time step.
+    #[serde(default)]
+    pub step: usize,
 }
 
 /// Path without the query, the fragment and the user information of a URL: they can contain credentials
@@ -588,6 +681,8 @@ impl MapLayer {
             invert: self.invert,
             opacity: self.opacity,
             visible: self.visible,
+            series: self.steps.iter().filter(|s| !s.path.is_empty()).map(|s| (clean_path(&s.path), s.t.is_finite().then_some(s.t))).collect(),
+            step: self.step,
         }
     }
 
@@ -606,6 +701,10 @@ impl MapLayer {
         self.invert = s.invert;
         self.opacity = s.opacity;
         self.visible = s.visible;
+        if !s.series.is_empty() {
+            self.set_series(s.series.iter().map(|(p, t)| (p.clone(), t.unwrap_or(f64::NAN))).collect());
+        }
+        self.step = s.step.min(self.steps.len().saturating_sub(1));
         self.auto_pending = false;
     }
 }
