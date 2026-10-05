@@ -1,5 +1,6 @@
 //! NetCDF-4 files (HDF5 inside): each dataset with 2 or more dimensions is a variable. The CF attributes
-//! give the scale, the offset, the fill value and the units.
+//! give the scale, the offset, the fill value and the units. The last two dimensions are the rows and
+//! the columns. A dimension before them with the length of the `time` coordinate is the time dimension.
 //!
 //! Specifications: NetCDF-4 format, <https://docs.unidata.ucar.edu/netcdf-c/current/file_format_specifications.html>;
 //! CF conventions, <https://cfconventions.org/>.
@@ -36,7 +37,23 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>)> {
             offset: d.num("add_offset").unwrap_or(0.0),
             units: d.text("units").unwrap_or("").to_string(),
             georef: Georef::None,
+            times: vec![],
         });
+    }
+    // Time dimension: the reader does not read the dimension lists of HDF5, it compares the lengths.
+    // The coordinate in the group of the variable is used first, then the coordinate nearest to the root.
+    let leaf = |p: &str| p.rsplit('/').next().unwrap_or(p).to_lowercase();
+    let dir = |p: &str| p.rsplit_once('/').map_or(String::new(), |d| d.0.to_string());
+    let mut coords: Vec<&H5> = one_d.iter().filter(|d| leaf(&d.path) == "time").collect();
+    coords.sort_by_key(|d| d.path.len());
+    for v in &mut vars {
+        let n = v.levels[0].shape.len();
+        let t = coords.iter().filter(|c| dir(&v.name).starts_with(&dir(&c.path))).rev().chain(&coords);
+        let Some((c, k)) = t.filter_map(|c| Some((*c, v.levels[0].shape[..n - 2].iter().position(|&s| s == c.shape[0])?))).next() else { continue };
+        v.levels[0].dims[k] = "time".into();
+        if let (Some((unit, t0)), Ok(vals)) = (c.text("units").and_then(time::cf), read_1d(src, c)) {
+            v.times = vals.into_iter().map(|x| t0 + x * unit).collect();
+        }
     }
     Ok((vars, one_d))
 }
@@ -48,22 +65,7 @@ pub fn read_1d(src: &Source, d: &H5) -> Result<Vec<f64>> {
     let mut out = Vec::with_capacity(n);
     for c in &a.chunks {
         let b = if c.len == 0 { bytes::Bytes::new() } else { src.read(c.off..c.off + c.len)? };
-        let v = codec::decode(&a, &b)?;
-        let es = a.dtype.size();
-        for e in v.chunks_exact(es) {
-            let mut w = [0u8; 8];
-            if a.le { w[..es].copy_from_slice(e) } else { e.iter().rev().enumerate().for_each(|(k, &x)| w[k] = x) }
-            let u = u64::from_le_bytes(w);
-            out.push(match a.dtype {
-                DType::F32 => f32::from_bits(u as u32) as f64,
-                DType::F64 => f64::from_bits(u),
-                DType::I8 => u as u8 as i8 as f64,
-                DType::I16 => u as u16 as i16 as f64,
-                DType::I32 => u as u32 as i32 as f64,
-                DType::I64 => u as i64 as f64,
-                _ => u as f64,
-            });
-        }
+        out.extend(codec::to_f64(&a, &codec::decode(&a, &b)?));
     }
     out.truncate(n);
     let (s, o) = (d.num("scale_factor").unwrap_or(1.0), d.num("add_offset").unwrap_or(0.0));

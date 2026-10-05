@@ -41,11 +41,11 @@ fn find<'a>(p: &'a eo_core::Product, n: &str) -> &'a Variable {
     p.vars.iter().find(|v| v.name == n || v.name.ends_with(&format!("/{n}"))).unwrap_or_else(|| panic!("no variable {n}"))
 }
 
-/// Stored value at pixel (x, y) of a file level, read through the chunk table and the codecs.
-fn read(ds: &Dataset, v: &Variable, level: usize, band: u64, p: Part, x: u64, y: u64) -> f64 {
+/// Stored value at pixel (x, y) of a file level and a time step, read through the chunk table and the codecs.
+fn read(ds: &Dataset, v: &Variable, level: usize, band: u64, time: u64, p: Part, x: u64, y: u64) -> f64 {
     let a = &v.levels[level];
     let (ch, cw) = (a.chunk[a.axis("y").unwrap()], a.chunk[a.axis("x").unwrap()]);
-    let c = a.chunks[chunk_at(a, band, y / ch, x / cw)];
+    let c = a.chunks[chunk_at(a, band, time, y / ch, x / cw)];
     let s = &ds.sources[c.src as usize];
     let raw = s.read_chunk(c).unwrap();
     // A chunk that was not written: all values are the fill value.
@@ -53,7 +53,7 @@ fn read(ds: &Dataset, v: &Variable, level: usize, band: u64, p: Part, x: u64, y:
         return v.fill.unwrap_or(0.0);
     }
     let d = eo_io::codec::decode(a, &raw).unwrap();
-    let pa = PlaneAt::new(a, band);
+    let pa = PlaneAt::new(a, band, time);
     value_f64(a, &d, pa.base + (y % ch) as usize * pa.sy + (x % cw) as usize * pa.sx, p)
 }
 
@@ -82,7 +82,7 @@ fn check_values(dir: &Path, lines: &[Vec<String>]) -> usize {
             }
             "v" => {
                 let (band, p) = part(&f[3]);
-                let got = read(ds, v, num(2) as usize, band, p, num(4) as u64, num(5) as u64);
+                let got = read(ds, v, num(2) as usize, band, 0, p, num(4) as u64, num(5) as u64);
                 let ok = match f.get(7) {
                     Some(t) => (got - num(6)).abs() <= t.parse::<f64>().unwrap(),
                     None => close(got, num(6), 1e-6),
@@ -96,6 +96,12 @@ fn check_values(dir: &Path, lines: &[Vec<String>]) -> usize {
                 assert_eq!(crs.epsg, Some(num(3) as u32), "{}", f[1]);
             }
             "p" => assert_eq!((v.scale, v.offset, v.fill), (num(2), num(3), Some(num(4))), "{}", f[1]),
+            "t" => {
+                let step = num(2) as u64;
+                let got = read(ds, v, 0, 0, step, Part::Real, num(3) as u64, num(4) as u64);
+                assert!(close(got, num(5), 1e-6), "{f:?}: got {got}");
+                assert_eq!((v.steps() as usize, v.times.get(step as usize)), (v.times.len(), Some(&num(6))), "{f:?}: {:?}", v.times);
+            }
             _ => continue,
         }
         n += 1;
@@ -128,7 +134,7 @@ fn check_geo(dir: &Path, lines: &[Vec<String>]) -> usize {
         let (file, var) = f[1].split_once('#').unwrap();
         let l = layer(&e, &rx, &dir.join(file));
         let vi = l.ds.product.vars.iter().position(|v| v.name == var).unwrap_or_else(|| panic!("no variable {var}"));
-        e.select(&l, vi, 0);
+        e.select(&l, vi, 0, 0);
         let lv = loop {
             if let Event::Opened { res, .. } = rx.recv_timeout(Duration::from_secs(60)).unwrap() {
                 break res.unwrap();
@@ -216,6 +222,31 @@ fn engine_tiles_match_reference() {
     assert!(n >= 6);
 
     assert!(check_geo(&dir(), &all) >= 6);
+
+    // Time steps: each step is a layer. Its level-0 tile has the values of the step (the Zarr v3 store has
+    // two steps in each chunk).
+    let mut n = 0;
+    for f in all.iter().filter(|f| f[0] == "t") {
+        let (file, var) = f[1].split_once('#').unwrap();
+        let l0 = layer(&e, &rx, &dir().join(file));
+        let vi = l0.ds.product.vars.iter().position(|v| v.name == var).unwrap_or_else(|| panic!("no variable {var}"));
+        let req = e.select(&l0, vi, 0, f[2].parse().unwrap());
+        let l = loop {
+            if let Event::Opened { req: r, res } = rx.recv_timeout(Duration::from_secs(20)).unwrap()
+                && r == req
+            {
+                break res.unwrap();
+            }
+        };
+        let k = TileKey { layer: l.id, lv: 0, tx: 0, ty: 0 };
+        let (w, px) = &tiles(&e, &rx, &l, &[k])[&k];
+        let Pixels::F16(v) = &**px else { panic!("f16 tile expected") };
+        let (x, y, exp) = (f[3].parse::<usize>().unwrap(), f[4].parse::<usize>().unwrap(), f[5].parse::<f64>().unwrap());
+        let g = (v[y * *w as usize + x].to_f32() / l.enc.k + l.enc.off) as f64;
+        assert!((g - exp).abs() <= exp.abs() * 2e-3 + 0.5, "{f:?}: got {g}");
+        n += 1;
+    }
+    assert!(n >= 40);
 }
 
 /// Remote product (EOVIEW_TEST_URL) with the disk cache: a second session gets the same coarse tile, with

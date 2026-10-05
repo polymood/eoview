@@ -580,7 +580,7 @@ impl App {
         if let Some(any) = any {
             for key in missing {
                 if !self.requests.values().any(|r| r.1 == uid && r.2 == key) {
-                    let r = self.engine.select(&any, key.0, key.1);
+                    let r = self.engine.select(&any, key.0, key.1, 0);
                     self.requests.insert(r, (id, uid, key));
                 }
             }

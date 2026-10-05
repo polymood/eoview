@@ -10,6 +10,7 @@ Lines of testdata/expected.tsv (tab-separated):
   p  file  scale  offset  fill                    physical value = stored * scale + offset
   m  file  level  x  y  value                     mean that the viewer generates for a display level
   l  file  col  row  lon  lat  tol                geolocation at pixel position (col, row), tolerance in degrees
+  t  file  step  x  y  value  time                stored value at a time step, and the time of the step (seconds since 1970)
 
 "file#name" selects the variable "name" of a file with more than one variable.
 The Zarr stores come from scripts/testdata_zarr.py (zarr-python 2 and 3 in their own environments).
@@ -284,6 +285,11 @@ tifffile.imwrite(os.path.join(D, "f32_3band_data.tif"), a, photometric="minisbla
 shape("f32_3band_data.tif", 120, 90, 3, 1, "F32")
 for b in range(3):
     values("f32_3band_data.tif", 0, a[..., b], str(b))
+
+# Products with a time dimension (NetCDF-4, Zarr v2 and v3).
+r = subprocess.run(["uv", "run", "--with", "zarr>=3", "--with", "numpy", "--with", "netCDF4", "python", os.path.join(here, "testdata_time.py")],
+                   check=True, capture_output=True, text=True)
+out.extend(r.stdout.strip().splitlines())
 
 with open(os.path.join(D, "expected.tsv"), "w") as f:
     f.write("\n".join(out) + "\n")

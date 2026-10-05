@@ -77,7 +77,7 @@ impl Pixels {
     }
 }
 
-/// Position of the 2D plane of one band in a decoded chunk, in values.
+/// Position of the 2D plane of one band and one time step in a decoded chunk, in values.
 #[derive(Clone, Copy, Debug)]
 pub struct PlaneAt {
     pub base: usize,
@@ -116,14 +116,15 @@ impl PlaneAt {
         w.r1 <= w.r0 || w.c1 <= w.c0 || (self.base + (w.r1 - 1) * self.sy + (w.c1 - 1) * self.sx + 1) * a.dtype.size() <= len
     }
 
-    pub fn new(a: &Array, band: u64) -> PlaneAt {
+    pub fn new(a: &Array, band: u64, time: u64) -> PlaneAt {
         let n = a.dims.len();
         let mut st = vec![1usize; n];
         for i in (0..n.saturating_sub(1)).rev() {
             st[i] = st[i + 1] * a.chunk[i + 1] as usize;
         }
         let (y, x) = (a.axis("y").unwrap(), a.axis("x").unwrap());
-        let base = a.axis("band").map_or(0, |b| (band % a.chunk[b]) as usize * st[b]);
+        let at = |d: &str, i: u64| a.axis(d).map_or(0, |k| (i % a.chunk[k]) as usize * st[k]);
+        let base = at("band", band) + at("time", time);
         PlaneAt { base, sy: st[y], sx: st[x], ch: a.chunk[y] as usize, cw: a.chunk[x] as usize }
     }
 }
@@ -258,7 +259,7 @@ mod tests {
             place: None,
         };
         let raw: Vec<u8> = (0u16..12).flat_map(|v| v.to_be_bytes()).collect();
-        let p = PlaneAt::new(&a, 1);
+        let p = PlaneAt::new(&a, 1, 0);
         let mut out = [0f32; 6];
         to_f32(&a, &raw, &p, Part::Real, &p.full(), &mut out);
         assert_eq!(out, [1., 3., 5., 7., 9., 11.]);

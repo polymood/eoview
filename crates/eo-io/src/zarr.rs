@@ -308,31 +308,68 @@ fn array(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle, sources: &mu
 
 /// First two values of a 1D coordinate array: one request (a range, if the chunk is not compressed).
 async fn first_two(a: Array, srcs: Vec<Arc<Source>>) -> Option<(f64, f64)> {
-    let w = a.dtype.size();
     let loc = a.chunks[0];
     let src = srcs.get(loc.src as usize)?;
-    let raw = a.codecs.is_empty() && loc.len == ChunkLoc::WHOLE;
-    let b = match loc.len {
-        0 => return None,
-        ChunkLoc::WHOLE if raw => src.get_ranges(&[0..2 * w as u64]).await.ok()?.remove(0),
-        ChunkLoc::WHOLE => src.get_whole().await.ok()??,
-        ChunkLoc::SHARD => {
-            let r = src.inner_chunk(loc.off).await.ok()??;
-            src.get_ranges(&[r]).await.ok()?.remove(0)
+    let two = 2 * a.dtype.size();
+    let v = if a.codecs.is_empty() && loc.len == ChunkLoc::WHOLE {
+        codec::to_f64(&a, &src.get_ranges(&[0..two as u64]).await.ok()?.remove(0))
+    } else {
+        let b = src.get_chunk(loc).await.ok().filter(|b| !b.is_empty())?;
+        codec::to_f64(&a, codec::decode(&a, &b).ok()?.get(..two)?)
+    };
+    Some((*v.first()?, *v.get(1)?))
+}
+
+/// All values of a small 1D array (a time coordinate).
+async fn values_1d(a: &Array, srcs: &[Arc<Source>]) -> Option<Vec<f64>> {
+    let mut out = vec![];
+    for loc in &a.chunks {
+        let b = srcs.get(loc.src as usize)?.get_chunk(*loc).await.ok().filter(|b| !b.is_empty())?;
+        out.extend(codec::to_f64(a, &codec::decode(a, &b).ok()?));
+    }
+    out.truncate(a.shape[0] as usize);
+    Some(out)
+}
+
+/// Times of the `n` steps of a time dimension: the `time` coordinate array of the group or of a group
+/// above it, with CF units. Empty if the store does not have them. `cache`: one read for each coordinate.
+fn times(url: &str, nodes: &Nodes, group: &str, n: u64, ver: u8, rt: &Handle, cache: &mut std::collections::HashMap<String, Vec<f64>>) -> Vec<f64> {
+    let mut g = group;
+    loop {
+        let p = join(g, "time").trim_start_matches('/').to_string();
+        if let Some(m) = nodes.get(&p).filter(|m| m.0) {
+            return cache
+                .entry(p.clone())
+                .or_insert_with(|| {
+                    let mut srcs = vec![];
+                    let a = array(url, &p, &m.1, ver, rt, &mut srcs).ok().filter(|a| a.shape == [n]);
+                    let vals = a.and_then(|a| rt.block_on(values_1d(&a, &srcs)));
+                    match (vals, m.2.get("units").and_then(Value::as_str).and_then(time::cf)) {
+                        (Some(v), Some((unit, t0))) => v.into_iter().map(|x| t0 + x * unit).collect(),
+                        _ => vec![],
+                    }
+                })
+                .clone();
         }
-        len => src.get_ranges(&[loc.off..loc.off + len]).await.ok()?.remove(0),
-    };
-    let d = if raw { b.to_vec() } else { codec::decode(&a, &b).ok()?.to_vec() };
-    let at = |i: usize| -> Option<f64> {
-        let v = d.get(i * w..(i + 1) * w)?;
-        let v: Vec<u8> = if a.le { v.to_vec() } else { v.iter().rev().copied().collect() };
-        Some(match a.dtype {
-            DType::F32 => f32::from_le_bytes(v.try_into().ok()?) as f64,
-            DType::F64 => f64::from_le_bytes(v.try_into().ok()?),
-            _ => return None,
-        })
-    };
-    Some((at(0)?, at(1)?))
+        if g.is_empty() {
+            return vec![];
+        }
+        g = g.rsplit_once('/').map_or("", |u| u.0);
+    }
+}
+
+/// Names of the dimensions before the rows and the columns. Zarr v2 has them in the attribute
+/// `_ARRAY_DIMENSIONS` (xarray). The engine uses the names "band" and "time".
+fn name_dims(a: &mut Array, attrs: &Value) {
+    let names = attrs.get("_ARRAY_DIMENSIONS").and_then(Value::as_array);
+    for i in 0..a.dims.len().saturating_sub(2) {
+        let d = names.and_then(|v| v.get(i)).and_then(Value::as_str).map_or(a.dims[i].clone(), str::to_lowercase);
+        a.dims[i] = match d.as_str() {
+            "band" | "bands" => "band".into(),
+            d if d.starts_with("time") => "time".into(),
+            _ => d,
+        };
+    }
 }
 
 /// Affine transforms (GDAL order) of the groups that have x and y coordinate arrays (pixel centers).
@@ -429,6 +466,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     let mut sources: Vec<Arc<Source>> = vec![];
     let mut vars: Vec<Variable> = vec![];
     let tf = transforms(url, &nodes, ver, rt);
+    let mut tcache = std::collections::HashMap::new();
     // Arrays at a multiscale level: (parent group, array name) to level groups.
     let mut done = std::collections::HashSet::new();
     let arrays: Vec<(&String, &Value)> = nodes.iter().filter(|n| n.1.0).map(|(k, v)| (k, &v.1)).collect();
@@ -453,7 +491,8 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             let p = join(g, name);
             done.insert(p.clone());
             match array(url, &p, &nodes[&p].1, ver, rt, &mut sources) {
-                Ok(a) => {
+                Ok(mut a) => {
+                    name_dims(&mut a, &nodes[&p].2);
                     gts.push(tf.get(g).copied().or_else(|| attr_transform(&nodes, g)));
                     levels.push(a);
                 }
@@ -496,12 +535,13 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             bands: if nb == 1 { vec![name.to_string()] } else { (1..=nb).map(|b| format!("Band {b}")).collect() },
             name: short,
             group: String::new(),
-            levels,
             fill,
             scale: get("scale_factor").unwrap_or(1.0),
             offset: get("add_offset").unwrap_or(0.0),
             units: attrs.get("units").and_then(Value::as_str).unwrap_or("").to_string(),
             georef,
+            times: levels[0].axis("time").map_or(vec![], |k| times(url, &nodes, &level_groups[idx[0]], levels[0].shape[k], ver, rt, &mut tcache)),
+            levels,
         });
     }
     if vars.is_empty() {

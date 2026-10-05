@@ -278,6 +278,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
         if used.len() > 1 { format!(", {} segments", used.len()) } else { String::new() }
     );
     let var = Variable {
+        times: vec![],
         name: kind.into(),
         group: String::new(),
         bands: match nbv {

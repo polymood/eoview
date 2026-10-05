@@ -172,18 +172,24 @@ impl Source {
         })
     }
 
-    /// Encoded bytes of the chunk at `loc` in this source. Empty: the chunk does not exist. Blocks for a
-    /// remote source: for tools, tests and the open of a product, not for the engine.
-    pub fn read_chunk(&self, loc: ChunkLoc) -> Result<Bytes> {
-        match loc.len {
-            0 => Ok(Bytes::new()),
-            ChunkLoc::WHOLE => Ok(self.rt.block_on(self.get_whole())?.unwrap_or_default()),
-            ChunkLoc::SHARD => match self.rt.block_on(self.inner_chunk(loc.off))? {
-                Some(r) => self.read(r),
-                None => Ok(Bytes::new()),
+    /// Encoded bytes of the chunk at `loc` in this source. Empty: the chunk does not exist. One chunk, no
+    /// cache: for tools, tests and the open of a product. The engine reads chunks in groups.
+    pub async fn get_chunk(&self, loc: ChunkLoc) -> Result<Bytes> {
+        let r = match loc.len {
+            0 => return Ok(Bytes::new()),
+            ChunkLoc::WHOLE => return Ok(self.get_whole().await?.unwrap_or_default()),
+            ChunkLoc::SHARD => match self.inner_chunk(loc.off).await? {
+                Some(r) => r,
+                None => return Ok(Bytes::new()),
             },
-            len => self.read(loc.off..loc.off + len),
-        }
+            len => loc.off..loc.off + len,
+        };
+        Ok(self.get_ranges(&[r]).await?.remove(0))
+    }
+
+    /// As `get_chunk`. Blocks for a remote source: do not call it on the UI thread or in the runtime.
+    pub fn read_chunk(&self, loc: ChunkLoc) -> Result<Bytes> {
+        self.rt.block_on(self.get_chunk(loc))
     }
 
     /// Open a source now, and get its length. For a remote source this blocks: do not call it on the UI thread.

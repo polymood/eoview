@@ -326,6 +326,10 @@ fn info(path: &str) {
             v.fill,
             v.units
         );
+        if v.steps() > 1 {
+            let t = |i: usize| v.times.get(i).map_or("?".into(), |&t| eo_core::time::text(t));
+            println!("    {} time steps, {} to {}", v.steps(), t(0), t(v.steps() as usize - 1));
+        }
         match &v.georef {
             eo_core::Georef::Affine { gt, crs } => println!("    affine {gt:?} {}", crs.name),
             eo_core::Georef::Grid { cols, rows, .. } => println!("    grid {} x {} nodes", cols.len(), rows.len()),

@@ -6,6 +6,28 @@ use std::borrow::Cow;
 /// Largest decoded chunk.
 pub const MAX_CHUNK: usize = 1 << 30;
 
+/// Values of the decoded bytes `d` of a real array, as f64. For small arrays (coordinates).
+pub fn to_f64(a: &Array, d: &[u8]) -> Vec<f64> {
+    use eo_core::DType::*;
+    let es = a.dtype.size();
+    d.chunks_exact(es)
+        .map(|e| {
+            let mut w = [0u8; 8];
+            if a.le { w[..es].copy_from_slice(e) } else { e.iter().rev().enumerate().for_each(|(k, &x)| w[k] = x) }
+            let u = u64::from_le_bytes(w);
+            match a.dtype {
+                F32 => f32::from_bits(u as u32) as f64,
+                F64 => f64::from_bits(u),
+                I8 => u as u8 as i8 as f64,
+                I16 => u as u16 as i16 as f64,
+                I32 => u as u32 as i32 as f64,
+                I64 => u as i64 as f64,
+                _ => u as f64,
+            }
+        })
+        .collect()
+}
+
 /// Decode the encoded bytes of one chunk of `a`. The result has exactly `a.chunk_bytes()` bytes.
 /// A short chunk (for example the last TIFF strip) gets zeros at the end: the decoders accept
 /// an output buffer that is larger than the data.

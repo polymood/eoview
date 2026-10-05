@@ -191,6 +191,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
         a.codecs.first().map_or("no compression".into(), |c| format!("{c:?}"))
     );
     let var = Variable {
+        times: vec![],
         name: name.clone(),
         group: String::new(),
         bands,

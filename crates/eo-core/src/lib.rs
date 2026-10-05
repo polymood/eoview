@@ -1,6 +1,7 @@
 //! Data model of eoview. A product contains variables. A variable is a chunked N-dimensional
 //! array at one or more resolution levels. Readers fill this model. They do not read pixel data.
 pub mod geo;
+pub mod time;
 
 use std::fmt;
 
@@ -273,6 +274,9 @@ pub struct Variable {
     pub offset: f64,
     pub units: String,
     pub georef: Georef,
+    /// Time of each step of the "time" dimension (see `time`). Empty: no time dimension, or times that are
+    /// not known (the number of steps is then the length of the dimension).
+    pub times: Vec<f64>,
 }
 
 impl Variable {
@@ -280,6 +284,11 @@ impl Variable {
     pub fn size(&self) -> (u64, u64) {
         let a = &self.levels[0];
         (a.len_of("x"), a.len_of("y"))
+    }
+
+    /// Number of time steps. 1 without a time dimension.
+    pub fn steps(&self) -> u64 {
+        self.levels[0].len_of("time")
     }
 }
 

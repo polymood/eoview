@@ -59,13 +59,15 @@ pub struct Level {
 
 /// One displayable 2D plane of a variable: one band, or one part of a complex band.
 pub struct Layer {
-    /// Same id for the same dataset, variable and choice. Cache keys use it.
+    /// Same id for the same dataset, variable, choice and time step. Cache keys use it.
     pub id: u64,
     pub ds: Arc<Dataset>,
     pub ds_id: u64,
     pub var: usize,
     pub choice: usize,
     pub band: u64,
+    /// Step of the time dimension. 0 without a time dimension.
+    pub time: u64,
     pub part: Part,
     pub levels: Vec<Level>,
     pub enc: Enc,
@@ -122,17 +124,17 @@ impl Layer {
     fn disk_key(&self, key: TileKey) -> impl std::hash::Hash + Send + 'static {
         let v = self.var();
         let src = v.levels[0].chunks.first().and_then(|c| self.ds.sources.get(c.src as usize)).map_or("", |s| s.name());
-        (src.to_string(), v.name.clone(), self.choice, key.lv, key.tx, key.ty, self.enc.u8, self.enc.k.to_bits(), self.enc.off.to_bits())
+        (src.to_string(), v.name.clone(), self.choice, self.time, key.lv, key.tx, key.ty, self.enc.u8, self.enc.k.to_bits(), self.enc.off.to_bits())
     }
 
     /// Index in `Array::chunks` of chunk (cy, cx) for the band of this layer.
     fn chunk_at(&self, a: &Array, cy: u64, cx: u64) -> usize {
-        chunk_at(a, self.band, cy, cx)
+        chunk_at(a, self.band, self.time, cy, cx)
     }
 }
 
-/// Index in `Array::chunks` of chunk (cy, cx) that contains band `band`.
-pub fn chunk_at(a: &Array, band: u64, cy: u64, cx: u64) -> usize {
+/// Index in `Array::chunks` of chunk (cy, cx) that contains band `band` of time step `time`.
+pub fn chunk_at(a: &Array, band: u64, time: u64, cy: u64, cx: u64) -> usize {
     let pos: Vec<u64> = a
         .dims
         .iter()
@@ -141,6 +143,7 @@ pub fn chunk_at(a: &Array, band: u64, cy: u64, cx: u64) -> usize {
             "y" => cy,
             "x" => cx,
             "band" => band / c,
+            "time" => time / c,
             _ => 0,
         })
         .collect();
@@ -246,7 +249,7 @@ struct Inner {
     /// Geolocation grids read from arrays, by (dataset, variable).
     grids: Mutex<HashMap<(u64, usize), Georef>>,
     sched: Mutex<Sched>,
-    ids: Mutex<HashMap<(u64, usize, usize), u64>>,
+    ids: Mutex<HashMap<(u64, usize, usize, u64), u64>>,
     next: AtomicU64,
     max_running: usize,
     tx: mpsc::Sender<Event>,
@@ -370,19 +373,20 @@ impl Engine {
         self.rt.spawn_blocking(move || {
             let res = eo_io::open(&url, &i.rt).and_then(|ds| {
                 let ds_id = i.next.fetch_add(1, Relaxed);
-                i.layer(Arc::new(ds), ds_id, 0, 0)
+                i.layer(Arc::new(ds), ds_id, 0, 0, 0)
             });
             i.send(Event::Opened { req, res });
         });
         req
     }
 
-    /// Make a layer for another variable or choice of the dataset of `l`. The result comes as `Event::Opened`.
-    pub fn select(&self, l: &Layer, var: usize, choice: usize) -> u64 {
+    /// Make a layer for another variable, choice or time step of the dataset of `l`. The result comes as
+    /// `Event::Opened`.
+    pub fn select(&self, l: &Layer, var: usize, choice: usize, time: u64) -> u64 {
         let (i, ds, ds_id) = (self.inner.clone(), l.ds.clone(), l.ds_id);
         let req = i.next.fetch_add(1, Relaxed);
         self.rt.spawn_blocking(move || {
-            let res = i.layer(ds, ds_id, var, choice);
+            let res = i.layer(ds, ds_id, var, choice, time);
             i.send(Event::Opened { req, res });
         });
         req
@@ -492,12 +496,12 @@ impl Inner {
         let mut cells: Vec<(u64, u64)> = js.iter().flat_map(|j| is.iter().map(move |i| (j / ch, i / cw))).collect();
         cells.sort_unstable();
         cells.dedup();
-        let locs: Vec<ChunkLoc> = cells.iter().map(|&(cy, cx)| a.chunks[chunk_at(a, 0, cy, cx)]).collect();
+        let locs: Vec<ChunkLoc> = cells.iter().map(|&(cy, cx)| a.chunks[chunk_at(a, 0, 0, cy, cx)]).collect();
         let raws = self.raw_ds(ds, ds_id, &locs).await?;
         let (a, v2, is, js) = (a.clone(), v.clone(), is.to_vec(), js.to_vec());
         self.on_pool(0, move || {
             let dec: Vec<Result<std::borrow::Cow<[u8]>>> = raws.par_iter().map(|r| if r.is_empty() { Ok(Default::default()) } else { readable(&a, r) }).collect();
-            let p = PlaneAt::new(&a, 0);
+            let p = PlaneAt::new(&a, 0, 0);
             let mut out = Vec::with_capacity(is.len() * js.len());
             for &j in &js {
                 for &i in &is {
@@ -532,10 +536,10 @@ impl Inner {
         rx.await.expect("decode job stopped")
     }
 
-    fn layer(&self, ds: Arc<Dataset>, ds_id: u64, var: usize, choice: usize) -> Result<Arc<Layer>> {
-        let v = ds.product.vars.get(var).ok_or("no such variable")?;
+    fn layer(&self, ds: Arc<Dataset>, ds_id: u64, var: usize, choice: usize, time: u64) -> Result<Arc<Layer>> {
+        let v = ds.product.vars.get(var).filter(|v| time < v.steps()).ok_or("no such variable or time step")?;
         let ((band, part), levels) = (Layer::choice(v, choice), display_levels(v));
-        let id = *self.ids.lock().unwrap().entry((ds_id, var, choice)).or_insert_with(|| self.next.fetch_add(1, Relaxed));
+        let id = *self.ids.lock().unwrap().entry((ds_id, var, choice, time)).or_insert_with(|| self.next.fetch_add(1, Relaxed));
         let mut l = Layer {
             id,
             levels,
@@ -544,6 +548,7 @@ impl Inner {
             var,
             choice,
             band,
+            time,
             part,
             enc: Enc { u8: false, k: 1.0, off: 0.0 },
             sample: vec![],
@@ -576,9 +581,9 @@ impl Inner {
         let pick: Vec<(u64, u64)> = (0..n.min(16)).map(|i| i * n / n.min(16)).map(|i| (i as u64 / gx, i as u64 % gx)).collect();
         let locs: Vec<ChunkLoc> = pick.iter().map(|&(cy, cx)| a.chunks[l.chunk_at(a, cy, cx)]).collect();
         let raws = self.raw_many(l, &locs).await?;
-        let (a, fill, part, band) = (a.clone(), v.fill, l.part, l.band);
+        let (a, fill, part, band, time) = (a.clone(), v.fill, l.part, l.band, l.time);
         self.on_pool(0, move || {
-            let p = PlaneAt::new(&a, band);
+            let p = PlaneAt::new(&a, band, time);
             let per = 65_536 / pick.len().max(1);
             let parts: Vec<Result<Vec<f32>>> = pick
                 .par_iter()
@@ -749,7 +754,7 @@ impl Inner {
                 let _c = Charge::new(&self.work, a.chunk_bytes() * raws.len());
                 self.on_pool(prio, move || {
                     let a = &l2.var().levels[lvl];
-                    let p = PlaneAt::new(a, l2.band);
+                    let p = PlaneAt::new(a, l2.band, l2.time);
                     let fill = l2.var().fill;
                     raws.par_iter()
                         .map(|raw| {
@@ -840,7 +845,7 @@ impl Inner {
                     let t = self
                         .on_pool(prio, move || {
                             let a = &l2.var().levels[lvl];
-                            let p = PlaneAt::new(a, l2.band);
+                            let p = PlaneAt::new(a, l2.band, l2.time);
                             let mut t = Pixels::empty(&l2.enc, l2.var().fill, (w * h) as usize);
                             for (&(cy, cx), raw) in cells.iter().zip(&raws) {
                                 let (ry0, ry1) = ((cy * ch).max(y0), ((cy + 1) * ch).min(y0 + h));
@@ -1002,7 +1007,7 @@ impl Inner {
         let (ch, cw) = chunk_size(a);
         let mut out = vec![];
         for band in 0..a.len_of("band") {
-            let idx = chunk_at(a, band, y / ch, x / cw);
+            let idx = chunk_at(a, band, l.time, y / ch, x / cw);
             let key = (l.ds_id, l.var, idx);
             let cached = self.probe.lock().unwrap().get(&key).cloned();
             let d = match cached {
@@ -1023,7 +1028,7 @@ impl Inner {
                     }
                 }
             };
-            let p = PlaneAt::new(a, band);
+            let p = PlaneAt::new(a, band, l.time);
             let i = p.base + (y % ch) as usize * p.sy + (x % cw) as usize * p.sx;
             if (i + 1) * a.dtype.size() > d.len() {
                 return Err("chunk data is shorter than the chunk".into());
@@ -1066,7 +1071,7 @@ struct Partial {
 }
 
 fn partial(l: &Layer, a: &Array, raw: &[u8], u: &Unit, r: &Region) -> Result<Option<Partial>> {
-    let p = PlaneAt::new(a, l.band);
+    let p = PlaneAt::new(a, l.band, l.time);
     let (ch, cw) = (p.ch as u64, p.cw as u64);
     let (oy, ox) = (u.cy * ch, u.cx * cw);
     let (ry0, ry1, rx0, rx1) = (u.r0, u.r1, ox.max(r.bx0), (ox + cw).min(r.bx1));
@@ -1137,6 +1142,7 @@ mod tests {
             place: None,
         };
         Variable {
+            times: vec![],
             name: "t".into(),
             group: String::new(),
             levels: std::iter::once(arr(w, h)).chain(levels.iter().map(|&(w, h)| arr(w, h))).collect(),
