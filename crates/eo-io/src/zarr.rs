@@ -17,8 +17,10 @@ use tokio::runtime::Handle;
 /// Metadata of the store: path (no leading '/') to (is array, metadata, attributes).
 type Nodes = BTreeMap<String, (bool, Value, Value)>;
 
+/// Path of `p` in `base`. An empty base is the root of the store: the path has no leading '/'.
 fn join(base: &str, p: &str) -> String {
-    if p.is_empty() { base.trim_end_matches('/').to_string() } else { format!("{}/{p}", base.trim_end_matches('/')) }
+    let b = base.trim_end_matches('/');
+    if p.is_empty() || b.is_empty() { format!("{b}{p}") } else { format!("{b}/{p}") }
 }
 
 fn json(src: &Source) -> Result<Value> {
@@ -372,9 +374,10 @@ fn name_dims(a: &mut Array, attrs: &Value) {
     }
 }
 
-/// Affine transforms (GDAL order) of the groups that have x and y coordinate arrays (pixel centers).
+/// Affine transforms (GDAL order) of the groups that have coordinate arrays (pixel centers), and true if
+/// the coordinates are longitude and latitude.
 /// The coordinates of all groups are read at the same time: a remote product has many groups.
-fn transforms(url: &str, nodes: &Nodes, ver: u8, rt: &Handle) -> std::collections::HashMap<String, [f64; 6]> {
+fn transforms(url: &str, nodes: &Nodes, ver: u8, rt: &Handle) -> std::collections::HashMap<String, ([f64; 6], bool)> {
     let mut jobs = vec![];
     for g in nodes.iter().filter(|n| !n.1.0).map(|n| n.0) {
         let arr = |n: &str| {
@@ -384,20 +387,24 @@ fn transforms(url: &str, nodes: &Nodes, ver: u8, rt: &Handle) -> std::collection
             let a = array(url, &p, &m.1, ver, rt, &mut srcs).ok()?;
             (a.shape.len() == 1 && a.shape[0] >= 2 && a.chunk[0] >= 2).then_some((a, srcs))
         };
-        if let (Some(x), Some(y)) = (arr("x"), arr("y")) {
-            jobs.push((g.clone(), x, y));
+        // Coordinates x and y in the CRS of the product, or longitude and latitude (data cubes).
+        for (k, (nx, ny)) in [("x", "y"), ("lon", "lat"), ("longitude", "latitude")].into_iter().enumerate() {
+            if let (Some(x), Some(y)) = (arr(nx), arr(ny)) {
+                jobs.push((g.clone(), x, y, k > 0));
+                break;
+            }
         }
     }
     // No spawned tasks: `block_on` of a handle does not run the tasks of a current-thread runtime.
-    let got = rt.block_on(futures_util::future::join_all(jobs.into_iter().map(|(g, x, y)| async move {
+    let got = rt.block_on(futures_util::future::join_all(jobs.into_iter().map(|(g, x, y, geo)| async move {
         let (x, y) = tokio::join!(first_two(x.0, x.1), first_two(y.0, y.1));
-        (g, x, y)
+        (g, x, y, geo)
     })));
     got.into_iter()
-        .filter_map(|(g, x, y)| {
+        .filter_map(|(g, x, y, geo)| {
             let (x, y) = (x?, y?);
             let (dx, dy) = (x.1 - x.0, y.1 - y.0);
-            Some((g, [x.0 - dx / 2.0, dx, 0.0, y.0 - dy / 2.0, 0.0, dy]))
+            Some((g, ([x.0 - dx / 2.0, dx, 0.0, y.0 - dy / 2.0, 0.0, dy], geo)))
         })
         .collect()
 }
@@ -493,7 +500,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             match array(url, &p, &nodes[&p].1, ver, rt, &mut sources) {
                 Ok(mut a) => {
                     name_dims(&mut a, &nodes[&p].2);
-                    gts.push(tf.get(g).copied().or_else(|| attr_transform(&nodes, g)));
+                    gts.push(tf.get(g).map(|t| t.0).or_else(|| attr_transform(&nodes, g)));
                     levels.push(a);
                 }
                 Err(e) if levels.is_empty() => {
@@ -523,7 +530,8 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         let attrs = &nodes[&p0].2;
         let get = |k: &str| attrs.get(k).and_then(num);
         let fill = get("_FillValue").or_else(|| get("fill_value")).or_else(|| nodes[&p0].1.get("fill_value").and_then(num));
-        let crs = Crs { epsg: epsg(&nodes, &p0), name: String::new() };
+        let geo = tf.get(&level_groups[idx[0]]).is_some_and(|t| t.1);
+        let crs = Crs { epsg: if geo { Some(4326) } else { epsg(&nodes, &p0) }, name: String::new() };
         let crs = Crs { name: crs.epsg.map_or(String::new(), |e| format!("EPSG:{e}")), ..crs };
         let georef = match gts[0] {
             Some(gt) if crs.epsg.is_some() => Georef::Affine { gt, crs },
