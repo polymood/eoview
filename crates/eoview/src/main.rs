@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod app;
 mod bench;
+mod icons;
 mod layer;
 mod ui;
 mod view;
@@ -64,6 +65,9 @@ impl App {
         let ctx = self.ctx.clone();
         let out = ctx.run_ui(raw, |ui| self.ui(ui));
         let t2 = Instant::now();
+        if self.quit {
+            return el.exit();
+        }
         ui::dialogs(self);
         let w = self.win.as_mut().unwrap();
         w.egui_state.handle_platform_output(&w.window, out.platform_output);

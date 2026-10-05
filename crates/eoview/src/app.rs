@@ -382,6 +382,10 @@ pub struct App {
     pub recent_file: Option<std::path::PathBuf>,
     pub gpu_budget: usize,
     pub bench: Option<Bench>,
+    /// The user asked to close the application.
+    pub quit: bool,
+    /// The window with the list of the keys is open.
+    pub help: bool,
 }
 
 impl App {
@@ -417,6 +421,8 @@ impl App {
             url: None,
             recent: vec![],
             recent_file: None,
+            quit: false,
+            help: false,
         }
     }
 
