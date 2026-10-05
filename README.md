@@ -114,6 +114,14 @@ A workspace file (JSON) contains the layout, the views, the cameras, the layers 
 does not contain data. It does not contain the query, the fragment or the user information of URLs (they
 can contain credentials or signed tokens).
 
+### Interface
+
+The menu bar has all commands with their keys: **File** (open, add a layer, workspaces), **Edit** (copy the
+limits of the view, command palette), **View** (zoom, display CRS, side panel, views and layouts, link),
+**Layer** (bands, presets, stretch, color maps), **Compare**, **Time**, **Help** (the list of the keys,
+F1). The toolbar below it has the frequent commands as buttons. Each button shows its key in its tooltip.
+The icons are drawn by the viewer: they do not depend on the fonts of the system.
+
 ### Views
 
 The views are tabs of a dock: drag a tab to split, tab or move a view. The toolbar has the layout presets

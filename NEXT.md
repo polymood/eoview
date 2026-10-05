@@ -17,8 +17,8 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
    on the timeline, a time cursor for linked views, a time profile at the cursor.
 2. **Real data with time.** Sentinel-2 COG series from a STAC search, ESA CCI and other data cubes (Zarr,
    NetCDF) from public buckets. A STAC search dialog (catalog, collection, area of the view, dates).
-3. **Interface layout.** A menu bar (File, Edit, View, Layer, Time, Window, Help) and a toolbar with
-   buttons below it, as in other desktop software.
+3. **Interface layout.** Done: a menu bar (File, Edit, View, Layer, Compare, Time, Help) and a toolbar
+   with drawn icons. To do: a preferences dialog (budgets, cache directory), undo for display settings.
 4. **3D globe.** A globe view with the layers on it (Phase 4 of the specification): WGS84 ellipsoid,
    quadtree tiles, reversed-Z depth, camera-relative coordinates, link with the 2D views.
 
