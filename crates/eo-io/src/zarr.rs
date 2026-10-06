@@ -274,15 +274,16 @@ fn array(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle, sources: &mu
         p
     };
     let base = join(url, path);
-    let mut chunks = Vec::with_capacity(total);
-    match shard {
+    let chunks = match shard {
+        // One keyed source for all chunk objects. A data cube has millions of chunks for each variable:
+        // a source and a location for each chunk fill the memory.
         None => {
-            for i in 0..total as u64 {
-                sources.push(Arc::new(Source::new(&join(&base, &key(&pos(i, &grid), &sep, v3def)), rt)));
-                chunks.push(ChunkLoc { src: sources.len() as u32 - 1, off: 0, len: ChunkLoc::WHOLE });
-            }
+            let (b, g, s) = (base.clone(), grid.clone(), sep.clone());
+            sources.push(Arc::new(Source::keyed(&base, rt, move |i| join(&b, &key(&pos(i, &g), &s, v3def)))));
+            eo_core::Chunks::Keyed { src: sources.len() as u32 - 1, n: total }
         }
         Some((outer, end, crc)) => {
+            let mut chunks = Vec::with_capacity(total);
             let per: Vec<u64> = outer.iter().zip(&chunk).map(|(o, c)| o / c).collect();
             let nper = per.iter().product::<u64>() as usize;
             let sgrid: Vec<u64> = shape.iter().zip(&outer).map(|(s, o)| s.div_ceil(*o)).collect();
@@ -301,8 +302,9 @@ fn array(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle, sources: &mu
                 let k = ip.iter().zip(&per).fold(0, |a, (p, n)| a * n + p);
                 chunks.push(ChunkLoc { src: first + sh as u32, off: k, len: ChunkLoc::SHARD });
             }
+            chunks.into()
         }
-    }
+    };
     let a = Array { dims, shape, chunk, dtype: dt, le, codecs, chunks, place: None };
     a.validate()?;
     Ok(a)
@@ -310,7 +312,7 @@ fn array(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle, sources: &mu
 
 /// First two values of a 1D coordinate array: one request (a range, if the chunk is not compressed).
 async fn first_two(a: Array, srcs: Vec<Arc<Source>>) -> Option<(f64, f64)> {
-    let loc = a.chunks[0];
+    let loc = a.chunks.at(0);
     let src = srcs.get(loc.src as usize)?;
     let two = 2 * a.dtype.size();
     let v = if a.codecs.is_empty() && loc.len == ChunkLoc::WHOLE {
@@ -325,8 +327,8 @@ async fn first_two(a: Array, srcs: Vec<Arc<Source>>) -> Option<(f64, f64)> {
 /// All values of a small 1D array (a time coordinate).
 async fn values_1d(a: &Array, srcs: &[Arc<Source>]) -> Option<Vec<f64>> {
     let mut out = vec![];
-    for loc in &a.chunks {
-        let b = srcs.get(loc.src as usize)?.get_chunk(*loc).await.ok().filter(|b| !b.is_empty())?;
+    for loc in a.chunks.iter() {
+        let b = srcs.get(loc.src as usize)?.get_chunk(loc).await.ok().filter(|b| !b.is_empty())?;
         out.extend(codec::to_f64(a, &codec::decode(a, &b).ok()?));
     }
     out.truncate(a.shape[0] as usize);
@@ -335,7 +337,7 @@ async fn values_1d(a: &Array, srcs: &[Arc<Source>]) -> Option<Vec<f64>> {
 
 /// Times of the `n` steps of a time dimension: the `time` coordinate array of the group or of a group
 /// above it, with CF units. Empty if the store does not have them. `cache`: one read for each coordinate.
-fn times(url: &str, nodes: &Nodes, group: &str, n: u64, ver: u8, rt: &Handle, cache: &mut std::collections::HashMap<String, Vec<f64>>) -> Vec<f64> {
+fn times(url: &str, nodes: &Nodes, group: &str, n: u64, ver: u8, rt: &Handle, cache: &mut std::collections::HashMap<String, Arc<Vec<f64>>>) -> Arc<Vec<f64>> {
     let mut g = group;
     loop {
         let p = join(g, "time").trim_start_matches('/').to_string();
@@ -346,15 +348,15 @@ fn times(url: &str, nodes: &Nodes, group: &str, n: u64, ver: u8, rt: &Handle, ca
                     let mut srcs = vec![];
                     let a = array(url, &p, &m.1, ver, rt, &mut srcs).ok().filter(|a| a.shape == [n]);
                     let vals = a.and_then(|a| rt.block_on(values_1d(&a, &srcs)));
-                    match (vals, m.2.get("units").and_then(Value::as_str).and_then(time::cf)) {
+                    Arc::new(match (vals, m.2.get("units").and_then(Value::as_str).and_then(time::cf)) {
                         (Some(v), Some((unit, t0))) => v.into_iter().map(|x| t0 + x * unit).collect(),
                         _ => vec![],
-                    }
+                    })
                 })
                 .clone();
         }
         if g.is_empty() {
-            return vec![];
+            return Default::default();
         }
         g = g.rsplit_once('/').map_or("", |u| u.0);
     }
@@ -548,7 +550,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             offset: get("add_offset").unwrap_or(0.0),
             units: attrs.get("units").and_then(Value::as_str).unwrap_or("").to_string(),
             georef,
-            times: levels[0].axis("time").map_or(vec![], |k| times(url, &nodes, &level_groups[idx[0]], levels[0].shape[k], ver, rt, &mut tcache)),
+            times: levels[0].axis("time").map_or(Default::default(), |k| times(url, &nodes, &level_groups[idx[0]], levels[0].shape[k], ver, rt, &mut tcache)),
             levels,
         });
     }
@@ -560,4 +562,42 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     let name = url.trim_end_matches('/').rsplit('/').next().unwrap_or(url).to_string();
     let desc = format!("Zarr v{ver}, {} variables", vars.len());
     Ok(Dataset { product: Product { name, desc, vars }, sources })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A data cube with 20 million chunks opens with one source for each array, and reads a chunk by its
+    /// position. One source and one location for each chunk filled the memory (ERA5: 366 million chunks).
+    #[test]
+    fn cube_with_millions_of_chunks_opens_without_a_source_for_each_chunk() {
+        let dir = std::env::temp_dir().join(format!("eoview-cube-{}.zarr", std::process::id()));
+        let arr = |shape: &[u64], chunks: &[u64], dims: &[&str]| {
+            (serde_json::json!({"zarr_format": 2, "shape": shape, "chunks": chunks, "dtype": "<f4", "compressor": null, "filters": null, "fill_value": 0, "order": "C"}), serde_json::json!({"_ARRAY_DIMENSIONS": dims}))
+        };
+        let mut m = serde_json::Map::new();
+        m.insert(".zgroup".into(), serde_json::json!({"zarr_format": 2}));
+        for v in 0..20 {
+            let (a, d) = arr(&[1_000_000, 4, 8], &[1, 4, 8], &["time", "latitude", "longitude"]);
+            m.insert(format!("v{v}/.zarray"), a);
+            m.insert(format!("v{v}/.zattrs"), d);
+        }
+        std::fs::create_dir_all(dir.join("v3")).unwrap();
+        std::fs::write(dir.join(".zmetadata"), serde_json::json!({"zarr_consolidated_format": 1, "metadata": m}).to_string()).unwrap();
+        let px: Vec<u8> = (0..32).flat_map(|i| (i as f32).to_le_bytes()).collect();
+        std::fs::write(dir.join("v3/123456.0.0"), &px).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let ds = open(dir.to_str().unwrap(), rt.handle()).unwrap();
+        assert_eq!((ds.product.vars.len(), ds.sources.len()), (20, 20));
+        let a = &ds.product.vars.iter().find(|v| v.name.ends_with("v3")).unwrap().levels[0];
+        assert_eq!(a.chunks.len(), 1_000_000);
+        let loc = a.chunks.at(123_456);
+        assert_eq!(ds.sources[loc.src as usize].read_chunk(loc).unwrap(), px);
+        // A chunk that was not written has no bytes: the fill value.
+        let none = a.chunks.at(7);
+        assert!(ds.sources[none.src as usize].read_chunk(none).unwrap().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

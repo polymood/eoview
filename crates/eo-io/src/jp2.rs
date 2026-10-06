@@ -212,7 +212,7 @@ pub fn arrays_at(src: &Source, idx: u32, at: Option<u64>) -> Result<Vec<Array>> 
                 dtype,
                 le: true,
                 codecs: vec![Codec::Jpeg2000 { reduce: r as u8, header: header.clone() }],
-                chunks: chunks.clone(),
+                chunks: chunks.clone().into(),
                 // Resolution level r has exactly 2^r level-0 pixels for each pixel.
                 place: Some([d as f64, d as f64, 0.0, 0.0]),
             }

@@ -123,7 +123,7 @@ impl Layer {
     /// Key of generated overview tile `key` in the disk cache: the same in all sessions.
     fn disk_key(&self, key: TileKey) -> impl std::hash::Hash + Send + 'static {
         let v = self.var();
-        let src = v.levels[0].chunks.first().and_then(|c| self.ds.sources.get(c.src as usize)).map_or("", |s| s.name());
+        let src = v.levels[0].chunks.iter().next().and_then(|c| self.ds.sources.get(c.src as usize)).map_or("", |s| s.name());
         (src.to_string(), v.name.clone(), self.choice, self.time, key.lv, key.tx, key.ty, self.enc.u8, self.enc.k.to_bits(), self.enc.off.to_bits())
     }
 
@@ -496,7 +496,7 @@ impl Inner {
         let mut cells: Vec<(u64, u64)> = js.iter().flat_map(|j| is.iter().map(move |i| (j / ch, i / cw))).collect();
         cells.sort_unstable();
         cells.dedup();
-        let locs: Vec<ChunkLoc> = cells.iter().map(|&(cy, cx)| a.chunks[chunk_at(a, 0, 0, cy, cx)]).collect();
+        let locs: Vec<ChunkLoc> = cells.iter().map(|&(cy, cx)| a.chunks.at(chunk_at(a, 0, 0, cy, cx))).collect();
         let raws = self.raw_ds(ds, ds_id, &locs).await?;
         let (a, v2, is, js) = (a.clone(), v.clone(), is.to_vec(), js.to_vec());
         self.on_pool(0, move || {
@@ -579,7 +579,7 @@ impl Inner {
         let (gy, gx) = (h.div_ceil(ch), w.div_ceil(cw));
         let n = (gy * gx) as usize;
         let pick: Vec<(u64, u64)> = (0..n.min(16)).map(|i| i * n / n.min(16)).map(|i| (i as u64 / gx, i as u64 % gx)).collect();
-        let locs: Vec<ChunkLoc> = pick.iter().map(|&(cy, cx)| a.chunks[l.chunk_at(a, cy, cx)]).collect();
+        let locs: Vec<ChunkLoc> = pick.iter().map(|&(cy, cx)| a.chunks.at(l.chunk_at(a, cy, cx))).collect();
         let raws = self.raw_many(l, &locs).await?;
         let (a, fill, part, band, time) = (a.clone(), v.fill, l.part, l.band, l.time);
         self.on_pool(0, move || {
@@ -662,7 +662,7 @@ impl Inner {
                     local.push(i);
                 } else if let Some(b) = raw.get(&(ds_id, c.src, c.off)) {
                     out[i] = b.clone();
-                } else if c.len == ChunkLoc::WHOLE {
+                } else if c.len == ChunkLoc::WHOLE || c.len == ChunkLoc::KEYED {
                     whole.push(i);
                 } else {
                     miss.entry(c.src).or_default().push(i);
@@ -672,7 +672,11 @@ impl Inner {
         // A missing object (a Zarr chunk that was not written) gives empty bytes: the fill value.
         for i in local {
             let (c, s) = (locs[i], &ds.sources[locs[i].src as usize]);
-            out[i] = if c.len == ChunkLoc::WHOLE { s.get_whole().await?.unwrap_or_default() } else { s.read(c.off..c.off + c.len)? };
+            out[i] = match c.len {
+                ChunkLoc::WHOLE => s.get_whole().await?.unwrap_or_default(),
+                ChunkLoc::KEYED => s.get_keyed(c.off).await?.unwrap_or_default(),
+                _ => s.read(c.off..c.off + c.len)?,
+            };
         }
         // Remote chunks of an earlier session come from the disk cache.
         let key = |i: usize| (ds.sources[locs[i].src as usize].name().to_string(), locs[i].off, locs[i].len);
@@ -690,7 +694,11 @@ impl Inner {
             });
         }
         let from_disk = fetched.len();
-        let got = join_all(whole.iter().map(|&i| ds.sources[locs[i].src as usize].get_whole())).await;
+        let got = join_all(whole.iter().map(|&i| async move {
+            let (c, s) = (locs[i], &ds.sources[locs[i].src as usize]);
+            if c.len == ChunkLoc::KEYED { s.get_keyed(c.off).await } else { s.get_whole().await }
+        }))
+        .await;
         for (&i, b) in whole.iter().zip(got) {
             fetched.push((i, b?.unwrap_or_default()));
         }
@@ -747,7 +755,7 @@ impl Inner {
 
     async fn batch(self: Arc<Self>, l: Arc<Layer>, lvl: usize, idxs: Vec<usize>, prio: u32) -> Planes {
         let a = &l.var().levels[lvl];
-        let locs: Vec<ChunkLoc> = idxs.iter().map(|&i| a.chunks[i]).collect();
+        let locs: Vec<ChunkLoc> = idxs.iter().map(|&i| a.chunks.at(i)).collect();
         let res = match self.raw_many(&l, &locs).await {
             Ok(raws) => {
                 let l2 = l.clone();
@@ -839,7 +847,7 @@ impl Inner {
                 let idxs: Vec<usize> = cells.iter().map(|&(cy, cx)| l.chunk_at(a, cy, cx)).collect();
                 if a.codecs.is_empty() {
                     // Uncompressed: read the tile region from the chunk bytes. The memory map is the cache.
-                    let locs: Vec<ChunkLoc> = idxs.iter().map(|&i| a.chunks[i]).collect();
+                    let locs: Vec<ChunkLoc> = idxs.iter().map(|&i| a.chunks.at(i)).collect();
                     let raws = self.raw_many(l, &locs).await?;
                     let l2 = l.clone();
                     let t = self
@@ -965,7 +973,7 @@ impl Inner {
                 let (i, l) = (self.clone(), l.clone());
                 async move {
                     let a = &l.var().levels[lvl];
-                    let locs: Vec<ChunkLoc> = g.iter().map(|u| a.chunks[l.chunk_at(a, u.cy, u.cx)]).collect();
+                    let locs: Vec<ChunkLoc> = g.iter().map(|u| a.chunks.at(l.chunk_at(a, u.cy, u.cx))).collect();
                     let raws = i.raw_many(&l, &locs).await?;
                     let _c = Charge::new(&i.work, if a.codecs.is_empty() { 0 } else { a.chunk_bytes() * g.len() });
                     let l2 = l.clone();
@@ -1013,7 +1021,7 @@ impl Inner {
             let d = match cached {
                 Some(d) => d,
                 None => {
-                    let raw = self.raw_many(l, &[a.chunks[idx]]).await?.remove(0);
+                    let raw = self.raw_many(l, &[a.chunks.at(idx)]).await?.remove(0);
                     if raw.is_empty() {
                         out.push(None);
                         continue;
@@ -1138,11 +1146,11 @@ mod tests {
             dtype: DType::U16,
             le: true,
             codecs: vec![],
-            chunks: vec![],
+            chunks: vec![].into(),
             place: None,
         };
         Variable {
-            times: vec![],
+            times: Default::default(),
             name: "t".into(),
             group: String::new(),
             levels: std::iter::once(arr(w, h)).chain(levels.iter().map(|&(w, h)| arr(w, h))).collect(),

@@ -259,7 +259,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
                 return Err(format!("NITF block at {} (+{}) is after end of file", c.off, c.len).into());
             }
         }
-        let a = Array { dims: dims.into_iter().map(String::from).collect(), shape, chunk, dtype, le: false, codecs: vec![], chunks, place: None };
+        let a = Array { dims: dims.into_iter().map(String::from).collect(), shape, chunk, dtype, le: false, codecs: vec![], chunks: chunks.into(), place: None };
         a.validate()?;
         vec![a]
     } else {
@@ -278,7 +278,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
         if used.len() > 1 { format!(", {} segments", used.len()) } else { String::new() }
     );
     let var = Variable {
-        times: vec![],
+        times: Default::default(),
         name: kind.into(),
         group: String::new(),
         bands: match nbv {
