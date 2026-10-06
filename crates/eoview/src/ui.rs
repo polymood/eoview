@@ -750,7 +750,11 @@ impl App {
         p.rect = rect;
         p.painter = Some(ui.painter().clone());
         p.v.cursor = None;
-        let label = p.timed().filter(|_| stamp).map(|l| l.step_label(l.shown));
+        // The time of the frame: between the times of two steps for a frame that is a blend of them.
+        let label = p.timed().filter(|_| stamp).map(|l| {
+            let (a, b) = (l.steps[l.shown].t, l.steps[(l.shown + l.stride.max(1)) % l.steps.len()].t);
+            if l.blend && p.tmix > 0.0 && a.is_finite() && b.is_finite() { eo_core::time::text(a + (b - a) * p.tmix as f64) } else { l.step_label(l.shown) }
+        });
         self.sync();
         self.paint(&ctx, Some(id));
         if let Some(text) = label {
@@ -1832,6 +1836,7 @@ impl App {
                 dlo: p.dlo,
                 dhi: if p.dhi == p.dlo { p.dlo + 1e-6 } else { p.dhi },
                 dflags: (p.dinvert as u32) << 3,
+                tmix: p.tmix,
                 ..Default::default()
             };
             let mut wind = false;

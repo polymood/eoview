@@ -128,7 +128,7 @@ struct L {
 struct C {
     vo: vec2f, cmp: u32, n: u32,
     swipe: f32, vertical: u32, show_b: u32, diff: u32,
-    dlo: f32, dhi: f32, dflags: u32, p0: u32,
+    dlo: f32, dhi: f32, dflags: u32, tmix: f32,
     l: array<L, 4>,
 };
 @group(0) @binding(0) var<uniform> u: C;
@@ -384,7 +384,8 @@ pub struct CompositeUniforms {
     pub dhi: f32,
     /// Bit 3: invert the difference color map.
     pub dflags: u32,
-    pub pad: u32,
+    /// Blend of two time steps: 0 is the selected step, 1 is the next step (see `MapLayer::spec`).
+    pub tmix: f32,
     pub l: [LayerParams; 4],
 }
 
@@ -1026,7 +1027,8 @@ mod tests {
     fn composite_programs_are_valid() {
         let gray = LayerSpec { mode: Mode::Gray("((v0 - v1) / (v0 + v1))".into()), inputs: vec![0, 1] };
         let rgb = LayerSpec { mode: Mode::Rgb(["v2".into(), "v3".into(), "(v2 / v3)".into()]), inputs: vec![2, 3] };
-        let wind = LayerSpec { mode: Mode::Wind { speed: "sqrt((pow(v4, 2.0) + pow(v5, 2.0)))".into(), u: "v4".into(), v: "v5".into() }, inputs: vec![4, 5] };
+        // The second component is a blend of two time steps.
+        let wind = LayerSpec { mode: Mode::Wind { speed: "sqrt((pow(v4, 2.0) + pow(mix(v5, v6, u.tmix), 2.0)))".into(), u: "v4".into(), v: "mix(v5, v6, u.tmix)".into() }, inputs: vec![4, 5, 6] };
         for cmp in [Compare::Stack, Compare::Swipe, Compare::Flicker, Compare::Difference] {
             for layers in [vec![gray.clone()], vec![gray.clone(), rgb.clone()], vec![rgb.clone(), gray.clone(), gray.clone()], vec![wind.clone()], vec![gray.clone(), wind.clone(), wind.clone()]] {
                 let src = COMPOSITE_SHADER.replace("LAYERS", &program(&layers, cmp));

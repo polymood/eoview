@@ -31,6 +31,9 @@ pub struct Settings {
     pub first: usize,
     pub last: Option<usize>,
     pub stride: usize,
+    /// Frames for each time step. More than 1: the frames between two steps are a blend of the steps,
+    /// for a smooth change.
+    pub sub: usize,
     /// A video file (see `VIDEO_EXT`), or a directory for PNG files.
     pub out: String,
     /// Write the time of the step on each frame.
@@ -44,7 +47,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, out: "eoview.mp4".into(), stamp: true, fit: false, view: None }
+        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, fit: false, view: None }
     }
 }
 
@@ -118,9 +121,15 @@ pub struct Job {
 }
 
 impl Job {
+    /// Number of frames: `sub` for each step, and one for the last step.
     pub fn frames(&self) -> usize {
-        self.steps.len()
+        frames(self.steps.len(), self.set.sub)
     }
+}
+
+/// Number of frames of `steps` time steps with `sub` frames for each step.
+pub fn frames(steps: usize, sub: usize) -> usize {
+    if steps == 0 { 0 } else { (steps - 1) * sub.max(1) + 1 }
 }
 
 fn err<E: std::fmt::Display>(what: &str) -> impl Fn(E) -> String + '_ {
@@ -211,7 +220,8 @@ impl App {
         if let Some(p) = self.pane_mut(pane) {
             p.link = 0;
             p.play = false;
-            p.layers.iter_mut().for_each(|l| l.stride = stride);
+            let blend = set.sub > 1 && steps.len() > 1;
+            p.layers.iter_mut().for_each(|l| (l.stride, l.blend) = (stride, blend));
             match set.view {
                 Some((center, width)) if width > 0.0 => (p.v.center, p.v.scale, p.v.fit) = (center, w as f64 / width, false),
                 _ => p.v.fit = true,
@@ -274,14 +284,21 @@ impl App {
             self.events();
             let Some(job) = &mut self.job else { return true };
             let pane = job.pane;
-            if job.done >= job.steps.len() {
+            if job.done >= job.frames() {
                 self.end_render(None);
                 return true;
             }
             if !job.stepped {
-                let s = job.steps[job.done];
+                // Frame `f` of `sub` between step `s` and the next step.
+                let sub = job.set.sub.max(1);
+                let (s, f) = (job.steps[job.done / sub], job.done % sub);
                 job.stepped = true;
-                self.set_time(pane, s);
+                if f == 0 {
+                    self.set_time(pane, s);
+                }
+                if let Some(p) = self.pane_mut(pane) {
+                    p.tmix = f as f32 / sub as f32;
+                }
             }
             self.draw_frame();
             if !self.frame_ready(pane) {
@@ -474,9 +491,12 @@ impl App {
                     });
                     ui.end_row();
                     ui.label("Interval");
+                    ui.add(egui::DragValue::new(&mut set.stride).range(1..=n.max(1)).suffix(" step(s)"));
+                    ui.end_row();
+                    ui.label("Frames for a step");
                     ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut set.stride).range(1..=n.max(1)).suffix(" step(s)"));
-                        let frames = set.steps(n).len();
+                        ui.add(egui::DragValue::new(&mut set.sub).range(1..=120)).on_hover_text("More than 1: the frames between two steps are a blend of the two steps, for a smooth change");
+                        let frames = frames(set.steps(n).len(), set.sub);
                         ui.weak(format!("{frames} frames, {:.1} s of video", frames as f32 / set.fps.max(0.01)));
                     });
                     ui.end_row();

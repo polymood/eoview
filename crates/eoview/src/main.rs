@@ -755,6 +755,7 @@ fn info(path: &str) {
 }
 
 const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--bbox WEST,SOUTH,EAST,NORTH] [--no-stamp] <project file or products>
+  --sub N   frames for each time step. More than 1: the frames between two steps are a blend of the steps
   --stretch LOW,HIGH  limits of the color map, in the units of the data. Without it and without a project file: the automatic stretch of the first frame
   --bbox    the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The height of the area is the height of the frame at this width
   --out     a video file (mp4, mov, mkv, webm, gif: ffmpeg writes it), or a directory for PNG files
@@ -768,7 +769,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
     while let Some(a) = it.next() {
         match a.as_str() {
             "--no-stamp" => opts.push(("--no-stamp", String::new())),
-            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
+            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" | "--sub" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
             _ => files.push(a.clone()),
         }
     }
@@ -796,6 +797,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
                 (set.fit, set.view) = (false, Some(([(w + e) / 2.0, (s + n) / 2.0], e - w)));
             }
             "--fps" => set.fps = v.parse().ok().filter(|f| *f > 0.0).ok_or(bad(o, &v))?,
+            "--sub" => set.sub = v.parse().ok().filter(|n| *n >= 1).ok_or(bad(o, &v))?,
             "--size" => {
                 let (w, h) = v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).ok_or(bad(o, &v))?;
                 (set.width, set.height) = (w, h);
