@@ -1546,6 +1546,11 @@ impl App {
                         changed |= r.lost_focus();
                     });
                 }
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut l.particles, "Particles").on_hover_text("Points that follow the wind, with a trail");
+                    ui.checkbox(&mut l.arrows, "Arrows");
+                    ui.checkbox(&mut l.fill, "Speed colors").on_hover_text("The speed with the color map. Without it, the layers below show, and the particles have the color of the speed");
+                });
             }
         }
         ui.horizontal_wrapped(|ui| {
@@ -1853,6 +1858,21 @@ impl App {
             }
             if p.v.globe {
                 graticule(&p.v, &painter.with_clip_rect(p.rect), p.rect);
+            }
+            // The particles of the wind layers. They ask for the tiles that they need on the CPU: an
+            // other client of the engine than the tiles of the view.
+            let mut need = vec![];
+            p.field_miss = false;
+            for li in 0..p.layers.len() {
+                if p.layers[li].visible && p.layers[li].kind == Kind::Wind && p.layers[li].particles {
+                    p.field_miss |= crate::wind::particles(p, li, &self.fields, &mut need, &painter, ppp, t);
+                }
+            }
+            let keys: Vec<eo_cache::TileKey> = need.iter().map(|n| n.1).collect();
+            if keys != p.field_sent {
+                self.field_keys.extend(keys.iter().copied());
+                self.engine.want(0x8000_0000 | p.id, need);
+                p.field_sent = keys;
             }
             overlays(p, &painter, ppp, mpp, cross);
         }

@@ -242,6 +242,10 @@ pub struct MapLayer {
     /// Interval in steps between the selected step and the steps that the view loads ahead: 1, or the
     /// interval between the frames of a render.
     pub stride: usize,
+    /// Wind mode: show the speed with the color map, the arrows, the particles.
+    pub fill: bool,
+    pub arrows: bool,
+    pub particles: bool,
     pub kind: Kind,
     pub band: usize,
     pub rgb: [String; 3],
@@ -283,6 +287,9 @@ impl MapLayer {
             step: 0,
             shown: 0,
             stride: 1,
+            fill: true,
+            arrows: false,
+            particles: true,
             kind: Kind::Band,
             band: 0,
             rgb: Default::default(),
@@ -592,7 +599,7 @@ impl MapLayer {
     }
 
     pub fn params(&self) -> LayerParams {
-        let mut p = LayerParams { opacity: self.opacity, flags: (self.invert as u32) << 3, ..Default::default() };
+        let mut p = LayerParams { opacity: self.opacity, flags: (self.invert as u32) << 3 | (!self.fill as u32) << 4 | (!self.arrows as u32) << 5, ..Default::default() };
         for (k, s) in self.st.iter().enumerate() {
             p.lo[k] = s.lo;
             p.hi[k] = if s.hi == s.lo { s.lo + 1e-6 } else { s.hi };
@@ -692,6 +699,9 @@ pub struct LayerSave {
     /// Selected time step.
     #[serde(default)]
     pub step: usize,
+    /// Wind mode: the colors of the speed, the arrows, the particles.
+    #[serde(default)]
+    pub wind: Option<[bool; 3]>,
 }
 
 /// Path without the query, the fragment and the user information of a URL: they can contain credentials
@@ -724,6 +734,7 @@ impl MapLayer {
             visible: self.visible,
             series: self.steps.iter().filter(|s| !s.path.is_empty()).map(|s| (clean_path(&s.path), s.t.is_finite().then_some(s.t))).collect(),
             step: self.step,
+            wind: Some([self.fill, self.arrows, self.particles]),
         }
     }
 
@@ -746,6 +757,9 @@ impl MapLayer {
             self.set_series(s.series.iter().map(|(p, t)| (p.clone(), t.unwrap_or(f64::NAN))).collect());
         }
         self.step = s.step.min(self.steps.len().saturating_sub(1));
+        if let Some([f, a, p]) = s.wind {
+            (self.fill, self.arrows, self.particles) = (f, a, p);
+        }
         self.auto_pending = false;
     }
 }

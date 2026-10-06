@@ -33,6 +33,14 @@ pub enum Pixels {
 }
 
 impl Pixels {
+    /// Texel `i` as the GPU reads it: 0 to 1 for u8 data. See `Layer::texel_to_phys`.
+    pub fn texel(&self, i: usize) -> f32 {
+        match self {
+            Pixels::U8(v) => v.get(i).map_or(f32::NAN, |&x| x as f32 / 255.0),
+            Pixels::F16(v) => v.get(i).map_or(f32::NAN, |x| x.to_f32()),
+        }
+    }
+
     pub fn bytes(&self) -> &[u8] {
         match self {
             Pixels::U8(v) => v,

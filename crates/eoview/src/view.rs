@@ -116,6 +116,9 @@ pub struct View {
     pub cursor: Option<[f64; 2]>,
     /// Preference: the view uses the finest level of the data, not the level of the zoom (see `level`).
     pub full_res: bool,
+    /// For each input: the level of its tiles in the last frame, and true if it repeats in longitude.
+    pub levels: Vec<usize>,
+    pub wraps: Vec<bool>,
 }
 
 impl View {
@@ -135,6 +138,8 @@ impl View {
             sent: vec![],
             cursor: None,
             full_res: false,
+            levels: vec![],
+            wraps: vec![],
         }
     }
 
@@ -221,6 +226,8 @@ impl View {
             vg.inputs.push(eo_render::Input::new(gpu));
         }
         self.want.clear();
+        self.levels.resize(self.inputs.len(), 0);
+        self.wraps.resize(self.inputs.len(), false);
         for (k, inp) in self.inputs.iter().enumerate() {
             let gi = &mut vg.inputs[k];
             gi.insts.clear();
@@ -231,11 +238,13 @@ impl View {
             // the west: a grid from 0 to 360 degrees also shows at the longitudes below 0.
             let span = warp.at(warp.w, warp.h / 2.0)[0] - warp.at(0.0, warp.h / 2.0)[0];
             let wrap = self.space == Some(4326) && !self.globe && (span.abs() - 360.0).abs() < 1.0;
+            self.wraps[k] = wrap;
             for &shift in if wrap { &[0.0, -360.0, 360.0][..] } else { &[0.0][..] } {
             let Some(pb) = warp.pixel_bbox([view[0] - shift, view[1], view[2] - shift, view[3]]) else { continue };
             let n = l.levels.len();
             let lim = 1.0 / (self.scale * warp.px_size());
             let target = level(l, lim, pb, full);
+            self.levels[k] = target;
             // Level-0 rectangles of the tiles of the target level that are not complete on the GPU.
             let mut holes: Vec<[f64; 4]> = vec![];
             let top_ok = matches!(l.levels[n - 1].src, eo_cache::LevelSrc::File(_));

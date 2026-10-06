@@ -139,6 +139,11 @@ pub struct Pane {
     pub err: Option<String>,
     /// Display CRS of the view before it became a globe view.
     pub flat_space: Option<Option<u32>>,
+    /// Particles of the wind layers, by the uid of the layer. The tiles that they asked the engine for.
+    /// True if a tile was missing in the last frame.
+    pub swarms: HashMap<u64, crate::wind::Swarm>,
+    pub field_sent: Vec<eo_cache::TileKey>,
+    pub field_miss: bool,
     /// Playback of the time steps: on or off, steps for each second, time of the next step (egui time).
     pub play: bool,
     pub fps: f32,
@@ -175,6 +180,9 @@ impl Pane {
             missing: false,
             err: None,
             flat_space: None,
+            swarms: HashMap::new(),
+            field_sent: vec![],
+            field_miss: false,
             play: false,
             fps: 4.0,
             next_step: 0.0,
@@ -414,6 +422,9 @@ pub struct App {
     pub help: bool,
     /// The splash window, until the products of the command line are open. Not in a benchmark.
     pub splash: Option<crate::splash::Splash>,
+    /// Tiles on the CPU for the particles of the wind layers, and the tiles that the views asked for.
+    pub fields: crate::wind::Fields,
+    pub field_keys: HashSet<eo_cache::TileKey>,
     pub prefs: Prefs,
     /// The preferences window is open.
     pub prefs_open: bool,
@@ -477,6 +488,8 @@ impl App {
             quit: false,
             help: false,
             splash: None,
+            fields: HashMap::new(),
+            field_keys: HashSet::new(),
             prefs: Prefs::default(),
             prefs_open: false,
             job: None,
@@ -645,6 +658,9 @@ impl App {
         }
         if p.v.fit {
             return Some("the camera".into());
+        }
+        if p.field_miss {
+            return Some("the wind field".into());
         }
         p.missing.then(|| "tiles".into())
     }
@@ -976,6 +992,10 @@ impl App {
                     let used = |p: &Pane| p.v.inputs.iter().chain(p.v.ahead.iter().map(|a| &a.input)).any(|i| i.layer.id == key.layer);
                     if !self.panes.iter().any(used) {
                         continue;
+                    }
+                    // A tile for the particles of a wind layer also stays on the CPU.
+                    if done && self.field_keys.contains(&key) {
+                        self.fields.insert(key, (w, h, px.clone()));
                     }
                     if *bytes >= UPLOAD_BYTES {
                         self.pending.push_front(Event::Tile { key, w, h, px, done });
