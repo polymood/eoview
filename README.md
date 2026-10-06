@@ -428,6 +428,7 @@ Lists in `examples/`:
 | `s2_alps_2026_summer_zarr.txt` | 16 Sentinel-2 L2A EOPF Zarr products: western Alps, one tile each, all bands |
 | `s3_olci_europe_20260715_zarr.txt` | 42 Sentinel-3 OLCI L1 EFR EOPF Zarr products: Europe, 15 July 2026 (near real time and non time critical products of the same orbits) |
 | `s2_31TGK_2025_tci.txt` | 30 Sentinel-2 true color COG files of one tile: a time series |
+| `sar_umbra_bingham_mine.txt` | 157 SAR images (Umbra open data, COG, 34 GB) of one place, the Bingham Canyon copper mine, from July 2023 to November 2025: a time series. `eoview --series examples/sar_umbra_bingham_mine.txt` |
 
 A product list is a `.txt` file with one path or URL on each line. The viewer opens a list as it opens
 its products: on the command line, with **Open** (Ctrl+O), with **Files as a time series**, or with a

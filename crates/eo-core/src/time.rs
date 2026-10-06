@@ -77,6 +77,20 @@ pub fn in_name(name: &str) -> Option<f64> {
         let t = digits(j, 6).filter(|t| &t[..2] < "24" && &t[2..4] < "60").unwrap_or("000000");
         return parse(&format!("{d}T{t}"));
     }
+    // A date with separators: 2024-01-12, then the time if it is there (04-09-18 or 04:09:18).
+    for i in 0..b.len() {
+        let sep = |k: usize, c: &[u8]| b.get(k).is_some_and(|x| c.contains(x));
+        let (Some(y), Some(m), Some(d)) = (digits(i, 4), digits(i + 5, 2), digits(i + 8, 2)) else { continue };
+        let ok = sep(i + 4, b"-") && sep(i + 7, b"-") && (y.starts_with("19") || y.starts_with("20")) && ("01"..="12").contains(&m) && ("01"..="31").contains(&d);
+        if !ok || (i > 0 && b[i - 1].is_ascii_digit()) {
+            continue;
+        }
+        let t = match (digits(i + 11, 2), digits(i + 14, 2), digits(i + 17, 2)) {
+            (Some(h), Some(mi), Some(se)) if sep(i + 10, b"-T_ ") && sep(i + 13, b"-:") && sep(i + 16, b"-:") && h < "24" && mi < "60" => format!("{h}{mi}{se}"),
+            _ => "000000".into(),
+        };
+        return parse(&format!("{y}{m}{d}T{t}"));
+    }
     None
 }
 
@@ -102,5 +116,7 @@ mod tests {
         assert_eq!(in_name("S2A_MSIL2A_20260922T102701_N0513_R108").map(text).as_deref(), Some("2026-09-22 10:27:01"));
         assert_eq!(in_name("ESACCI-L4_20100615-fv2.nc").map(text).as_deref(), Some("2010-06-15 00:00:00"));
         assert_eq!(in_name("tile_123456789012.tif"), None);
+        assert_eq!(in_name("2024-01-12-04-09-18_UMBRA-05_GEC.tif").map(text).as_deref(), Some("2024-01-12 04:09:18"));
+        assert_eq!(in_name("scene_2024-01-12.tif").map(text).as_deref(), Some("2024-01-12 00:00:00"));
     }
 }
