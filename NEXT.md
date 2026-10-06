@@ -1,5 +1,8 @@
 # What is next
 
+`DESIGN.md` has the design of the next large step: operations on layers, tools, Python, figures, the
+interface foundation and the packaging. It is a proposal for review.
+
 This file lists the work that is not done. The specification is `EOVIEWER.md` (not in this repository).
 Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
 
