@@ -5,8 +5,9 @@
 
 This script is the source of the icon. It writes two SVG files: eoview.svg, and eoview-small.svg
 with thicker lines and no shadow for the sizes of 32 pixels and less. Chrome renders the SVG files.
-Pillow makes the PNG files, the ICO file (Windows) and the RGBA files (window icon, splash screen).
-The banner of the README (banner.svg, banner.png) shows the icon in a BeOS window.
+Pillow makes the PNG files, the ICO file (Windows) and the RGBA file (window icon).
+The banner of the README (banner.svg, banner.png) and the image of the splash window (splash.svg,
+splash.png, splash@2x.png) show the icon in a BeOS window.
 """
 import os
 import subprocess
@@ -95,6 +96,32 @@ def banner() -> str:
 """
 
 
+# Inner rectangle of the progress bar of the splash image: x, y, width, height.
+# `BAR` in crates/eoview/src/splash.rs has the same values.
+SPLASH_BAR = (210, 198, 292, 16)
+
+
+def splash() -> str:
+    font = 'font-family="Segoe UI, Helvetica Neue, Arial, sans-serif"'
+    x, y, w, h = SPLASH_BAR
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 300">
+<linearGradient id="desk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3d74ab"/><stop offset="1" stop-color="#2a5580"/></linearGradient>
+<linearGradient id="tab" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe066"/><stop offset="1" stop-color="#ffcb05"/></linearGradient>
+<rect width="560" height="300" fill="url(#desk)"/>
+<rect x="1" y="1" width="558" height="298" fill="none" stroke="#000" stroke-width="2"/>
+<path d="M38 38H188V70H538V278H38Z" fill="#000" fill-opacity="0.3"/>
+<rect x="30" y="62" width="500" height="208" fill="#dedede" stroke="#000" stroke-width="2"/>
+<rect x="30" y="30" width="150" height="33" fill="url(#tab)" stroke="#000" stroke-width="2"/>
+<rect x="40" y="39" width="15" height="15" fill="#fff3b0" stroke="#000" stroke-width="1.5"/>
+<text x="65" y="53" font-size="18" font-weight="700" {font}>eoview</text>
+{svg(False, ' x="46" y="92" width="150" height="150"')}
+<text x="206" y="146" font-size="62" font-weight="700" letter-spacing="-1" {font}>eoview</text>
+<text x="209" y="176" font-size="16.5" {font}>Fast viewer for Earth observation data</text>
+<rect x="{x - 2}" y="{y - 2}" width="{w + 4}" height="{h + 4}" fill="#fff" stroke="#000" stroke-width="2"/>
+</svg>
+"""
+
+
 def native(chrome: str, path: Path) -> str:
     """A Windows browser started from WSL needs Windows paths."""
     if chrome.lower().endswith(".exe"):
@@ -128,13 +155,16 @@ def main() -> None:
         small = render(chrome, ASSETS / "eoview-small.svg", Path(tmp))
         (ASSETS / "banner.svg").write_text(banner())
         render(chrome, ASSETS / "banner.svg", Path(tmp), 1280, 400, 2).convert("RGB").save(ASSETS / "banner.png", optimize=True)
+        (ASSETS / "splash.svg").write_text(splash())
+        for scale, name in ((1, "splash.png"), (2, "splash@2x.png")):
+            # 8-bit RGB: the format that `decode` in splash.rs reads.
+            render(chrome, ASSETS / "splash.svg", Path(tmp), 560, 300, scale).convert("RGB").save(ASSETS / name, optimize=True)
     images = {n: (small if n in SMALL_SIZES else large).resize((n, n), Image.LANCZOS) for n in SMALL_SIZES + LARGE_SIZES}
     for n, image in images.items():
         image.save(ASSETS / f"eoview-{n}.png", optimize=True)
     ico = [images[n] for n in ICO_SIZES]
     ico[-1].save(ASSETS / "eoview.ico", sizes=[(n, n) for n in ICO_SIZES], append_images=ico[:-1])
-    for n in (64, 256):
-        (ASSETS / f"eoview-{n}.rgba").write_bytes(images[n].tobytes())
+    (ASSETS / "eoview-64.rgba").write_bytes(images[64].tobytes())
 
 
 if __name__ == "__main__":

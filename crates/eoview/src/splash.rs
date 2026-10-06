@@ -1,70 +1,110 @@
-//! Splash screen: a BeOS window with the icon, the name and the version. It shows from the first frame
-//! until the products of the command line are open.
+//! Splash window: it shows before the main window, while the GPU starts and the products of the command
+//! line open. The CPU draws it (softbuffer): it does not wait for the GPU.
 
-use crate::app::App;
-use egui::{Align2, Color32, FontId, Rect, Stroke, StrokeKind, pos2, vec2};
-use std::time::{Duration, Instant};
+use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::time::Instant;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{Window, WindowId};
 
-/// Minimum time on the screen, in seconds.
-const MIN_S: f32 = 1.2;
-/// Side of the icon image (`assets/eoview-256.rgba`, RGBA without premultiplied alpha), in pixels.
-const ICON_PX: usize = 256;
+/// Inner rectangle of the progress bar in `assets/splash.png`: x, y, width, height.
+/// `SPLASH_BAR` in `scripts/make_icons.py` has the same values.
+const BAR: [u32; 4] = [210, 198, 292, 16];
+/// Color of the progress bar (0x00RRGGBB).
+const BAR_COLOR: u32 = 0x003f_7be0;
 
 pub struct Splash {
-    t0: Instant,
-    icon: Option<egui::TextureHandle>,
+    window: Arc<Window>,
+    surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
+    _context: softbuffer::Context<Arc<Window>>,
+    /// Pixels of the image (0x00RRGGBB), its width and its height.
+    px: Vec<u32>,
+    w: u32,
+    h: u32,
+    /// Pixels of the image for each unit of `BAR`: 1, or 2 on a high-density screen.
+    scale: u32,
+    /// 0 to 1.
+    progress: f32,
+    /// The window has its first frame: the start of the GPU can block the thread.
+    pub drawn: bool,
+    /// Number of products that opened at the start, and the time of the start.
+    pub opens: usize,
+    pub t0: Instant,
 }
 
 impl Splash {
-    pub fn start() -> Splash {
-        Splash { t0: Instant::now(), icon: None }
+    /// Make the window at the center of the primary monitor. `None`: no splash window on this system.
+    pub fn new(el: &ActiveEventLoop) -> Option<Splash> {
+        let monitor = el.primary_monitor();
+        let (png, scale): (&[u8], u32) = if monitor.as_ref().is_some_and(|m| m.scale_factor() >= 1.5) {
+            (include_bytes!("../assets/splash@2x.png"), 2)
+        } else {
+            (include_bytes!("../assets/splash.png"), 1)
+        };
+        let (px, w, h) = decode(png)?;
+        let mut attrs = Window::default_attributes()
+            .with_title(crate::APP)
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_inner_size(PhysicalSize::new(w, h))
+            .with_window_icon(crate::app_icon(None));
+        if let Some(m) = &monitor {
+            let (p, s) = (m.position(), m.size());
+            attrs = attrs.with_position(PhysicalPosition::new(p.x + (s.width as i32 - w as i32) / 2, p.y + (s.height as i32 - h as i32) / 2));
+        }
+        let window = Arc::new(el.create_window(attrs).ok()?);
+        let context = softbuffer::Context::new(window.clone()).ok()?;
+        let surface = softbuffer::Surface::new(&context, window.clone()).ok()?;
+        window.request_redraw();
+        Some(Splash { window, surface, _context: context, px, w, h, scale, progress: 0.1, drawn: false, opens: 0, t0: Instant::now() })
+    }
+
+    pub fn id(&self) -> WindowId {
+        self.window.id()
+    }
+
+    /// Set the progress (0 to 1) and draw the window.
+    pub fn set(&mut self, progress: f32) {
+        self.progress = progress;
+        self.draw();
+    }
+
+    /// Draw the image and the progress bar. If the window does not have the size of the image, the rest is black.
+    pub fn draw(&mut self) {
+        let size = self.window.inner_size();
+        let (Some(sw), Some(sh)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
+        if self.surface.resize(sw, sh).is_err() {
+            return;
+        }
+        let Ok(mut buf) = self.surface.buffer_mut() else { return };
+        let (bw, w, h) = (size.width as usize, self.w as usize, self.h as usize);
+        let [x0, y0, bar_w, bar_h] = BAR.map(|v| (v * self.scale) as usize);
+        let end = x0 + (bar_w as f32 * self.progress.clamp(0.0, 1.0)) as usize;
+        let n = w.min(bw);
+        for (y, row) in buf.chunks_exact_mut(bw).enumerate() {
+            if y >= h {
+                row.fill(0);
+                continue;
+            }
+            row[..n].copy_from_slice(&self.px[y * w..y * w + n]);
+            row[n..].fill(0);
+            if (y0..y0 + bar_h).contains(&y) {
+                row[x0.min(n)..end.min(n)].fill(BAR_COLOR);
+            }
+        }
+        let _ = buf.present();
     }
 }
 
-impl App {
-    /// Paint the splash screen on top of the interface. A mouse button or Escape closes it.
-    pub fn splash_ui(&mut self, ctx: &egui::Context) {
-        let opens = self.opens_pending();
-        let Some(s) = &self.splash else { return };
-        let skip = ctx.input(|i| i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape));
-        if skip || (opens == 0 && s.t0.elapsed().as_secs_f32() >= MIN_S) {
-            self.splash = None;
-            return;
-        }
-        let Some(s) = &mut self.splash else { return };
-        let icon = s
-            .icon
-            .get_or_insert_with(|| {
-                let px = egui::ColorImage::from_rgba_unmultiplied([ICON_PX, ICON_PX], include_bytes!("../assets/eoview-256.rgba"));
-                ctx.load_texture("splash", px, egui::TextureOptions::LINEAR)
-            })
-            .id();
-
-        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("splash")));
-        let screen = ctx.content_rect();
-        p.rect_filled(screen, 0.0, Color32::from_black_alpha(150));
-        let body = Rect::from_center_size(screen.center(), vec2(470.0, 176.0));
-        let tab = Rect::from_min_size(body.left_top() - vec2(0.0, 25.0), vec2(130.0, 26.0));
-        let line = Stroke::new(1.5, Color32::BLACK);
-        p.rect_filled(body.translate(vec2(6.0, 6.0)), 0.0, Color32::from_black_alpha(90));
-        p.rect_filled(body, 0.0, Color32::from_gray(222));
-        p.rect_stroke(body, 0.0, line, StrokeKind::Inside);
-        p.rect_filled(tab, 0.0, Color32::from_rgb(255, 203, 5));
-        p.rect_stroke(tab, 0.0, line, StrokeKind::Inside);
-        p.text(tab.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, crate::APP, FontId::proportional(15.0), Color32::BLACK);
-
-        let image = Rect::from_min_size(body.left_top() + vec2(20.0, 24.0), vec2(128.0, 128.0));
-        p.image(icon, image, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-        let x = image.right() + 22.0;
-        p.text(pos2(x, body.top() + 22.0), Align2::LEFT_TOP, crate::APP, FontId::proportional(44.0), Color32::BLACK);
-        p.text(pos2(x, body.top() + 78.0), Align2::LEFT_TOP, "Fast viewer for Earth observation data", FontId::proportional(15.0), Color32::from_gray(30));
-        p.text(pos2(x, body.top() + 100.0), Align2::LEFT_TOP, format!("Version {}", env!("CARGO_PKG_VERSION")), FontId::proportional(12.0), Color32::from_gray(90));
-        let status = match opens {
-            0 => "Ready".to_string(),
-            1 => "Opening 1 product...".to_string(),
-            n => format!("Opening {n} products..."),
-        };
-        p.text(pos2(x, body.bottom() - 18.0), Align2::LEFT_BOTTOM, status, FontId::proportional(13.0), Color32::from_gray(30));
-        ctx.request_repaint_after(Duration::from_millis(100));
+/// Decode an 8-bit RGB PNG file to 0x00RRGGBB pixels, with its width and its height.
+fn decode(png: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().ok()?;
+    let mut rgb = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut rgb).ok()?;
+    if info.color_type != png::ColorType::Rgb || info.bit_depth != png::BitDepth::Eight {
+        return None;
     }
+    let px = rgb[..info.buffer_size()].chunks_exact(3).map(|c| u32::from_be_bytes([0, c[0], c[1], c[2]])).collect();
+    Some((px, info.width, info.height))
 }
