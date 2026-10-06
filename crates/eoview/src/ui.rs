@@ -72,6 +72,8 @@ pub enum Cmd {
     Render,
     /// Start a render of the view with the settings of the render window.
     RenderStart,
+    /// Smooth pixels in the view (linear when magnified), or squares.
+    Smooth,
     /// Preference: full resolution at all zoom levels, on or off.
     FullRes,
 }
@@ -144,6 +146,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         ("Zoom out", "-", Cmd::Zoom(1.0 / 1.5)),
         ("Copy view extent (west, south, east, north)", "Ctrl+Shift+C", Cmd::CopyExtent),
         ("3D globe: on or off", "G", Cmd::Globe),
+        ("Smooth pixels: on or off", "", Cmd::Smooth),
         ("Preferences...", "Ctrl+,", Cmd::Prefs),
         ("Render video or frames...", "Ctrl+R", Cmd::Render),
         ("Render: start with the settings of the render window", "", Cmd::RenderStart),
@@ -612,6 +615,14 @@ fn leaf_ui(ui: &mut egui::Ui, l: &MapLayer, c: usize, label: &str, pick: &mut Op
                     *pick = Some(Pick::Insert(c));
                 }
             }
+            Kind::Wind => {
+                for k in [1, 0] {
+                    let b = egui::Button::selectable(l.rgb[k].trim() == id, ["U", "V"][k]).small();
+                    if ui.add(b).on_hover_text(format!("Use as the component to the {} of the wind", ["east", "north"][k])).clicked() {
+                        *pick = Some(Pick::Rgb(k, c));
+                    }
+                }
+            }
             Kind::Band => {}
         });
     });
@@ -989,6 +1000,10 @@ impl App {
                     }
                     Cmd::SwipeOrient => {
                         p.vertical ^= true;
+                        false
+                    }
+                    Cmd::Smooth => {
+                        p.smooth ^= true;
                         false
                     }
                     _ => {
@@ -1495,7 +1510,15 @@ impl App {
             ui.selectable_value(&mut l.kind, Kind::Band, "Band");
             ui.selectable_value(&mut l.kind, Kind::Rgb, "RGB");
             ui.selectable_value(&mut l.kind, Kind::Expr, "Band math");
+            ui.selectable_value(&mut l.kind, Kind::Wind, "Wind").on_hover_text("A vector field: the speed with the color map, and arrows. It uses the components to the east (U) and to the north (V)");
             if k != l.kind {
+                // The wind mode starts with the components that the product has.
+                if l.kind == Kind::Wind && let Some([u, v]) = layer::wind_pair(&l.names()) {
+                    (l.rgb[0], l.rgb[1]) = (u, v);
+                }
+                if l.kind == Kind::Wind && l.cmap == 0 {
+                    l.set_cmap(layer::WIND_CMAP);
+                }
                 l.auto_pending = true;
                 changed = true;
             }
@@ -1514,6 +1537,15 @@ impl App {
             Kind::Expr => {
                 let r = ui.add(egui::TextEdit::singleline(&mut l.expr).hint_text("(B08 - B04) / (B08 + B04)").desired_width(f32::INFINITY));
                 changed |= r.lost_focus();
+            }
+            Kind::Wind => {
+                for (k, lbl) in ["U", "V"].iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(*lbl).on_hover_text(["The component to the east", "The component to the north"][k]);
+                        let r = ui.add(egui::TextEdit::singleline(&mut l.rgb[k]).desired_width(f32::INFINITY));
+                        changed |= r.lost_focus();
+                    });
+                }
             }
         }
         ui.horizontal_wrapped(|ui| {
@@ -1797,11 +1829,22 @@ impl App {
                 dflags: (p.dinvert as u32) << 3,
                 ..Default::default()
             };
+            let mut wind = false;
             for (k, &li) in p.spec_layer.iter().enumerate().take(4) {
                 cu.l[k] = p.layers[li].params();
+                if p.layers[li].kind == Kind::Wind {
+                    // An arrow for each 34 points. The pulse of the arrows goes from the tail to the head in 1.2 s.
+                    cu.l[k].pad = [34.0 * ppp, (t / 1.2).fract() as f32];
+                    wind = true;
+                }
                 if k == 1 && p.cmp == Cmp::Blend {
                     cu.l[k].opacity = p.blend;
                 }
+            }
+            // A weather model has large pixels: they are smooth in a view with a wind layer.
+            vg.smooth = p.smooth || wind;
+            if wind {
+                next_flip = Some(next_flip.map_or(1.0 / 30.0, |n: f64| n.min(1.0 / 30.0)));
             }
             match vg.paint(&mut win.gpu, &inputs, &p.specs, cmp, &cu, p.rect, (p.v.px.width() as u32, p.v.px.height() as u32)) {
                 Ok(Some(cb)) => drop(painter.add(cb)),

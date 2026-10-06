@@ -187,6 +187,35 @@ have room for the tiles of the view (a quarter of the tile array for each layer)
 level that has room. `EOVIEW_GPU_MB` sets the GPU memory. The preferences are in the configuration
 directory of the user (`eoview/prefs.json`).
 
+### Wind and other vector fields
+
+The **Wind** mode of a layer shows a vector field from two variables: the component to the east (U) and
+the component to the north (V). The view shows the speed with the color map, and one arrow for each 34
+points of the screen: the arrow has the direction of the vector, and its length increases with the speed
+(in the limits of the stretch). A light pulse goes from the tail to the head of the arrows.
+
+- `path#wind` opens a product in the wind mode, with the components that it has (for example `u10` and
+  `v10`, or `10m_u_component_of_wind` and `10m_v_component_of_wind`).
+- In the side panel, **Wind** is next to **Band math**. The U and V fields are expressions: the U and V
+  buttons of the product tree set them.
+- The pixels of a view with a wind layer are smooth (linear), not squares. **Smooth pixels** in the
+  command palette sets this for a view without a wind layer.
+- A grid of the full globe from 0 to 360 degrees of longitude also shows at the longitudes below 0: a
+  view of western Europe has no gap at 0 degrees.
+
+The arrows are for a view with north up. They do not turn with the convergence of a map projection, and
+they are not correct on the 3D globe.
+
+`path#=expression` opens a product with a band math expression, for example `cube.zarr#=sqrt(u10^2 + v10^2)`.
+
+Wind at 10 m over France in 2025, one frame for each 6 hours, from the ERA5 reanalysis (steps of 1 hour from
+1900: step 1 095 744 is 1 January 2025). Each frame reads two chunks of the full globe (about 8 MB):
+
+```
+eoview --render --out wind_france_2025.mp4 --steps 1095744:1104498:6 --bbox -8,40,12,52.5 --stretch 0,20 \
+    "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3#wind"
+```
+
 ### Layers and compare modes
 
 A view contains a stack of layers. The side panel shows the layers of the active view (the last view that
@@ -284,7 +313,7 @@ for data that is too large for the real time. A frame waits for all its data, th
 next step: only the data of some steps is in the memory.
 
 ```
-eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--no-stamp] <project file or products>
+eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--bbox WEST,SOUTH,EAST,NORTH] [--stretch LOW,HIGH] [--no-stamp] <project file or products>
 eoview --render --out wind.mp4 --size 1920x1080 --fps 24 --steps 0:1459:1 "cube.zarr#u10"
 eoview --render --out frames --steps ::4 project.eoview
 ```
@@ -295,6 +324,8 @@ eoview --render --out frames --steps ::4 project.eoview
 | `--size` | `1920x1080` | Size of the frames in pixels. The sizes are even numbers |
 | `--fps` | 24 | Frames for each second of the video |
 | `--steps` | all steps | First step, last step and interval, from 0. Empty parts are the defaults: `100:` is from step 100, `::4` is one step of 4 |
+| `--bbox` | all the data | `WEST,SOUTH,EAST,NORTH`: the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The frame keeps its shape: the area gives its center and its width |
+| `--stretch` | automatic | `LOW,HIGH`: the limits of the color map, in the units of the data. Without it, the first frame gets the automatic stretch (a project file keeps its stretch) |
 | `--no-stamp` | | Do not write the time of the step on the frames |
 
 In the interface, **File**, then **Render video or frames** (Ctrl+R) opens the render window for the

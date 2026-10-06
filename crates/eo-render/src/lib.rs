@@ -95,7 +95,8 @@ fn warped(p: vec2f) -> vec2f {
     let k = vi % 6u;
     let corner = array(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0));
     let t = (vec2f(f32(q % u.n), f32(q / u.n)) + corner[k]) / f32(u.n);
-    let w = warped(mix(rect.xy, rect.zw, t)) + u.off;
+    // uvl.w: the tile is at this distance to the east, in display units (a layer that repeats in longitude).
+    let w = warped(mix(rect.xy, rect.zw, t)) + u.off + vec2f(uvl.w, 0.0);
     if ((u.flags & 8u) != 0u) {
         // A point outside the domain of the projection is not on the globe.
         if (abs(w.x) > 1.0e4 || abs(w.y) > 1.0e4) {
@@ -206,6 +207,9 @@ pub enum Mode {
     Gray(String),
     /// Red, green and blue. Each has its own stretch.
     Rgb([String; 3]),
+    /// A vector field: the speed with the color map, and arrows in the direction of the components
+    /// `u` (to the east) and `v` (to the north).
+    Wind { speed: String, u: String, v: String },
 }
 
 impl Mode {
@@ -214,8 +218,47 @@ impl Mode {
         match self {
             Mode::Gray(e) => e,
             Mode::Rgb(e) => &e[0],
+            Mode::Wind { speed, .. } => speed,
         }
     }
+}
+
+/// Code of the arrows of wind layer `k`: one arrow for each cell of the screen, with the vector at the
+/// center of the cell (`cu`, `cv`: the components, expressions of the values c0 .. c7 at the center).
+/// `p0` of the layer is the size of a cell in pixels, and `p1` the phase of a light pulse that goes from
+/// the tail to the head (0 to 1). The view has north up: the code does not turn the arrows for the
+/// convergence of a projection, or on the globe.
+fn arrows(k: usize, cu: &str, cv: &str, nd: &str) -> String {
+    let loads: String = (0..MAX_INPUTS).map(|j| format!("let c{j} = textureLoad(i{j}, q, 0).r;\n            ")).collect();
+    format!(
+        "let cell = max(u.l[{k}].p0, 8.0);
+            let ctr = (floor(pf / cell) + 0.5) * cell;
+            let q = vec2i(ctr);
+            {loads}let au = f32({cu});
+            let av = f32({cv});
+            let sp = length(vec2f(au, av));
+            if (!({nd}) && finite(sp) && sp > 0.0) {{
+                // The y axis of the screen goes down.
+                let dir = vec2f(au, -av) / sp;
+                let len = cell * 0.44 * clamp(stretch(sp, {k}u, 0u), 0.2, 1.0);
+                let d = pf - ctr;
+                let along = dot(d, dir);
+                let across = abs(dot(d, vec2f(-dir.y, dir.x)));
+                let head = cell * 0.3;
+                let back = len - along;
+                let w = cell / 30.0;
+                // The arrow: a shaft, and a head that is a triangle. `m` is the distance to its edge: the
+                // arrow is where m > 0, and a dark line 1.6 w wide goes around it.
+                let shaft = min(1.2 * w - across, min(along + len, back - head * 0.8));
+                let tip = min(back * 0.62 - across, min(back, head - back));
+                let m = max(shaft, tip);
+                let fill = smoothstep(-0.6, 0.6, m);
+                let line = smoothstep(-0.6, 0.6, m + 1.6 * w);
+                let pulse = 0.84 + 0.16 * cos(6.2831853 * ((along + len) / (2.0 * len) - u.l[{k}].p1));
+                col = over(col, vec4f(vec3f(0.0), 0.7 * line * u.l[{k}].opacity));
+                col = over(col, vec4f(vec3f(pulse), fill * u.l[{k}].opacity));
+            }}"
+    )
 }
 
 /// One layer of a view: its mode and the inputs (view input indices) that it uses.
@@ -280,6 +323,19 @@ fn program(layers: &[LayerSpec], cmp: Compare) -> String {
             col = over(col, vec4f(c, u.l[{k}].opacity));",
                 e[0], e[1], e[2]
             ),
+            Mode::Wind { speed, u, v } => {
+                // The same expressions with the values at the center of the cell.
+                let center = |e: &str| (0..MAX_INPUTS).fold(e.to_string(), |s, j| s.replace(&format!("v{j}"), &format!("c{j}")));
+                let ndc = l.inputs.iter().map(|j| format!("nd(c{j})")).collect::<Vec<_>>().join(" || ");
+                format!(
+                    "let x = f32({speed});
+            if (finite(x)) {{
+                col = over(col, vec4f(cmap(stretch(x, {k}u, 0u), {k}u, (u.l[{k}].flags & 8u) != 0u), u.l[{k}].opacity));
+            }}
+            {}",
+                    arrows(k, &center(u), &center(v), if ndc.is_empty() { "false" } else { &ndc })
+                )
+            }
         };
         out += &format!("// layer {k}\n    if ({show} && !({})) {{\n            {color}\n    }}\n    ", nd(&l.inputs));
     }
@@ -296,6 +352,7 @@ pub struct LayerParams {
     /// Bit c: channel c in dB. Bit 3: invert the color map.
     pub flags: u32,
     pub opacity: f32,
+    /// A wind layer: the size in pixels of the cell of an arrow, and the phase of the pulse of the arrows.
     pub pad: [f32; 2],
 }
 
@@ -358,7 +415,8 @@ pub struct LayerUniforms {
 pub struct Inst {
     /// Tile corners in level-0 pixels.
     pub rect: [f32; 4],
-    /// uv max x, uv max y, array layer, unused.
+    /// uv max x, uv max y, array layer, and the distance of the tile to the east in display units (a copy
+    /// of a layer that repeats in longitude).
     pub uvl: [f32; 4],
 }
 
@@ -387,6 +445,8 @@ pub struct Gpu {
     comp_bgl: wgpu::BindGroupLayout,
     comp_pipes: HashMap<String, wgpu::RenderPipeline>,
     sampler: wgpu::Sampler,
+    /// Linear when magnified: smooth pixels (a view with `View2d::smooth`).
+    smooth: wgpu::Sampler,
     lut_sampler: wgpu::Sampler,
     dummy: wgpu::TextureView,
     arrays: [Option<TileArray>; 2],
@@ -478,6 +538,7 @@ impl Gpu {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let smooth = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let lut_sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let dummy = device
             .create_texture(&wgpu::TextureDescriptor {
@@ -502,6 +563,7 @@ impl Gpu {
             comp_bgl,
             comp_pipes: HashMap::new(),
             sampler,
+            smooth,
             lut_sampler,
             dummy,
             arrays: [None, None],
@@ -698,7 +760,8 @@ pub struct Input {
     ubuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     warp: Option<(wgpu::Texture, u64)>,
-    bind: Option<(wgpu::BindGroup, bool, u64)>,
+    /// Bind group, with its tile array (u8), warp and sampler (smooth).
+    bind: Option<(wgpu::BindGroup, bool, u64, bool)>,
     /// Instances of the next draw, coarse tiles first. The application fills it.
     pub insts: Vec<Inst>,
 }
@@ -751,6 +814,9 @@ pub struct View2d {
     targets: Vec<(wgpu::Texture, wgpu::TextureView)>,
     size: (u32, u32),
     pub inputs: Vec<Input>,
+    /// Magnified pixels are smooth (linear), not squares. Data at a low resolution, for example a
+    /// weather model. The tiles do not have the pixels of the next tiles: their edges show.
+    pub smooth: bool,
 }
 
 impl View2d {
@@ -771,7 +837,7 @@ impl View2d {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        View2d { lut, cbuf, targets: vec![], size: (0, 0), inputs: vec![] }
+        View2d { lut, cbuf, targets: vec![], size: (0, 0), inputs: vec![], smooth: false }
     }
 
     /// Color map of row `row`: 0 to 3 for the layers, 4 for the difference.
@@ -844,19 +910,20 @@ impl View2d {
                 gpu.queue.write_buffer(&inp.ibuf, 0, bytemuck::cast_slice(&inp.insts));
             }
             let tv = gpu.array(*u8).view.clone();
-            if inp.bind.as_ref().is_none_or(|b| b.1 != *u8 || b.2 != *wid) {
+            let smooth = self.smooth;
+            if inp.bind.as_ref().is_none_or(|b| b.1 != *u8 || b.2 != *wid || b.3 != smooth) {
                 let wv = warp.create_view(&Default::default());
                 let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: None,
                     layout: &gpu.layer_bgl,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: inp.ubuf.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if smooth { &gpu.smooth } else { &gpu.sampler }) },
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tv) },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&wv) },
                     ],
                 });
-                inp.bind = Some((bg, *u8, *wid));
+                inp.bind = Some((bg, *u8, *wid, smooth));
             }
             let draw = (!inp.insts.is_empty()).then(|| LayerDraw {
                 bind: inp.bind.as_ref().unwrap().0.clone(),
@@ -956,8 +1023,9 @@ mod tests {
     fn composite_programs_are_valid() {
         let gray = LayerSpec { mode: Mode::Gray("((v0 - v1) / (v0 + v1))".into()), inputs: vec![0, 1] };
         let rgb = LayerSpec { mode: Mode::Rgb(["v2".into(), "v3".into(), "(v2 / v3)".into()]), inputs: vec![2, 3] };
+        let wind = LayerSpec { mode: Mode::Wind { speed: "sqrt((pow(v4, 2.0) + pow(v5, 2.0)))".into(), u: "v4".into(), v: "v5".into() }, inputs: vec![4, 5] };
         for cmp in [Compare::Stack, Compare::Swipe, Compare::Flicker, Compare::Difference] {
-            for layers in [vec![gray.clone()], vec![gray.clone(), rgb.clone()], vec![rgb.clone(), gray.clone(), gray.clone()]] {
+            for layers in [vec![gray.clone()], vec![gray.clone(), rgb.clone()], vec![rgb.clone(), gray.clone(), gray.clone()], vec![wind.clone()], vec![gray.clone(), wind.clone(), wind.clone()]] {
                 let src = COMPOSITE_SHADER.replace("LAYERS", &program(&layers, cmp));
                 let m = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{cmp:?}: {}", e.emit_to_string(&src)));
                 naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default())

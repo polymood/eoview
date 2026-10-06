@@ -120,6 +120,8 @@ pub struct Pane {
     pub dinvert: bool,
     /// Link group, 0: not linked.
     pub link: u8,
+    /// Smooth pixels when the view magnifies the data (linear), not squares.
+    pub smooth: bool,
     /// Composite layers, and the layer index of each.
     pub specs: Vec<LayerSpec>,
     pub spec_layer: Vec<usize>,
@@ -161,6 +163,7 @@ impl Pane {
             dcmap: crate::layer::CMAPS.iter().position(|c| c.0 == "RdBu").unwrap_or(0),
             dinvert: false,
             link: 1,
+            smooth: false,
             specs: vec![],
             spec_layer: vec![],
             luts: vec![],
@@ -337,6 +340,8 @@ struct PaneSave {
     layers: Vec<LayerSave>,
     #[serde(default)]
     globe: bool,
+    #[serde(default)]
+    smooth: bool,
 }
 
 /// Workspace file: layout, views, layers, settings and cameras. No data, no credentials.
@@ -425,6 +430,9 @@ pub struct App {
     pub cli_files: Option<Vec<String>>,
     pub shot: Option<crate::Shot>,
     pub cli_render: Option<crate::render::Settings>,
+    /// `eoview --render`: the stretch of the layers of the render. `Some(None)`: the automatic stretch of
+    /// the first frame. None: the stretch of the layers as they are (a project file).
+    pub cli_stretch: Option<Option<(f32, f32)>>,
     /// Detached views: they are not in the dock, each one has its own window (`wins`).
     pub floating: Vec<u32>,
     /// Windows of the detached views. `reconcile` opens and closes them after `floating` changes.
@@ -479,6 +487,7 @@ impl App {
             cli_files: None,
             shot: None,
             cli_render: None,
+            cli_stretch: None,
             floating: vec![],
             wins: vec![],
             wake: None,
@@ -593,6 +602,7 @@ impl App {
         let Some(src) = self.pane(id) else { return };
         let (layers, space, center, scale, link, globe) = (src.layers.clone(), src.v.space, src.v.center, src.v.scale, src.link.max(1), src.v.globe);
         let cmp = (src.cmp, src.swipe, src.vertical, src.blend, src.flicker_hz, src.diff, src.dlo, src.dhi, src.dcmap, src.dinvert);
+        let smooth = src.smooth;
         let uids: Vec<u64> = (0..layers.len()).map(|_| self.uid()).collect();
         let p = self.pane_mut(n).unwrap();
         p.layers = layers;
@@ -600,15 +610,43 @@ impl App {
         p.sel = p.layers.len().saturating_sub(1);
         (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe) = (space, center, scale, link, globe);
         (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz, p.diff, p.dlo, p.dhi, p.dcmap, p.dinvert) = cmp;
+        p.smooth = smooth;
+        // The copy asks for the channels that were not ready in the source view: their results go to the
+        // source view, not to the copy.
+        for li in 0..p.layers.len() {
+            self.compile(n, li);
+        }
         self.rebuild(n);
     }
 
     /// True if the last frame of view `id` shows all the data of its selected time step: the layers of the
     /// step are ready, their tiles are on the GPU and the camera is set. A render writes only such frames.
     pub fn frame_ready(&self, id: u32) -> bool {
-        let Some(p) = self.pane(id) else { return false };
-        let layers = p.layers.iter().filter(|l| l.visible);
-        !p.missing && !p.v.fit && !p.v.inputs.is_empty() && layers.clone().count() > 0 && layers.clone().all(|l| !l.inputs.is_empty() && l.err.is_none() && (l.steps.len() <= 1 || l.shown == l.step))
+        self.frame_wait(id).is_none()
+    }
+
+    /// What the frame of view `id` waits for. None: the frame is ready (see `frame_ready`).
+    pub fn frame_wait(&self, id: u32) -> Option<String> {
+        let Some(p) = self.pane(id) else { return Some("no view".into()) };
+        let mut layers = p.layers.iter().filter(|l| l.visible).peekable();
+        if layers.peek().is_none() {
+            return Some("no visible layer".into());
+        }
+        for l in layers {
+            if let Some(e) = &l.err {
+                return Some(format!("layer error: {e}"));
+            }
+            if l.inputs.is_empty() || (l.steps.len() > 1 && l.shown != l.step) {
+                return Some(format!("the data of step {}", l.step + 1));
+            }
+        }
+        if p.v.inputs.is_empty() || p.v.inputs.iter().any(|i| i.warp.is_none()) {
+            return Some("the georeferencing".into());
+        }
+        if p.v.fit {
+            return Some("the camera".into());
+        }
+        p.missing.then(|| "tiles".into())
     }
 
     fn uid(&mut self) -> u64 {
@@ -643,7 +681,7 @@ impl App {
     /// or the band `name` first.
     pub fn open(&mut self, pane: u32, path: String, add: bool) {
         let (path, band) = match path.rsplit_once('#') {
-            Some((p, b)) if !b.is_empty() && !b.contains('/') && !std::path::Path::new(&path).exists() => (p.to_string(), Some(b.to_string())),
+            Some((p, b)) if !b.is_empty() && (!b.contains('/') || b.starts_with('=')) && !std::path::Path::new(&path).exists() => (p.to_string(), Some(b.to_string())),
             _ => (path, None),
         };
         self.remember(&path);
@@ -1030,6 +1068,15 @@ impl App {
         if !o.series.is_empty() {
             m.set_series(o.series);
         }
+        // `path#=expression` is band math. `path#wind` is the wind mode with the components of the product.
+        let wind = o.band.as_ref().filter(|b| b.eq_ignore_ascii_case("wind")).and_then(|_| crate::layer::wind_pair(&m.names()));
+        if let Some(e) = o.band.as_ref().and_then(|b| b.strip_prefix('=')) {
+            (m.kind, m.expr, m.auto_pending) = (crate::layer::Kind::Expr, e.to_string(), true);
+        } else if let Some([u, v]) = wind {
+            (m.kind, m.auto_pending) = (crate::layer::Kind::Wind, true);
+            (m.rgb[0], m.rgb[1]) = (u, v);
+            m.set_cmap(crate::layer::WIND_CMAP);
+        }
         let named = o.band.and_then(|b| (0..m.chans.len()).find(|&c| m.chans[c].id.eq_ignore_ascii_case(&b) || m.chan_leaf(c).eq_ignore_ascii_case(&b)));
         if let Some(c) = named {
             (m.kind, m.band, m.auto_pending) = (crate::layer::Kind::Band, c, true);
@@ -1202,6 +1249,7 @@ impl App {
                 dinvert: p.dinvert,
                 layers: p.layers.iter().map(MapLayer::save).collect(),
                 globe: p.v.globe,
+                smooth: p.smooth,
             })
             .collect();
         // A workspace file does not keep the windows: the detached views are tabs of the dock.
@@ -1240,7 +1288,7 @@ impl App {
         for id in ids {
             let mut p = Pane::new(id);
             if let Some(s) = ws.panes.iter().find(|s| s.id == id) {
-                (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe) = (s.space, s.center, s.scale, s.link, s.globe);
+                (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe, p.smooth) = (s.space, s.center, s.scale, s.link, s.globe, s.smooth);
                 (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz) = (s.cmp, s.swipe, s.vertical, s.blend, s.flicker_hz);
                 (p.diff, p.dlo, p.dhi, p.dinvert) = (s.diff, s.dlo, s.dhi, s.dinvert);
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);

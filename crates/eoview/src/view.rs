@@ -227,14 +227,19 @@ impl View {
             let Some((warp, wid)) = &inp.warp else { continue };
             gi.set_warp(gpu, *wid, warp.nx, warp.ny, &warp.pts);
             let l = &inp.layer;
-            let Some(pb) = warp.pixel_bbox(view) else { continue };
+            // A layer of the full globe in longitude and latitude (360 degrees) repeats to the east and to
+            // the west: a grid from 0 to 360 degrees also shows at the longitudes below 0.
+            let span = warp.at(warp.w, warp.h / 2.0)[0] - warp.at(0.0, warp.h / 2.0)[0];
+            let wrap = self.space == Some(4326) && !self.globe && (span.abs() - 360.0).abs() < 1.0;
+            for &shift in if wrap { &[0.0, -360.0, 360.0][..] } else { &[0.0][..] } {
+            let Some(pb) = warp.pixel_bbox([view[0] - shift, view[1], view[2] - shift, view[3]]) else { continue };
             let n = l.levels.len();
             let lim = 1.0 / (self.scale * warp.px_size());
             let target = level(l, lim, pb, full);
             // Level-0 rectangles of the tiles of the target level that are not complete on the GPU.
             let mut holes: Vec<[f64; 4]> = vec![];
             let top_ok = matches!(l.levels[n - 1].src, eo_cache::LevelSrc::File(_));
-            let c = warp.inverse(self.center[0], self.center[1]).unwrap_or(((pb[0] + pb[2]) / 2.0, (pb[1] + pb[3]) / 2.0));
+            let c = warp.inverse(self.center[0] - shift, self.center[1]).unwrap_or(((pb[0] + pb[2]) / 2.0, (pb[1] + pb[3]) / 2.0));
             let first = self.want.len();
             for d in (target..n).rev() {
                 let lv = &l.levels[d];
@@ -244,7 +249,7 @@ impl View {
                         let key = TileKey { layer: l.id, lv: d as u8, tx: tx as u32, ty: ty as u32 };
                         let done = match gpu.lookup(&key, l.enc.u8) {
                             Some((layer, done)) => {
-                                gi.insts.push(inst(lv, tx, ty, layer));
+                                gi.insts.push(shifted(inst(lv, tx, ty, layer), shift));
                                 done
                             }
                             None => false,
@@ -272,7 +277,7 @@ impl View {
                         for tx in tx0..tx1 {
                             let key = TileKey { layer: l.id, lv: f as u8, tx: tx as u32, ty: ty as u32 };
                             if let Some(layer) = gpu.peek(&key, l.enc.u8) {
-                                gi.insts.push(inst(lv, tx, ty, layer));
+                                gi.insts.push(shifted(inst(lv, tx, ty, layer), shift));
                             }
                         }
                     }
@@ -285,7 +290,11 @@ impl View {
                 (x - c.0).powi(2) + (y - c.1).powi(2)
             };
             self.want[first..].sort_by(|p, q| q.1.lv.cmp(&p.1.lv).then(dist(&p.1).total_cmp(&dist(&q.1))));
+            }
         }
+        // The copies of a layer that repeats use the same tiles.
+        let mut seen = std::collections::HashSet::new();
+        self.want.retain(|w| seen.insert(w.1));
         // The inputs share the ranks: tile i of each input before tile i + 1.
         let mut merged: Vec<(usize, (Arc<Layer>, TileKey))> = vec![];
         let mut per: Vec<usize> = vec![0; self.inputs.len()];
@@ -401,6 +410,12 @@ fn inst(lv: &eo_cache::Level, tx: u64, ty: u64, layer: u32) -> Inst {
     let (x0, y0) = (lv.ox + (tx * TILE) as f64 * lv.kx, lv.oy + (ty * TILE) as f64 * lv.ky);
     let (x1, y1) = (x0 + tw as f64 * lv.kx, y0 + th as f64 * lv.ky);
     Inst { rect: [x0 as f32, y0 as f32, x1 as f32, y1 as f32], uvl: [tw as f32 / TILE as f32, th as f32 / TILE as f32, layer as f32, 0.0] }
+}
+
+/// The instance at `shift` display units to the east (a copy of a layer that repeats in longitude).
+fn shifted(mut i: Inst, shift: f64) -> Inst {
+    i.uvl[3] = shift as f32;
+    i
 }
 
 fn tile_range(lv: &eo_cache::Level, pb: [f64; 4]) -> (u64, u64, u64, u64) {
