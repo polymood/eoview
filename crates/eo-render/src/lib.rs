@@ -576,6 +576,17 @@ impl Gpu {
         Some((s.layer, s.done))
     }
 
+    /// Array layer of a resident tile. This does not mark the tile as used: the tile can leave the array
+    /// at the next upload.
+    pub fn peek(&self, key: &TileKey, u8: bool) -> Option<u32> {
+        Some(self.arrays[u8 as usize].as_ref()?.map.get(key)?.layer)
+    }
+
+    /// Number of tiles that each tile array can hold.
+    pub fn capacity(&self) -> usize {
+        self.layers as usize
+    }
+
     /// Array layer for a tile. If the array is full, remove the least recently used tile that is not
     /// used in this frame or the previous frame. None if there is no free layer.
     fn slot(&mut self, key: TileKey, u8: bool, done: bool) -> Option<u32> {

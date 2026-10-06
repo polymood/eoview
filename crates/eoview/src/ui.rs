@@ -66,6 +66,10 @@ pub enum Cmd {
     Detach,
     /// Full screen mode of the window of the view: on or off.
     Fullscreen,
+    /// Open or close the preferences window.
+    Prefs,
+    /// Preference: full resolution at all zoom levels, on or off.
+    FullRes,
 }
 
 #[derive(Default)]
@@ -131,6 +135,8 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         ("Zoom out", "-", Cmd::Zoom(1.0 / 1.5)),
         ("Copy view extent (west, south, east, north)", "Ctrl+Shift+C", Cmd::CopyExtent),
         ("3D globe: on or off", "G", Cmd::Globe),
+        ("Preferences...", "Ctrl+,", Cmd::Prefs),
+        ("Full resolution at all zoom levels: on or off", "", Cmd::FullRes),
         ("Keys...", "F1", Cmd::Help),
         ("Quit", "Ctrl+Q", Cmd::Quit),
     ]
@@ -687,6 +693,7 @@ impl App {
         }
         self.url_ui(&ctx);
         self.help_ui(&ctx);
+        self.prefs_ui(&ctx);
 
         if let Some(b) = &mut self.bench {
             if let Some(p) = self.panes.first_mut()
@@ -758,7 +765,7 @@ impl App {
             match c {
                 Cmd::Panel => self.wins[k].panel ^= true,
                 // The dialogs of these commands are in the main window.
-                Cmd::Palette | Cmd::Help | Cmd::Open(..) | Cmd::Save | Cmd::Load => {
+                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Open(..) | Cmd::Save | Cmd::Load => {
                     self.run(c, i);
                     if let Some(w) = &self.win {
                         w.window.focus_window();
@@ -796,6 +803,7 @@ impl App {
             (cmd, Key::L, Cmd::Open(false, What::Url)),
             (cmd, Key::S, Cmd::Save),
             (cmd, Key::K, Cmd::Palette),
+            (cmd, Key::Comma, Cmd::Prefs),
             (cmd, Key::Q, Cmd::Quit),
             (sh, Key::C, Cmd::CopyExtent),
             (none, Key::F1, Cmd::Help),
@@ -856,6 +864,11 @@ impl App {
             Cmd::Duplicate => self.duplicate(id),
             Cmd::CloseView => self.close(id),
             Cmd::Detach => self.detach(id),
+            Cmd::Prefs => self.prefs_open ^= true,
+            Cmd::FullRes => {
+                self.prefs.full_res ^= true;
+                self.save_prefs();
+            }
             Cmd::Fullscreen => {
                 // The window of the view: its own window if the view is detached, else the main window.
                 let w = self.wins.iter().find(|d| d.pane == id).map(|d| &d.window).or(self.win.as_ref().map(|w| &w.window));
@@ -1086,6 +1099,8 @@ impl App {
                 entry(ui, cmds, id, "Copy view extent", "Ctrl+Shift+C", Cmd::CopyExtent);
                 ui.separator();
                 entry(ui, cmds, id, "Command palette...", "Ctrl+K", Cmd::Palette);
+                ui.separator();
+                entry(ui, cmds, id, "Preferences...", "Ctrl+,", Cmd::Prefs);
             });
             ui.menu_button("View", |ui| {
                 entry(ui, cmds, id, "Fit", "F", Cmd::Fit);
@@ -1171,6 +1186,29 @@ impl App {
     }
 
     /// Window with the keys of the commands.
+    /// Preferences window. A change goes to the preferences file immediately.
+    fn prefs_ui(&mut self, ctx: &egui::Context) {
+        if !self.prefs_open {
+            return;
+        }
+        let (mut open, mut changed) = (true, false);
+        egui::Window::new("Preferences").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            changed |= ui.checkbox(&mut self.prefs.full_res, "Full resolution at all zoom levels").changed();
+            ui.label(
+                egui::RichText::new(
+                    "The views use the finest level of the data, not the level of the zoom. If the GPU memory does not have room for the tiles of a view, the view uses the finest level that has room (EOVIEW_GPU_MB sets the GPU memory).",
+                )
+                .small()
+                .weak(),
+            );
+        });
+        if changed {
+            self.save_prefs();
+        }
+        self.prefs_open = open;
+    }
+
     fn help_ui(&mut self, ctx: &egui::Context) {
         if !self.help {
             return;
@@ -1666,6 +1704,7 @@ impl App {
             if p.v.globe {
                 globe_backdrop(&p.v, &painter.with_clip_rect(p.rect), p.rect);
             }
+            p.v.full_res = self.prefs.full_res;
             let (miss, changed) = p.v.draws(&mut win.gpu, &self.engine);
             p.missing = miss || p.v.inputs.iter().any(|i| i.warp.is_none());
             missing |= p.missing;

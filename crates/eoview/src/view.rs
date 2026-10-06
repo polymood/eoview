@@ -114,6 +114,8 @@ pub struct View {
     sent: Vec<TileKey>,
     /// Display coordinates under the cursor.
     pub cursor: Option<[f64; 2]>,
+    /// Preference: the view uses the finest level of the data, not the level of the zoom (see `level`).
+    pub full_res: bool,
 }
 
 impl View {
@@ -132,6 +134,7 @@ impl View {
             want: vec![],
             sent: vec![],
             cursor: None,
+            full_res: false,
         }
     }
 
@@ -212,6 +215,7 @@ impl View {
     /// Return (tiles of the visible step are missing, the list of missing tiles changed).
     pub fn draws(&mut self, gpu: &mut Gpu, engine: &Engine) -> (bool, bool) {
         let view = self.rect();
+        let full = self.full_res.then(|| gpu.capacity());
         let Some(vg) = &mut self.gpu else { return (false, false) };
         while vg.inputs.len() < self.inputs.len() {
             vg.inputs.push(eo_render::Input::new(gpu));
@@ -225,32 +229,51 @@ impl View {
             let l = &inp.layer;
             let Some(pb) = warp.pixel_bbox(view) else { continue };
             let n = l.levels.len();
-            // Finest level with pixels that are not smaller than a screen pixel.
             let lim = 1.0 / (self.scale * warp.px_size());
-            let target = l.levels.iter().rposition(|lv| lv.kx <= lim.max(1.0)).unwrap_or(0);
+            let target = level(l, lim, pb, full);
+            // Level-0 rectangles of the tiles of the target level that are not complete on the GPU.
+            let mut holes: Vec<[f64; 4]> = vec![];
             let top_ok = matches!(l.levels[n - 1].src, eo_cache::LevelSrc::File(_));
             let c = warp.inverse(self.center[0], self.center[1]).unwrap_or(((pb[0] + pb[2]) / 2.0, (pb[1] + pb[3]) / 2.0));
             let first = self.want.len();
             for d in (target..n).rev() {
                 let lv = &l.levels[d];
-                let (sx, sy) = (TILE as f64 * lv.kx, TILE as f64 * lv.ky);
                 let (tx0, ty0, tx1, ty1) = tile_range(lv, pb);
                 for ty in ty0..ty1 {
                     for tx in tx0..tx1 {
                         let key = TileKey { layer: l.id, lv: d as u8, tx: tx as u32, ty: ty as u32 };
                         let done = match gpu.lookup(&key, l.enc.u8) {
                             Some((layer, done)) => {
-                                let (tw, th) = (TILE.min(lv.w - tx * TILE), TILE.min(lv.h - ty * TILE));
-                                let (x0, y0) = (lv.ox + tx as f64 * sx, lv.oy + ty as f64 * sy);
-                                let (x1, y1) = (x0 + tw as f64 * lv.kx, y0 + th as f64 * lv.ky);
-                                let (u, v) = (tw as f32 / TILE as f32, th as f32 / TILE as f32);
-                                gi.insts.push(Inst { rect: [x0 as f32, y0 as f32, x1 as f32, y1 as f32], uvl: [u, v, layer as f32, 0.0] });
+                                gi.insts.push(inst(lv, tx, ty, layer));
                                 done
                             }
                             None => false,
                         };
+                        if !done && d == target {
+                            let r = inst(lv, tx, ty, 0).rect;
+                            holes.push([r[0] as f64, r[1] as f64, r[2] as f64, r[3] as f64]);
+                        }
                         if !done && (d == target || (d == n - 1 && top_ok)) {
                             self.want.push((l.clone(), key));
+                        }
+                    }
+                }
+            }
+            // After a zoom out, the tiles of the target level are not there yet. The finer tiles that are
+            // on the GPU stay on the screen in their place (4 levels at most, the finest on top), not the
+            // background. `peek` does not keep them on the GPU: the new tiles can take their place.
+            for f in (target.saturating_sub(4)..target).rev() {
+                let lv = &l.levels[f];
+                for h in &holes {
+                    // Half a pixel in: not the tiles of the next holes.
+                    let (ex, ey) = (lv.kx / 2.0, lv.ky / 2.0);
+                    let (tx0, ty0, tx1, ty1) = tile_range(lv, [h[0] + ex, h[1] + ey, h[2] - ex, h[3] - ey]);
+                    for ty in ty0..ty1 {
+                        for tx in tx0..tx1 {
+                            let key = TileKey { layer: l.id, lv: f as u8, tx: tx as u32, ty: ty as u32 };
+                            if let Some(layer) = gpu.peek(&key, l.enc.u8) {
+                                gi.insts.push(inst(lv, tx, ty, layer));
+                            }
                         }
                     }
                 }
@@ -280,7 +303,7 @@ impl View {
             let before = self.want.len();
             if let Some(pb) = warp.pixel_bbox(view) {
                 let lim = 1.0 / (self.scale * warp.px_size());
-                let d = l.levels.iter().rposition(|lv| lv.kx <= lim.max(1.0)).unwrap_or(0);
+                let d = level(l, lim, pb, full);
                 let (tx0, ty0, tx1, ty1) = tile_range(&l.levels[d], pb);
                 for ty in ty0..ty1 {
                     for tx in tx0..tx1 {
@@ -358,6 +381,28 @@ impl View {
 }
 
 /// Tiles (tx0, ty0, tx1, ty1) of level `lv` that touch the level-0 pixel rectangle `pb`.
+/// Display level of a layer for a view. `lim`: level-0 pixels for each screen pixel. `pb`: the view in
+/// level-0 pixels. The level is the finest level with pixels that are not smaller than a screen pixel.
+/// `full` (the capacity of a GPU tile array): the level is the finest level of the data whose tiles in
+/// the view use a quarter of the array at most. The other inputs and views use the rest.
+fn level(l: &Layer, lim: f64, pb: [f64; 4], full: Option<usize>) -> usize {
+    let fit = l.levels.iter().rposition(|lv| lv.kx <= lim.max(1.0)).unwrap_or(0);
+    let Some(cap) = full else { return fit };
+    let tiles = |d: usize| {
+        let (x0, y0, x1, y1) = tile_range(&l.levels[d], pb);
+        ((x1 - x0) * (y1 - y0)) as usize
+    };
+    (0..fit).find(|&d| tiles(d) <= cap / 4).unwrap_or(fit)
+}
+
+/// Draw instance of tile (`tx`, `ty`) of level `lv`, in array layer `layer`: its rectangle in level-0 pixels.
+fn inst(lv: &eo_cache::Level, tx: u64, ty: u64, layer: u32) -> Inst {
+    let (tw, th) = (TILE.min(lv.w - tx * TILE), TILE.min(lv.h - ty * TILE));
+    let (x0, y0) = (lv.ox + (tx * TILE) as f64 * lv.kx, lv.oy + (ty * TILE) as f64 * lv.ky);
+    let (x1, y1) = (x0 + tw as f64 * lv.kx, y0 + th as f64 * lv.ky);
+    Inst { rect: [x0 as f32, y0 as f32, x1 as f32, y1 as f32], uvl: [tw as f32 / TILE as f32, th as f32 / TILE as f32, layer as f32, 0.0] }
+}
+
 fn tile_range(lv: &eo_cache::Level, pb: [f64; 4]) -> (u64, u64, u64, u64) {
     let (sx, sy) = (TILE as f64 * lv.kx, TILE as f64 * lv.ky);
     let (nx, ny) = (lv.w.div_ceil(TILE), lv.h.div_ceil(TILE));

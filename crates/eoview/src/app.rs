@@ -347,6 +347,14 @@ struct Workspace {
     panes: Vec<PaneSave>,
 }
 
+/// Preferences of the user (`eoview/prefs.json` in the configuration directory).
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    /// The views use the finest level of the data, not the level of the zoom.
+    pub full_res: bool,
+}
+
 pub struct App {
     pub win: Option<Win>,
     pub ctx: egui::Context,
@@ -393,6 +401,9 @@ pub struct App {
     pub help: bool,
     /// The splash window, until the products of the command line are open. Not in a benchmark.
     pub splash: Option<crate::splash::Splash>,
+    pub prefs: Prefs,
+    /// The preferences window is open.
+    pub prefs_open: bool,
     /// Detached views: they are not in the dock, each one has its own window (`wins`).
     pub floating: Vec<u32>,
     /// Windows of the detached views. `reconcile` opens and closes them after `floating` changes.
@@ -437,6 +448,8 @@ impl App {
             quit: false,
             help: false,
             splash: None,
+            prefs: Prefs::default(),
+            prefs_open: false,
             floating: vec![],
             wins: vec![],
             wake: None,
@@ -617,7 +630,19 @@ impl App {
         };
         let Some(f) = dir.map(|d| d.join(crate::APP).join("recent.json")) else { return };
         self.recent = std::fs::read_to_string(&f).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        self.prefs = std::fs::read_to_string(f.with_file_name("prefs.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         self.recent_file = Some(f);
+    }
+
+    /// Write the preferences next to the list of the recent products.
+    pub fn save_prefs(&self) {
+        let Some(f) = self.recent_file.as_ref().map(|f| f.with_file_name("prefs.json")) else { return };
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        if let Ok(s) = serde_json::to_string_pretty(&self.prefs) {
+            let _ = std::fs::write(f, s);
+        }
     }
 
     /// Open several products: the first in view `pane`, the others in the empty views, then in new views.

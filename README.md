@@ -85,7 +85,7 @@ eoview --series $(cat examples/s2_31TGK_2025_tci.txt)
 
 ### S3
 
-`s3://bucket/key` opens an object of an S3 bucket (a file, or a `.zarr` store). The configuration is the
+`s3://bucket/key` opens an object of an S3 bucket (a file, or a Zarr store). The configuration is the
 standard AWS configuration:
 
 - Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`,
@@ -174,6 +174,18 @@ group with 2D views (geographic link mode), and it has the same layers, compare 
 `eoview --globe <products>` starts with a globe view.
 
 The camera is above the view center and looks down, with north up. There is no terrain and no base map.
+
+### Resolution
+
+A view shows the level of the data that fits the zoom: the finest level with pixels that are not smaller
+than a screen pixel. After a zoom, the tiles of the level before stay on the screen until the new tiles
+are there.
+
+**Edit**, then **Preferences** (Ctrl+,) has the option **Full resolution at all zoom levels**. With this
+option, a view uses the finest level of the data, not the level of the zoom. If the GPU memory does not
+have room for the tiles of the view (a quarter of the tile array for each layer), the view uses the finest
+level that has room. `EOVIEW_GPU_MB` sets the GPU memory. The preferences are in the configuration
+directory of the user (`eoview/prefs.json`).
 
 ### Layers and compare modes
 
