@@ -261,6 +261,56 @@ The script gets the expected values from GDAL, h5py and zarr-python.
 
 Remote data: `EOVIEW_TEST_URL=<URL of a COG or a Zarr store> cargo test --release --test reference remote_tile -- --nocapture` opens the URL in two sessions with a disk cache in a temporary directory. It compares the coarsest tile of the two sessions and writes the times from the open to the tile.
 
+## Stress tests
+
+Real data to find the limits of the viewer. No account is necessary. These products are not in the tests
+of the viewer: a product that does not open, or that is slow, is a result of the test.
+
+### Large data cubes (Zarr)
+
+| Data | Size | What it tests |
+|---|---|---|
+| MUR sea surface temperature (NASA JPL) | 36 000 x 17 999 pixels (0.01 degrees), 6443 steps of 1 day, 4 variables | No overviews. One chunk has 5 time steps and 1799 x 3600 pixels (64 MB of 16-bit data). A view of the full globe needs 100 chunks |
+| ESA CCI land cover, level 0 (DeepESDL) | 129 600 x 64 800 pixels (300 m), 11 steps of 1 year | A very large raster without overviews. Chunks of 2160 x 2160 pixels |
+| ERA5 reanalysis (ARCO, Google Cloud) | 1440 x 721 pixels, 1 323 648 steps of 1 hour from 1940, 277 variables | The timeline and the time search with more than 1 million steps. The list of variables. Variables with 4 dimensions (37 pressure levels) |
+| Earth System Data Cube (DeepESDL) | 1440 x 720 pixels, 1978 steps of 8 days, 42 variables | Playback of a long series |
+
+```
+eoview "https://mur-sst.s3.us-west-2.amazonaws.com/zarr-v1#analysed_sst"
+eoview "https://deep-esdl-public.s3.eu-central-1.amazonaws.com/LC-1x2160x2160-1.0.0.levels/0.zarr#lccs_class"
+eoview "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3#2m_temperature"
+eoview "https://deep-esdl-public.s3.eu-central-1.amazonaws.com/esdc-8d-0.25deg-1x720x1440-3.0.1.zarr#air_temperature_2m"
+```
+
+### Many products of an area
+
+`scripts/stac_list.py` writes a list of product URLs from a STAC search: an area, dates, a maximum cloud
+cover, and one product for each Sentinel-2 tile if necessary. It knows two catalogs without an account:
+`earth-search` (Sentinel-2 L2A as COG files) and `eopf` (EOPF Zarr samples of Sentinel-1, -2 and -3).
+
+```
+scripts/stac_list.py --catalog earth-search --collection sentinel-2-l2a \
+    --bbox -5 42 8.5 51.2 --date 2025-07-01/2025-08-31 --cloud 5 --best-per-tile > list.txt
+```
+
+Lists in `examples/`:
+
+| List | Products |
+|---|---|
+| `s2_france_2025_summer_tci.txt` | 140 Sentinel-2 true color COG files: France, one tile each, the image with the least cloud of July and August 2025 (10 980 x 10 980 pixels each) |
+| `s2_alps_2026_summer_zarr.txt` | 16 Sentinel-2 L2A EOPF Zarr products: western Alps, one tile each, all bands |
+| `s3_olci_europe_20260715_zarr.txt` | 42 Sentinel-3 OLCI L1 EFR EOPF Zarr products: Europe, 15 July 2026 (near real time and non time critical products of the same orbits) |
+| `s2_31TGK_2025_tci.txt` | 30 Sentinel-2 true color COG files of one tile: a time series |
+
+```
+eoview $(head -9 examples/s2_france_2025_summer_tci.txt)     # 9 views in a 3 x 3 grid
+eoview $(cat examples/s2_france_2025_summer_tci.txt)         # 140 views: 9 in the grid, the others are tabs
+eoview $(head -9 examples/s3_olci_europe_20260715_zarr.txt)
+```
+
+Limits now: each product opens in its own view. A view shows a maximum of 4 layers. The viewer has no
+mosaic layer: it cannot show the 140 tiles as one image.
+
 ## Benchmarks
 
 The targets are in section 4 of the specification.
