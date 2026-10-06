@@ -122,6 +122,10 @@ pub struct Pane {
     pub link: u8,
     /// Smooth pixels when the view magnifies the data (linear), not squares.
     pub smooth: bool,
+    /// Coasts, borders and names of the countries on the view. The points of the lines in the display
+    /// CRS of the view, if it is not longitude and latitude (made at the first use).
+    pub overlays: crate::outlines::Overlays,
+    pub outline_pts: Option<(u32, Arc<Vec<Vec<[f64; 2]>>>)>,
     /// Composite layers, and the layer index of each.
     pub specs: Vec<LayerSpec>,
     pub spec_layer: Vec<usize>,
@@ -171,6 +175,8 @@ impl Pane {
             dinvert: false,
             link: 1,
             smooth: false,
+            overlays: Default::default(),
+            outline_pts: None,
             specs: vec![],
             spec_layer: vec![],
             luts: vec![],
@@ -354,6 +360,8 @@ struct PaneSave {
     globe: bool,
     #[serde(default)]
     smooth: bool,
+    #[serde(default)]
+    overlays: crate::outlines::Overlays,
 }
 
 /// Workspace file: layout, views, layers, settings and cameras. No data, no credentials.
@@ -448,6 +456,7 @@ pub struct App {
     /// `eoview --render`: the stretch of the layers of the render. `Some(None)`: the automatic stretch of
     /// the first frame. None: the stretch of the layers as they are (a project file).
     pub cli_stretch: Option<Option<(f32, f32)>>,
+    pub cli_overlays: Option<crate::outlines::Overlays>,
     /// Detached views: they are not in the dock, each one has its own window (`wins`).
     pub floating: Vec<u32>,
     /// Windows of the detached views. `reconcile` opens and closes them after `floating` changes.
@@ -505,6 +514,7 @@ impl App {
             shot: None,
             cli_render: None,
             cli_stretch: None,
+            cli_overlays: None,
             floating: vec![],
             wins: vec![],
             wake: None,
@@ -619,7 +629,7 @@ impl App {
         let Some(src) = self.pane(id) else { return };
         let (layers, space, center, scale, link, globe) = (src.layers.clone(), src.v.space, src.v.center, src.v.scale, src.link.max(1), src.v.globe);
         let cmp = (src.cmp, src.swipe, src.vertical, src.blend, src.flicker_hz, src.diff, src.dlo, src.dhi, src.dcmap, src.dinvert);
-        let smooth = src.smooth;
+        let (smooth, overlays) = (src.smooth, src.overlays);
         let uids: Vec<u64> = (0..layers.len()).map(|_| self.uid()).collect();
         let p = self.pane_mut(n).unwrap();
         p.layers = layers;
@@ -627,7 +637,7 @@ impl App {
         p.sel = p.layers.len().saturating_sub(1);
         (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe) = (space, center, scale, link, globe);
         (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz, p.diff, p.dlo, p.dhi, p.dcmap, p.dinvert) = cmp;
-        p.smooth = smooth;
+        (p.smooth, p.overlays) = (smooth, overlays);
         // The copy asks for the channels that were not ready in the source view: their results go to the
         // source view, not to the copy.
         for li in 0..p.layers.len() {
@@ -1241,6 +1251,29 @@ impl App {
         self.panes.iter_mut().for_each(|p| p.moved = false);
     }
 
+    /// Display position in CRS `e` of a longitude and latitude. None: the point is not in the projection.
+    pub fn from_lonlat(&mut self, e: u32, ll: [f64; 2]) -> Option<[f64; 2]> {
+        self.proj(e)?;
+        self.proj(4326)?;
+        self.projs[&4326].as_ref()?.to(self.projs[&e].as_ref()?, ll[0], ll[1]).map(|p| [p.0, p.1])
+    }
+
+    /// The lines of the map overlays in display CRS `e`: for view `id`, made one time for a CRS.
+    pub fn outline_points(&mut self, id: u32, e: u32) -> Arc<Vec<Vec<[f64; 2]>>> {
+        if let Some((c, v)) = self.pane(id).and_then(|p| p.outline_pts.clone())
+            && c == e
+        {
+            return v;
+        }
+        let lines = &crate::outlines::data().lines;
+        let v: Vec<Vec<[f64; 2]>> = lines.iter().map(|l| l.1.iter().map(|q| self.from_lonlat(e, *q).unwrap_or([f64::NAN; 2])).collect()).collect();
+        let v = Arc::new(v);
+        if let Some(p) = self.pane_mut(id) {
+            p.outline_pts = Some((e, v.clone()));
+        }
+        v
+    }
+
     /// Longitude and latitude of display point `c` of view `id`.
     pub fn lonlat(&mut self, id: u32, c: [f64; 2]) -> Option<(f64, f64)> {
         let e = self.pane(id)?.v.space?;
@@ -1284,6 +1317,7 @@ impl App {
                 layers: p.layers.iter().map(MapLayer::save).collect(),
                 globe: p.v.globe,
                 smooth: p.smooth,
+                overlays: p.overlays,
             })
             .collect();
         // A workspace file does not keep the windows: the detached views are tabs of the dock.
@@ -1323,6 +1357,7 @@ impl App {
             let mut p = Pane::new(id);
             if let Some(s) = ws.panes.iter().find(|s| s.id == id) {
                 (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe, p.smooth) = (s.space, s.center, s.scale, s.link, s.globe, s.smooth);
+                p.overlays = s.overlays;
                 (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz) = (s.cmp, s.swipe, s.vertical, s.blend, s.flicker_hz);
                 (p.diff, p.dlo, p.dhi, p.dinvert) = (s.diff, s.dlo, s.dhi, s.dinvert);
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);

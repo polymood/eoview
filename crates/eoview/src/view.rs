@@ -239,9 +239,11 @@ impl View {
             let span = warp.at(warp.w, warp.h / 2.0)[0] - warp.at(0.0, warp.h / 2.0)[0];
             let wrap = self.space == Some(4326) && (span.abs() - 360.0).abs() < 1.0;
             self.wraps[k] = wrap;
-            // The globe shows a longitude and the same longitude plus 360 degrees at the same place.
-            for &shift in if wrap && !self.globe { &[0.0, -360.0, 360.0][..] } else { &[0.0][..] } {
+            for &shift in if wrap { &[0.0, -360.0, 360.0][..] } else { &[0.0][..] } {
             let Some(pb) = warp.pixel_bbox([view[0] - shift, view[1], view[2] - shift, view[3]]) else { continue };
+            // The globe shows a longitude and the same longitude plus 360 degrees at the same place: the
+            // tiles of the copies are in the view, and they do not move.
+            let place = if self.globe { 0.0 } else { shift };
             let n = l.levels.len();
             let lim = 1.0 / (self.scale * warp.px_size());
             let target = level(l, lim, pb, full);
@@ -259,7 +261,7 @@ impl View {
                         let key = TileKey { layer: l.id, lv: d as u8, tx: tx as u32, ty: ty as u32 };
                         let done = match gpu.lookup(&key, l.enc.u8) {
                             Some((layer, done)) => {
-                                gi.insts.push(shifted(inst(lv, tx, ty, layer), shift));
+                                gi.insts.push(shifted(inst(lv, tx, ty, layer), place));
                                 done
                             }
                             None => false,
@@ -287,7 +289,7 @@ impl View {
                         for tx in tx0..tx1 {
                             let key = TileKey { layer: l.id, lv: f as u8, tx: tx as u32, ty: ty as u32 };
                             if let Some(layer) = gpu.peek(&key, l.enc.u8) {
-                                gi.insts.push(shifted(inst(lv, tx, ty, layer), shift));
+                                gi.insts.push(shifted(inst(lv, tx, ty, layer), place));
                             }
                         }
                     }
