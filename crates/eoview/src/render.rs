@@ -40,6 +40,9 @@ pub struct Settings {
     pub stamp: bool,
     /// The preview of the animate workspace has 1 / `proxy` of the size of the frames (2, 4, 8 or 16).
     pub proxy: u32,
+    /// Keep the frames as PNG files next to a video output, and make the video at the end. A render that
+    /// stopped then continues after its last frame.
+    pub keep: bool,
     /// The frames show all the data. Else they show the view as it is at the start of the render.
     pub fit: bool,
     /// Camera: the center of the view and the width of the view, in display units. It does not depend on
@@ -49,7 +52,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, fit: false, view: None }
+        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, keep: false, fit: false, view: None }
     }
 }
 
@@ -85,8 +88,8 @@ pub fn ffmpeg(pref: &str) -> Option<PathBuf> {
 enum Sink {
     /// `ffmpeg`, with the frames on its standard input.
     Video(Child),
-    /// PNG files in this directory.
-    Images(PathBuf),
+    /// PNG files in this directory. At the end, `ffmpeg` (its path) makes the video from them.
+    Images(PathBuf, Option<PathBuf>),
 }
 
 /// Offscreen target of the frames, and the buffer that brings the pixels back from the GPU.
@@ -175,34 +178,52 @@ fn err<E: std::fmt::Display>(what: &str) -> impl Fn(E) -> String + '_ {
 
 /// Open the output. Without `ffmpeg`, a video output becomes PNG files in a directory next to it.
 fn sink(set: &Settings, w: u32, h: u32, bgra: bool, pref: &str) -> Result<(Sink, Option<String>), String> {
-    let images = |dir: PathBuf, note| std::fs::create_dir_all(&dir).map(|_| (Sink::Images(dir), note)).map_err(err(&set.out));
+    let images = |dir: PathBuf, exe, note| std::fs::create_dir_all(&dir).map(|_| (Sink::Images(dir, exe), note)).map_err(err(&set.out));
     if !set.video() {
-        return images(PathBuf::from(&set.out), None);
+        return images(PathBuf::from(&set.out), None, None);
     }
+    let frames = Path::new(&set.out).with_extension("frames");
     let Some(exe) = ffmpeg(pref) else {
-        let dir = Path::new(&set.out).with_extension("frames");
-        let note = format!("ffmpeg was not found: the frames are PNG files in {}. Set the path of ffmpeg in the preferences.", dir.display());
-        return images(dir, Some(note));
+        let note = format!("ffmpeg was not found: the frames are PNG files in {}. Set the path of ffmpeg in the preferences.", frames.display());
+        return images(frames, None, Some(note));
     };
+    if set.keep {
+        return images(frames, Some(exe), None);
+    }
     if let Some(d) = Path::new(&set.out).parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(d).map_err(err(&set.out))?;
     }
-    let ext = Path::new(&set.out).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let mut c = Command::new(exe);
     c.args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", if bgra { "bgra" } else { "rgba" }]);
     c.args(["-s", &format!("{w}x{h}"), "-r", &format!("{}", set.fps), "-i", "-", "-an"]);
-    // H.264 with 4:2:0 colors plays in all players. The other containers use the encoder that ffmpeg selects.
-    if ext == "mp4" || ext == "mov" || ext == "mkv" {
-        c.args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "medium", "-movflags", "+faststart"]);
-    }
-    c.arg(&set.out);
+    c.args(encoder(&set.out)).arg(&set.out);
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000);
     let child = c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(err("ffmpeg"))?;
     Ok((Sink::Video(child), None))
 }
 
+/// Arguments of `ffmpeg` for the video encoder of an output file.
+fn encoder(out: &str) -> Vec<&'static str> {
+    let ext = Path::new(out).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    // H.264 with 4:2:0 colors plays in all players. The other containers use the encoder that ffmpeg selects.
+    if ["mp4", "mov", "mkv"].contains(&ext.as_str()) { vec!["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "medium", "-movflags", "+faststart"] } else { vec![] }
+}
+
+/// Number of frames that are in `dir` from the first frame, without a gap.
+fn frames_done(dir: &Path) -> usize {
+    (1..).take_while(|i| dir.join(format!("frame_{i:05}.png")).is_file()).count()
+}
+
+/// Write a PNG file. The file has its name only when it is complete: a render that stops does not
+/// leave a part of a frame.
 fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+    let part = path.with_extension("part");
+    write_png_to(&part, w, h, rgba)?;
+    std::fs::rename(&part, path).map_err(err(&path.to_string_lossy()))
+}
+
+fn write_png_to(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
     let f = std::fs::File::create(path).map_err(err(&path.to_string_lossy()))?;
     let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h);
     e.set_color(png::ColorType::Rgba);
@@ -249,7 +270,11 @@ impl App {
         // The main window does not draw this view, and no window opens for it (`reconcile`).
         self.floating.push(pane);
         let set = Settings { width: w, height: h, ..set };
-        self.job = Some(Job { pane, set, steps, done: 0, stepped: false, target, ctx: egui::Context::default(), egui, sink, t0: Instant::now(), said: Instant::now(), preview: None, note });
+        let done = match &sink {
+            Sink::Images(dir, Some(_)) => frames_done(dir).min(frames(steps.len(), set.sub)),
+            _ => 0,
+        };
+        self.job = Some(Job { pane, set, steps, done, stepped: false, target, ctx: egui::Context::default(), egui, sink, t0: Instant::now(), said: Instant::now(), preview: None, note });
         self.render_msg = None;
         Ok(())
     }
@@ -277,7 +302,19 @@ impl App {
                     Err(e) => text = format!("ffmpeg: {e}"),
                 }
             }
-            Sink::Images(_) => {}
+            // The video from the kept frames, if the render made all of them.
+            Sink::Images(dir, Some(exe)) if n >= job.frames() => {
+                let mut c = Command::new(exe);
+                c.args(["-y", "-loglevel", "error", "-framerate", &format!("{}", job.set.fps), "-i"]).arg(dir.join("frame_%05d.png")).arg("-an");
+                c.args(encoder(&job.set.out)).arg(&job.set.out);
+                match quiet(&mut c).stdout(Stdio::null()).stderr(Stdio::piped()).output() {
+                    Ok(o) if o.status.success() => {}
+                    Ok(o) => text = format!("ffmpeg: {}", String::from_utf8_lossy(&o.stderr).trim()),
+                    Err(e) => text = format!("ffmpeg: {e}"),
+                }
+            }
+            Sink::Images(dir, Some(_)) => text = format!("{text}\nThe frames are in {}: the next render continues after them.", dir.display()),
+            Sink::Images(_, None) => {}
         }
         if let Some(note) = job.note {
             text = format!("{text}\n{note}");
@@ -364,7 +401,7 @@ impl App {
         let mut px = read_pixels(&win.gpu.device, &win.gpu.queue, &t.texture, &t.buffer, t.row, w, h)?;
         match &mut job.sink {
             Sink::Video(child) => child.stdin.as_mut().ok_or("ffmpeg has no input")?.write_all(&px).map_err(err("ffmpeg")),
-            Sink::Images(dir) => {
+            Sink::Images(dir, _) => {
                 to_rgba(&mut px, t.bgra);
                 write_png(&dir.join(format!("frame_{:05}.png", job.done + 1)), w, h, &px)
             }

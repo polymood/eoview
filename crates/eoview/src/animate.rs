@@ -251,6 +251,7 @@ impl App {
                 });
                 ui.end_row();
             });
+            ui.checkbox(&mut set.keep, "Keep the frames").on_hover_text("The frames are PNG files next to the video, and the video comes at the end. A render that stopped continues after its last frame: for a long render");
             let total = frames(set.steps(n).len(), set.sub);
             ui.add_space(4.0);
             ui.weak(format!("{total} frames, {:.1} s of video. The render reads the data of one frame at a time.", total as f32 / set.fps.max(0.01)));
