@@ -3,6 +3,7 @@ mod app;
 mod bench;
 mod icons;
 mod layer;
+mod splash;
 mod ui;
 mod view;
 
@@ -162,13 +163,30 @@ impl App {
     }
 }
 
+/// The icon of the window. On Windows, it is the icon resource of the executable (`build.rs`), at `size`
+/// pixels or at the default size. On the other systems, it is the 64 pixel image.
+fn app_icon(size: Option<u32>) -> Option<winit::window::Icon> {
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::IconExtWindows;
+        winit::window::Icon::from_resource(1, size.map(|s| winit::dpi::PhysicalSize::new(s, s))).ok()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = size;
+        winit::window::Icon::from_rgba(include_bytes!("../assets/eoview-64.rgba").to_vec(), 64, 64).ok()
+    }
+}
+
 fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: bool) -> Win {
     let offscreen_size = std::env::var("EOVIEW_BENCH_SIZE").ok().filter(|_| bench).and_then(|s| {
         let (x, y) = s.split_once('x')?;
         Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?))
     });
     let size = if bench { winit::dpi::LogicalSize::new(3840, 2160) } else { winit::dpi::LogicalSize::new(1500, 950) };
-    let attrs = Window::default_attributes().with_title(APP).with_inner_size(size);
+    let attrs = Window::default_attributes().with_title(APP).with_inner_size(size).with_window_icon(app_icon(None));
+    #[cfg(windows)]
+    let attrs = winit::platform::windows::WindowAttributesExtWindows::with_taskbar_icon(attrs, app_icon(Some(256)));
     let window = Arc::new(el.create_window(attrs).unwrap());
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(el.owned_display_handle())));
     let surface = instance.create_surface(window.clone()).unwrap();

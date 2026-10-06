@@ -1,3 +1,5 @@
+<p align="center"><img src="crates/eoview/assets/banner.png" alt="eoview: fast viewer for Earth observation data" width="900"></p>
+
 # eoview
 
 Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
@@ -126,6 +128,9 @@ limits of the view, command palette), **View** (zoom, display CRS, side panel, v
 F1). The toolbar below it has the frequent commands as buttons. Each button shows its key in its tooltip.
 The icons are drawn by the viewer: they do not depend on the fonts of the system.
 
+At the start, the viewer shows a splash screen while the products of the command line open. A click or
+Escape closes it.
+
 ### Views
 
 The views are tabs of a dock: drag a tab to split, tab or move a view. The toolbar has the layout presets
@@ -214,6 +219,9 @@ cargo build --release
 ```
 
 On x86_64, the build uses `target-cpu=x86-64-v3` (AVX2). To run on older CPUs, remove this flag from `.cargo/config.toml`.
+
+The icon files and the banner are in `crates/eoview/assets`. `scripts/make_icons.py` writes them: it is the source of the icon.
+On Windows, the build puts the icon in the executable (`crates/eoview/build.rs`).
 
 ## Test
 
