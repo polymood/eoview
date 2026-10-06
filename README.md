@@ -203,8 +203,23 @@ points of the screen: the arrow has the direction of the vector, and its length 
 - A grid of the full globe from 0 to 360 degrees of longitude also shows at the longitudes below 0: a
   view of western Europe has no gap at 0 degrees.
 
-The arrows are for a view with north up. They do not turn with the convergence of a map projection, and
-they are not correct on the 3D globe.
+A wind layer has three options in the side panel:
+
+- **Particles** (on at the start): points that follow the wind, with a trail that fades. They are in map
+  coordinates: they have the true direction of the wind on the 3D globe and in a map projection.
+- **Arrows** (off at the start). The arrows are for a view with north up. They do not turn with the
+  convergence of a map projection, and they are not correct on the 3D globe.
+- **Speed colors** (on at the start). Without them, the layers below the wind layer show, and the
+  particles have the color of the speed.
+
+`path#wind,nofill` sets the options at the open: `nofill` (no speed colors), `arrows`, `noparticles`.
+
+To show the wind on an image, put the two products in one view: the image first, then the wind layer
+(**Add layer**, or `eoview --stack`). On the globe, with the frame on western Europe:
+
+```
+eoview --stack --globe image.tif "cube.zarr#wind,nofill"
+```
 
 `path#=expression` opens a product with a band math expression, for example `cube.zarr#=sqrt(u10^2 + v10^2)`.
 
@@ -214,6 +229,13 @@ Wind at 10 m over France in 2025, one frame for each 6 hours, from the ERA5 rean
 ```
 eoview --render --out wind_france_2025.mp4 --steps 1095744:1104498:6 --bbox -8,40,12,52.5 --stretch 0,20 \
     "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3#wind"
+```
+
+The same wind on an image, on the globe, with 6 frames for each step of 6 hours (one frame is one hour):
+
+```
+eoview --render --out wind_globe.mp4 --steps 1095744:1096464:6 --sub 6 --bbox -26,36,30,56 --stretch 0,20 \
+    --stack --globe image.tif "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3#wind,nofill"
 ```
 
 ### Layers and compare modes
@@ -326,7 +348,11 @@ eoview --render --out frames --steps ::4 project.eoview
 | `--steps` | all steps | First step, last step and interval, from 0. Empty parts are the defaults: `100:` is from step 100, `::4` is one step of 4 |
 | `--bbox` | all the data | `WEST,SOUTH,EAST,NORTH`: the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The frame keeps its shape: the area gives its center and its width |
 | `--stretch` | automatic | `LOW,HIGH`: the limits of the color map, in the units of the data. Without it, the first frame gets the automatic stretch (a project file keeps its stretch) |
-| `--no-stamp` | | Do not write the time of the step on the frames |
+| `--sub` | 1 | Frames for each time step. More than 1: the frames between two steps are a blend of the two steps, for a smooth change (data and particles) |
+| `--no-stamp` | | Do not write the time of the step and the legend of the color map on the frames |
+
+The products of a render can have `--stack` (the products are the layers of one view, the first at the
+bottom) and `--globe` (a 3D globe view) before them.
 
 In the interface, **File**, then **Render video or frames** (Ctrl+R) opens the render window for the
 active view: the size of the frames, the rate, the first step, the last step and the interval, the frame
