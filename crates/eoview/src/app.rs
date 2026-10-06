@@ -1088,7 +1088,7 @@ impl App {
     }
 
     /// A product is open: make its layer in the target view.
-    fn opened(&mut self, o: Open, l: Arc<Layer>) {
+    fn opened(&mut self, mut o: Open, l: Arc<Layer>) {
         let uid = self.uid();
         let mut m = MapLayer::new(uid, o.path, l);
         m.order = o.order;
@@ -1096,6 +1096,13 @@ impl App {
             m.set_series(o.series);
         }
         // `path#=expression` is band math. `path#wind` is the wind mode with the components of the product.
+        // Options after a comma: `nofill` (no colors of the speed), `arrows`, `noparticles`.
+        let opts: Vec<String> = o.band.as_ref().filter(|b| b.to_lowercase().starts_with("wind,")).map_or(vec![], |b| b.to_lowercase().split(',').skip(1).map(String::from).collect());
+        if o.band.as_ref().is_some_and(|b| b.to_lowercase().starts_with("wind,")) {
+            o.band = Some("wind".into());
+        }
+        let has = |n: &str| opts.iter().any(|x| x == n);
+        (m.fill, m.arrows, m.particles) = (!has("nofill"), has("arrows"), !has("noparticles"));
         let wind = o.band.as_ref().filter(|b| b.eq_ignore_ascii_case("wind")).and_then(|_| crate::layer::wind_pair(&m.names()));
         if let Some(e) = o.band.as_ref().and_then(|b| b.strip_prefix('=')) {
             (m.kind, m.expr, m.auto_pending) = (crate::layer::Kind::Expr, e.to_string(), true);

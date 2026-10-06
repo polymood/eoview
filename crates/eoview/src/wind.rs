@@ -179,7 +179,7 @@ pub fn particles(p: &mut Pane, li: usize, fields: &Fields, need: &mut Vec<(Arc<L
     let lo = l.st[0].lo as f64;
     let lut = layer::lut(&l.stops);
     let invert = l.invert;
-    let view = p.v.rect();
+    let size = (p.v.px.width() as f64, p.v.px.height() as f64);
     let (rect, scale) = (p.rect, p.v.scale);
     // A particle at the high limit of the stretch moves 2.6 points in one step.
     let meters = if degrees { DEG } else { 1.0 };
@@ -200,10 +200,16 @@ pub fn particles(p: &mut Pane, li: usize, fields: &Fields, need: &mut Vec<(Arc<L
     'steps: for step in 0..steps {
         for i in 0..sw.ps.len() {
             let mut q = sw.ps[i];
-            let head = q.trail[q.n.saturating_sub(1)];
-            let out = head[0] < view[0] || head[0] > view[2] || head[1] < view[1] || head[1] > view[3];
+            // A particle that is not on the screen now (after its move, or on the far side of the globe)
+            // starts again at a random position of the screen: the screen has the same number of
+            // particles in all its parts, also on the globe.
+            let out = !rect.expand(8.0).contains(p.v.to_screen(q.trail[q.n.saturating_sub(1)], rect));
             if q.n == 0 || q.age >= q.life || out {
-                let pos = [view[0] + sw.rand() * (view[2] - view[0]), view[1] + sw.rand() * (view[3] - view[1])];
+                let pos = p.v.to_display([sw.rand() * size.0, sw.rand() * size.1]);
+                if !pos[0].is_finite() || !pos[1].is_finite() {
+                    sw.ps[i].n = 0;
+                    continue;
+                }
                 // The particles of the first frame have different ages.
                 let life = 50 + (sw.rand() * 90.0) as u32;
                 q = Particle { trail: [pos; TRAIL], n: 1, age: if sw.last.is_none() && step == 0 { (sw.rand() * life as f64) as u32 } else { 0 }, life, speed: 0.0 };
