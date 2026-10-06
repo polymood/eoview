@@ -465,6 +465,8 @@ pub struct App {
     /// the first frame. None: the stretch of the layers as they are (a project file).
     pub cli_stretch: Option<Option<(f32, f32)>>,
     pub cli_overlays: Option<crate::outlines::Overlays>,
+    /// `eoview --render`: the color map of the data layers, and smooth pixels.
+    pub cli_look: (Option<usize>, bool),
     /// Detached views: they are not in the dock, each one has its own window (`wins`).
     pub floating: Vec<u32>,
     /// Windows of the detached views. `reconcile` opens and closes them after `floating` changes.
@@ -527,6 +529,7 @@ impl App {
             cli_render: None,
             cli_stretch: None,
             cli_overlays: None,
+            cli_look: (None, false),
             floating: vec![],
             wins: vec![],
             wake: None,

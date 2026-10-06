@@ -231,6 +231,13 @@ eoview --render --out wind_france_2025.mp4 --steps 1095744:1104498:6 --bbox -8,4
     "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3#wind"
 ```
 
+The surface temperature of the full globe for some years, one step for each day (`scripts/render_era5_lst.sh`
+has the command, with the first day, the last day and the output as arguments):
+
+```
+scripts/render_era5_lst.sh 2021-01-01 2025-12-31 lst_5_years.mp4
+```
+
 The same wind on an image, on the globe, with 6 frames for each step of 6 hours (one frame is one hour):
 
 ```
@@ -368,6 +375,9 @@ eoview --render --out frames --steps ::4 project.eoview
 | `--steps` | all steps | First step, last step and interval, from 0. Empty parts are the defaults: `100:` is from step 100, `::4` is one step of 4 |
 | `--bbox` | all the data | `WEST,SOUTH,EAST,NORTH`: the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The frame keeps its shape: the area gives its center and its width |
 | `--stretch` | automatic | `LOW,HIGH`: the limits of the color map, in the units of the data. Without it, the first frame gets the automatic stretch (a project file keeps its stretch) |
+| `--cmap` | the color map of the layer | Color map of the data layers: `Gray`, `Viridis`, `Magma`, `Inferno`, `Plasma`, `Cividis`, `Turbo`, `Jet`, `Hot`, `Terrain`, `RdBu`, `RdYlGn` |
+| `--smooth` | | Smooth pixels (linear), not squares: for data at a low resolution |
+| `--legend` | the name of the layer and its unit | Text of the legend of the frames |
 | `--overlays` | none | Map overlays on the frames: `coasts`, `borders`, `names` (for example `coasts,borders,names`) |
 | `--sub` | 1 | Frames for each time step. More than 1: the frames between two steps are a blend of the two steps, for a smooth change (data and particles) |
 | `--keep` | | Keep the frames as PNG files in a directory next to the video (`name.frames`), and make the video at the end. A render that stopped continues after its last frame: for a long render. The particles of a wind layer start again at this frame |
