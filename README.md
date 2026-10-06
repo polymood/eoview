@@ -314,10 +314,14 @@ Lists in `examples/`:
 | `s3_olci_europe_20260715_zarr.txt` | 42 Sentinel-3 OLCI L1 EFR EOPF Zarr products: Europe, 15 July 2026 (near real time and non time critical products of the same orbits) |
 | `s2_31TGK_2025_tci.txt` | 30 Sentinel-2 true color COG files of one tile: a time series |
 
+A product list is a `.txt` file with one path or URL on each line. The viewer opens a list as it opens
+its products: on the command line, with **Open** (Ctrl+O), with **Files as a time series**, or with a
+drop on a view.
+
 ```
+eoview examples/s2_france_2025_summer_tci.txt                # 140 views: 9 in a 3 x 3 grid, the others are tabs
 eoview $(head -9 examples/s2_france_2025_summer_tci.txt)     # 9 views in a 3 x 3 grid
-eoview $(cat examples/s2_france_2025_summer_tci.txt)         # 140 views: 9 in the grid, the others are tabs
-eoview $(head -9 examples/s3_olci_europe_20260715_zarr.txt)
+eoview --series examples/s2_31TGK_2025_tci.txt               # one layer with 30 time steps
 ```
 
 Limits now: each product opens in its own view. A view shows a maximum of 4 layers. The viewer has no
