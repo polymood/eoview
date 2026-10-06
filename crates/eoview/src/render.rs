@@ -38,6 +38,8 @@ pub struct Settings {
     pub out: String,
     /// Write the time of the step on each frame.
     pub stamp: bool,
+    /// The preview of the animate workspace has 1 / `proxy` of the size of the frames (2, 4, 8 or 16).
+    pub proxy: u32,
     /// The frames show all the data. Else they show the view as it is at the start of the render.
     pub fit: bool,
     /// Camera: the center of the view and the width of the view, in display units. It does not depend on
@@ -47,7 +49,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, fit: false, view: None }
+        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, fit: false, view: None }
     }
 }
 
@@ -96,6 +98,41 @@ struct Target {
     row: u32,
     /// The pixels are B, G, R, A (else R, G, B, A).
     bgra: bool,
+}
+
+/// An offscreen target of `w` x `h` pixels, with its buffer for the pixels.
+fn target(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32) -> Target {
+    let row = (w * 4).div_ceil(256) * 256;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("render"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        // TEXTURE_BINDING: the interface shows the target (the last frame, the preview).
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("render frame"),
+        size: row as u64 * h as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let bgra = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+    Target { view: texture.create_view(&Default::default()), texture, buffer, row, bgra }
+}
+
+/// The preview of the animate workspace: the scene at a part of the size of the frames, drawn with the
+/// code of the frames of a render. The viewport shows its target as a texture.
+pub struct Preview {
+    target: Target,
+    ctx: egui::Context,
+    egui: egui_wgpu::Renderer,
+    pub tex: egui::TextureId,
+    pub w: u32,
+    pub h: u32,
 }
 
 pub struct Job {
@@ -192,26 +229,8 @@ impl App {
         if w.max(h) > device.limits().max_texture_dimension_2d {
             return Err(format!("the GPU cannot draw frames of {w} x {h} pixels"));
         }
-        let row = (w * 4).div_ceil(256) * 256;
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("render"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            // TEXTURE_BINDING: the render window shows the target as the last frame.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("render frame"),
-            size: row as u64 * h as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let bgra = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
-        let target = Target { view: texture.create_view(&Default::default()), texture, buffer, row, bgra };
+        let target = target(&device, format, w, h);
+        let bgra = target.bgra;
         let egui = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
         let (sink, note) = sink(&set, w, h, bgra, &self.prefs.ffmpeg)?;
 
@@ -352,6 +371,54 @@ impl App {
         }
     }
 
+    /// The texture of the last frame of the render that runs, for the interface.
+    pub fn job_texture(&mut self) -> Option<egui::TextureId> {
+        let (Some(j), Some(w)) = (&mut self.job, &mut self.win) else { return None };
+        if j.preview.is_none() {
+            j.preview = Some(w.egui.register_native_texture(&w.gpu.device, &j.target.view, wgpu::FilterMode::Linear));
+        }
+        j.preview
+    }
+
+    /// Draw the preview of the animate workspace: the scene view at 1 / `proxy` of the size of the frames.
+    /// The camera is the camera of the settings (a center and a width in display units).
+    pub fn preview_frame(&mut self) {
+        let Some(id) = self.scene_pane().filter(|_| self.job.is_none()) else { return };
+        let Some(win) = &mut self.win else { return };
+        let (device, queue, format) = (win.gpu.device.clone(), win.gpu.queue.clone(), win.gpu_format());
+        let k = self.render_set.proxy.clamp(1, 16);
+        let (w, h) = (((self.render_set.width / k) & !1).max(16), ((self.render_set.height / k) & !1).max(16));
+        if self.preview.as_ref().is_none_or(|p| (p.w, p.h) != (w, h)) {
+            if let Some(old) = self.preview.take() {
+                win.egui.free_texture(&old.tex);
+            }
+            let target = target(&device, format, w, h);
+            let tex = win.egui.register_native_texture(&device, &target.view, wgpu::FilterMode::Linear);
+            let egui = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
+            self.preview = Some(Preview { target, ctx: egui::Context::default(), egui, tex, w, h });
+        }
+        win.gpu.frame += 1;
+        let (stamp, view, t) = (self.render_set.stamp, self.render_set.view, self.ctx.input(|i| i.time));
+        if let (Some((center, width)), Some(p)) = (view.filter(|v| v.1 > 0.0), self.pane_mut(id)) {
+            (p.v.center, p.v.scale) = (center, w as f64 / width);
+        }
+        let Some(pv) = &self.preview else { return };
+        let ctx = pv.ctx.clone();
+        // The text of a small preview stays readable.
+        let ppp = (h as f32 / 1080.0).max(0.3);
+        ctx.set_zoom_factor(ppp);
+        let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32 / ppp, h as f32 / ppp))), time: Some(t), ..Default::default() };
+        let out = ctx.run_ui(raw, |ui| self.export_ui(ui, id, [w, h], stamp));
+        let Some(pv) = &mut self.preview else { return };
+        crate::draw_egui(&device, &queue, &mut pv.egui, &pv.target.view, &ctx, out, [w, h]);
+        // Without a camera in the settings (the start, or "Fit"): the camera of the view after its fit.
+        if view.is_none()
+            && let Some(p) = self.pane(id).filter(|p| !p.v.fit && p.has_warp() && p.v.scale > 0.0)
+        {
+            self.render_set.view = Some((p.v.center, w as f64 / p.v.scale));
+        }
+    }
+
     /// Start the render of view `src` with the settings of the render window.
     pub fn render_start(&mut self, src: u32) {
         let mut set = self.render_set.clone();
@@ -417,7 +484,7 @@ fn to_rgba(px: &mut [u8], bgra: bool) {
 }
 
 /// Frame sizes of the render window.
-const SIZES: &[(&str, u32, u32)] = &[("1280 x 720 (720p)", 1280, 720), ("1920 x 1080 (1080p)", 1920, 1080), ("2560 x 1440 (1440p)", 2560, 1440), ("3840 x 2160 (4K)", 3840, 2160)];
+pub const SIZES: &[(&str, u32, u32)] = &[("1280 x 720 (720p)", 1280, 720), ("1920 x 1080 (1080p)", 1920, 1080), ("2560 x 1440 (1440p)", 2560, 1440), ("3840 x 2160 (4K)", 3840, 2160)];
 
 impl App {
     /// Render window: the settings of the render of the active view, the progress and the last frame.
@@ -434,12 +501,7 @@ impl App {
             self.ffmpeg_found = Some(ffmpeg(&self.prefs.ffmpeg).is_some());
         }
         let no_ffmpeg = self.ffmpeg_found == Some(false) && self.render_set.video();
-        // The offscreen target of the render that runs, as a texture of this window.
-        if let (Some(j), Some(w)) = (&mut self.job, &mut self.win)
-            && j.preview.is_none()
-        {
-            j.preview = Some(w.egui.register_native_texture(&w.gpu.device, &j.target.view, wgpu::FilterMode::Linear));
-        }
+        self.job_texture();
         let progress = self.job.as_ref().map(|j| (j.done, j.frames(), j.t0.elapsed().as_secs_f32(), j.preview, j.set.width as f32 / j.set.height as f32));
         let (mut open, mut start, mut stop, mut browse) = (true, false, false, false);
         egui::Window::new("Render").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {

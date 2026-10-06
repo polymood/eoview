@@ -446,6 +446,14 @@ pub struct App {
     pub render_set: crate::render::Settings,
     pub render_msg: Option<String>,
     pub render_open: bool,
+    /// The animate workspace is open: the window shows the scene (one view) as the frames of a render
+    /// will show it, with a preview of a lower quality.
+    pub animate: bool,
+    pub preview: Option<crate::render::Preview>,
+    /// The preview plays the time steps: the egui time of the next step.
+    pub anim_play: Option<f64>,
+    /// After the animate workspace: the camera of the scene view (view, center, width in display units).
+    pub cam_restore: Option<(u32, [f64; 2], f64)>,
     /// True if `ffmpeg` runs. None: not examined yet (the preferences changed).
     pub ffmpeg_found: Option<bool>,
     /// `eoview --render`: the products, and the render to start when they are open. The application
@@ -509,6 +517,10 @@ impl App {
             render_set: Default::default(),
             render_msg: None,
             render_open: false,
+            animate: false,
+            preview: None,
+            anim_play: None,
+            cam_restore: None,
             ffmpeg_found: None,
             cli_files: None,
             shot: None,
@@ -527,6 +539,16 @@ impl App {
 
     pub fn pane_mut(&mut self, id: u32) -> Option<&mut Pane> {
         self.panes.iter_mut().find(|p| p.id == id)
+    }
+
+    /// The view of the animate workspace: the active view, if it is a view of the dock. None: the
+    /// animate workspace is not open.
+    pub fn scene_pane(&self) -> Option<u32> {
+        if !self.animate {
+            return None;
+        }
+        let tabs: Vec<u32> = self.dock.iter_all_tabs().map(|t| *t.1).collect();
+        if tabs.contains(&self.active) { Some(self.active) } else { tabs.first().copied() }
     }
 
     /// View for a command: the view under the mouse, else the active view.

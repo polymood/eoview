@@ -72,6 +72,8 @@ pub enum Cmd {
     Render,
     /// Start a render of the view with the settings of the render window.
     RenderStart,
+    /// Open or close the animate workspace.
+    Animate,
     /// Smooth pixels in the view (linear when magnified), or squares.
     Smooth,
     /// Map overlay of the view, on or off: 0 coasts, 1 country borders, 2 country names.
@@ -153,6 +155,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         ("Country borders: on or off", "", Cmd::Overlay(1)),
         ("Country names: on or off", "", Cmd::Overlay(2)),
         ("Preferences...", "Ctrl+,", Cmd::Prefs),
+        ("Animate workspace: on or off", "F6", Cmd::Animate),
         ("Render video or frames...", "Ctrl+R", Cmd::Render),
         ("Render: start with the settings of the render window", "", Cmd::RenderStart),
         ("Full resolution at all zoom levels: on or off", "", Cmd::FullRes),
@@ -667,35 +670,48 @@ impl App {
     /// The whole interface of one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        // The detached views are not in this window: their windows set their state (`detached_ui`).
-        let floating = &self.floating;
+        // The detached views are not in this window: their windows set their state (`detached_ui`). The
+        // scene of the animate workspace is in the preview.
+        let (floating, scene) = (&self.floating, self.scene_pane());
         if self.hovered.is_some_and(|h| !floating.contains(&h)) {
             self.hovered = None;
         }
-        self.panes.iter_mut().filter(|p| !floating.contains(&p.id)).for_each(|p| p.painter = None);
+        self.panes.iter_mut().filter(|p| !floating.contains(&p.id) && Some(p.id) != scene).for_each(|p| p.painter = None);
         let mut cmds: Vec<(Cmd, u32)> = vec![];
 
         egui::Panel::top("menu").show(ui, |ui| self.menus(ui, &mut cmds));
-        egui::Panel::top("bar").show(ui, |ui| self.toolbar(ui, &mut cmds));
-        egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
-        if self.panel {
-            egui::Panel::left("side").resizable(true).default_size(330.0).show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.side(ui, &mut cmds));
+        if let Some(scene) = scene {
+            self.active = scene;
+            self.animate_ui(ui, scene, &mut cmds);
+        } else {
+            egui::Panel::top("bar").show(ui, |ui| self.toolbar(ui, &mut cmds));
+            egui::Panel::bottom("status").show(ui, |ui| self.status(ui));
+            if self.panel {
+                egui::Panel::left("side").resizable(true).default_size(330.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.side(ui, &mut cmds));
+                });
+            }
+            let screen = self.win.as_ref().map_or([1, 1], |w| w.size());
+            let mut dock = std::mem::replace(&mut self.dock, DockState::new(vec![]));
+            let mut tabs = Tabs { app: self, closed: vec![], cmds: vec![], screen };
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                let mut style = egui_dock::Style::from_egui(ui.style().as_ref());
+                style.tab_bar.height = 22.0;
+                DockArea::new(&mut dock).style(style).show_leaf_collapse_buttons(false).show_leaf_close_all_buttons(false).show_inside(ui, &mut tabs);
             });
-        }
-        let screen = self.win.as_ref().map_or([1, 1], |w| w.size());
-        let mut dock = std::mem::replace(&mut self.dock, DockState::new(vec![]));
-        let mut tabs = Tabs { app: self, closed: vec![], cmds: vec![], screen };
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            let mut style = egui_dock::Style::from_egui(ui.style().as_ref());
-            style.tab_bar.height = 22.0;
-            DockArea::new(&mut dock).style(style).show_leaf_collapse_buttons(false).show_leaf_close_all_buttons(false).show_inside(ui, &mut tabs);
-        });
-        let (closed, more) = (tabs.closed, tabs.cmds);
-        self.dock = dock;
-        cmds.extend(more);
-        for id in closed {
-            self.closed(id);
+            let (closed, more) = (tabs.closed, tabs.cmds);
+            self.dock = dock;
+            cmds.extend(more);
+            for id in closed {
+                self.closed(id);
+            }
+            // After the animate workspace, the scene view has the same area as in the workspace.
+            if let Some((id, center, width)) = self.cam_restore
+                && let Some(p) = self.pane_mut(id).filter(|p| p.painter.is_some() && p.v.px.width() > 1.0)
+            {
+                (p.v.center, p.v.scale) = (center, p.v.px.width() as f64 / width);
+                self.cam_restore = None;
+            }
         }
 
         // Dropped files: one file replaces the layers of the view under the mouse, more files go in more
@@ -883,6 +899,7 @@ impl App {
             (cmd, Key::K, Cmd::Palette),
             (cmd, Key::Comma, Cmd::Prefs),
             (cmd, Key::R, Cmd::Render),
+            (none, Key::F6, Cmd::Animate),
             (cmd, Key::Q, Cmd::Quit),
             (sh, Key::C, Cmd::CopyExtent),
             (none, Key::F1, Cmd::Help),
@@ -945,6 +962,7 @@ impl App {
             Cmd::Detach => self.detach(id),
             Cmd::Prefs => self.prefs_open ^= true,
             Cmd::Render => self.render_open ^= true,
+            Cmd::Animate => self.set_animate(!self.animate),
             Cmd::RenderStart => self.render_start(id),
             Cmd::FullRes => {
                 self.prefs.full_res ^= true;
@@ -1276,6 +1294,12 @@ impl App {
                     ui.small(&w.name);
                 }
             });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let on = self.animate;
+                if ui.selectable_label(on, "Animate").on_hover_text("The animate workspace: make the scene of an animation, with a preview, and render it (F6)").clicked() != ui.selectable_label(!on, "View").on_hover_text("The view workspace").clicked() {
+                    cmds.push((Cmd::Animate, id));
+                }
+            });
         });
     }
 
@@ -1415,7 +1439,7 @@ impl App {
         });
     }
 
-    fn status(&mut self, ui: &mut egui::Ui) {
+    pub fn status(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if let Some(e) = self.error.clone() {
                 if ui.small_button("x").on_hover_text("Close the message").clicked() {
@@ -1454,7 +1478,7 @@ impl App {
         });
     }
 
-    fn side(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
+    pub fn side(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -1798,7 +1822,7 @@ impl App {
         let mut next_flip: Option<f64> = None;
         for i in 0..self.panes.len() {
             let id = self.panes[i].id;
-            if only.map_or(self.floating.contains(&id), |o| o != id) {
+            if only.map_or(self.floating.contains(&id) || self.scene_pane() == Some(id), |o| o != id) {
                 continue;
             }
             let Some(painter) = self.panes[i].painter.clone() else {
