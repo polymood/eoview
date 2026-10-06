@@ -566,6 +566,7 @@ impl App {
     /// Open products as one layer with a timeline in view `pane`: each product is a time step. The order
     /// is the time in the name of each product, or in its path (see `eo_core::time::in_name`), then the paths.
     pub fn open_series(&mut self, pane: u32, paths: Vec<String>, add: bool) {
+        let paths = lists(paths);
         let name = |p: &str| p.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();
         let time = |p: &str| eo_core::time::in_name(&name(p)).or_else(|| eo_core::time::in_name(p)).unwrap_or(f64::NAN);
         let mut list: Vec<(String, f64)> = paths.into_iter().map(|p| (time(&p), p)).map(|(t, p)| (p, t)).collect();
@@ -648,6 +649,7 @@ impl App {
     /// Open several products: the first in view `pane`, the others in the empty views, then in new views.
     /// With more than one product the layout changes to a grid, and all views go in link group 1.
     pub fn open_many(&mut self, pane: u32, paths: Vec<String>, add: bool) {
+        let paths = lists(paths);
         if add || paths.len() == 1 {
             return paths.into_iter().for_each(|p| self.open(pane, p, add));
         }
@@ -1193,6 +1195,19 @@ impl App {
         }
         self.active = if self.pane(ws.active).is_some() { ws.active } else { self.panes[0].id };
     }
+}
+
+/// Replace each product list (a local `.txt` file) by its products: one path or URL on each line. Empty
+/// lines and lines that start with `#` are not products.
+fn lists(paths: Vec<String>) -> Vec<String> {
+    let mut out = vec![];
+    for p in paths {
+        match std::fs::read_to_string(&p).ok().filter(|_| p.to_lowercase().ends_with(".txt")) {
+            Some(s) => out.extend(s.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from)),
+            None => out.push(p),
+        }
+    }
+    out
 }
 
 /// The dock keeps infinite rectangles before the first frame: JSON writes them as null and cannot read

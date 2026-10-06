@@ -227,7 +227,7 @@ pub const OPEN_KINDS: &[(&str, bool, &[&str])] = &[
 ];
 
 /// File extensions of the dialog for files of all formats.
-const ALL_EXT: &[&str] = &["tif", "tiff", "gtiff", "cog", "jp2", "j2k", "ntf", "nitf", "nsf", "nc", "nc4", "h5", "hdf5", "he5", "xml", "safe", "zarr", WORKSPACE_EXT];
+const ALL_EXT: &[&str] = &["tif", "tiff", "gtiff", "cog", "jp2", "j2k", "ntf", "nitf", "nsf", "nc", "nc4", "h5", "hdf5", "he5", "xml", "safe", "zarr", "txt", WORKSPACE_EXT];
 
 /// Open menu: files of all formats, directories, a URL, the product types, the recent products.
 /// `add`: the products are new layers of the view.
