@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 10 112 112">
+<defs>
+<radialGradient id="ocean" cx="0.32" cy="0.28" r="0.85"><stop offset="0" stop-color="#c8fbfb"/><stop offset="0.45" stop-color="#3fd0d4"/><stop offset="1" stop-color="#0f8794"/></radialGradient>
+<radialGradient id="shade" cx="0.35" cy="0.32" r="0.75"><stop offset="0.6" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.35"/></radialGradient>
+<radialGradient id="gloss"><stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+<linearGradient id="metal" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f4f4f8"/><stop offset="1" stop-color="#8f8fa6"/></linearGradient>
+<clipPath id="disc"><circle r="46"/></clipPath>
+</defs>
+
+<g transform="translate(58 66) rotate(-28)" fill="none" stroke-linecap="round"><path d="M-54 0A54 17 0 0 1 54 0" stroke="#000" stroke-width="11"/><path d="M-54 0A54 17 0 0 1 54 0" stroke="#ffcb05" stroke-width="5"/></g>
+<g transform="translate(58 66) scale(0.78)">
+<circle r="46" fill="url(#ocean)"/>
+<path d="M-30 -34C-18 -42 0 -40 6 -32C10 -26 2 -22 -2 -16C-6 -10 -2 -4 4 -2C8 0 6 4 2 4C-4 2 -8 -4 -14 -8C-22 -12 -30 -14 -34 -22C-36 -28 -34 -32 -30 -34ZM4 4C12 2 22 8 22 18C22 28 14 34 10 42C6 44 4 38 4 30C4 22 -2 16 -2 10C-2 6 0 4 4 4ZM14 -42C22 -42 28 -36 24 -30C20 -28 14 -32 12 -38ZM34 -20C40 -18 46 -10 46 0C46 10 42 18 38 20C32 14 34 4 30 -4C28 -12 30 -18 34 -20Z" fill="#2aa52a" clip-path="url(#disc)"/>
+<circle r="46" fill="url(#shade)"/>
+<ellipse cx="-17" cy="-21" rx="17" ry="10" transform="rotate(-38 -17 -21)" fill="url(#gloss)"/>
+<circle r="46" fill="none" stroke="#000" stroke-width="6.4"/>
+</g>
+<g transform="translate(58 66) rotate(-28)" fill="none" stroke-linecap="round"><path d="M-54 0A54 17 0 0 0 54 0" stroke="#000" stroke-width="11"/><path d="M-54 0A54 17 0 0 0 54 0" stroke="#ffcb05" stroke-width="5"/></g>
+<g transform="translate(91.9 63.8) rotate(-28) scale(1.1)" stroke="#000" stroke-width="3.64" stroke-linejoin="round">
+<rect x="-20" y="-5" width="13" height="10" fill="#3f7be0"/><rect x="7" y="-5" width="13" height="10" fill="#3f7be0"/>
+<rect x="-7" y="-7" width="14" height="14" fill="url(#metal)"/>
+</g>
+</svg>

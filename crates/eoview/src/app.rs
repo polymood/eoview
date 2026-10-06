@@ -391,10 +391,13 @@ pub struct App {
     pub quit: bool,
     /// The window with the list of the keys is open.
     pub help: bool,
+    /// The splash screen, until the products of the command line are open. Not in a benchmark.
+    pub splash: Option<crate::splash::Splash>,
 }
 
 impl App {
     pub fn new(engine: Engine, events: mpsc::Receiver<Event>, gpu_budget: usize, bench: Option<Bench>) -> App {
+        let splash = bench.is_none().then(crate::splash::Splash::start);
         App {
             win: None,
             ctx: egui::Context::default(),
@@ -428,6 +431,7 @@ impl App {
             recent_file: None,
             quit: false,
             help: false,
+            splash,
         }
     }
 
@@ -940,6 +944,11 @@ impl App {
             let name = self.pane(o.pane).map(|p| p.title()).unwrap_or_default();
             w.window.set_title(&format!("{} - {name}", crate::APP));
         }
+    }
+
+    /// Number of products that open now, time steps included.
+    pub fn opens_pending(&self) -> usize {
+        self.opens.len() + self.step_opens.len()
     }
 
     /// True if a product opens in view `pane`.
