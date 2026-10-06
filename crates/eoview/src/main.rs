@@ -548,6 +548,15 @@ impl App {
             if let (Some(o), Some(p)) = (self.cli_overlays, self.pane_mut(self.active)) {
                 p.overlays = o;
             }
+            let (cmap, smooth) = self.cli_look;
+            if let Some(p) = self.pane_mut(self.active) {
+                p.smooth |= smooth;
+                for l in p.layers.iter_mut().filter(|l| l.kind != layer::Kind::Rgb) {
+                    if let Some(c) = cmap {
+                        l.set_cmap(c);
+                    }
+                }
+            }
             let failed = self.error.clone().or_else(|| self.start_render(self.active, set).err());
             if let (Some(st), Some(j)) = (self.cli_stretch, &self.job) {
                 let pane = j.pane;
@@ -791,6 +800,9 @@ fn info(path: &str) {
 }
 
 const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--bbox WEST,SOUTH,EAST,NORTH] [--no-stamp] <project file or products>
+  --cmap NAME  color map of the data layers (Gray, Viridis, Magma, Inferno, Plasma, Cividis, Turbo, Jet, Hot, Terrain, RdBu, RdYlGn)
+  --smooth  smooth pixels (linear), not squares: for data at a low resolution
+  --legend TEXT  text of the legend of the frames
   --overlays LIST  map overlays on the frames: coasts, borders, names (for example coasts,borders,names)
   --keep    keep the frames as PNG files next to the video. A render that stopped continues after its last frame
   --sub N   frames for each time step. More than 1: the frames between two steps are a blend of the steps
@@ -801,14 +813,17 @@ const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--
 A project file (.eoview) has its render settings: the options change them.";
 
 /// Options of `eoview --render`, and the paths of the products.
-fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option<(f32, f32)>, Option<outlines::Overlays>), String> {
+type RenderArgs = (render::Settings, Vec<String>, Option<(f32, f32)>, Option<outlines::Overlays>, (Option<usize>, bool));
+
+fn render_args(args: &[String]) -> Result<RenderArgs, String> {
     let (mut set, mut files, mut it) = (None::<render::Settings>, vec![], args.iter());
     let mut opts: Vec<(&str, String)> = vec![];
     while let Some(a) = it.next() {
         match a.as_str() {
             "--no-stamp" => opts.push(("--no-stamp", String::new())),
             "--keep" => opts.push(("--keep", String::new())),
-            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" | "--sub" | "--overlays" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
+            "--smooth" => opts.push(("--smooth", String::new())),
+            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" | "--sub" | "--overlays" | "--cmap" | "--legend" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
             _ => files.push(a.clone()),
         }
     }
@@ -825,11 +840,16 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
     let mut set = set.unwrap_or_default();
     let mut stretch = None;
     let mut overlays = None;
+    // Color map of the data layers, and smooth pixels.
+    let mut look: (Option<usize>, bool) = (None, false);
     let bad = |o: &str, v: &str| format!("{o}: bad value {v}");
     for (o, v) in opts {
         match o {
             "--no-stamp" => set.stamp = false,
             "--keep" => set.keep = true,
+            "--smooth" => look.1 = true,
+            "--legend" => set.legend = v,
+            "--cmap" => look.0 = Some(layer::CMAPS.iter().position(|c| c.0.eq_ignore_ascii_case(&v)).ok_or(format!("--cmap: no color map {v}. The color maps: {}", layer::CMAPS.iter().map(|c| c.0).collect::<Vec<_>>().join(", ")))?),
             "--out" => set.out = v,
             "--stretch" => stretch = Some(v.split_once(',').and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?))).ok_or(bad(o, &v))?),
             "--bbox" => {
@@ -851,7 +871,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
             }
         }
     }
-    Ok((set, files, stretch, overlays))
+    Ok((set, files, stretch, overlays, look))
 }
 
 fn main() {
@@ -897,8 +917,9 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("--render") {
         match render_args(&args[2..]) {
-            Ok((set, files, stretch, overlays)) => {
+            Ok((set, files, stretch, overlays, look)) => {
                 app.cli_overlays = overlays;
+                app.cli_look = look;
                 // Products without a project file have no stretch from a person: the limits of the option, or
                 // the automatic stretch of the first frame (the first step of a data cube can have no data).
                 let project = files.len() == 1 && files[0].ends_with(&format!(".{}", app::WORKSPACE_EXT));

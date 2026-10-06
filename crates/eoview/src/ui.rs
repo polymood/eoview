@@ -761,7 +761,8 @@ impl App {
 
     /// One frame of a render: view `id` on the full frame (`screen` pixels), without the controls, and the
     /// time of its step at the bottom left if `stamp` is true.
-    pub fn export_ui(&mut self, ui: &mut egui::Ui, id: u32, screen: [u32; 2], stamp: bool) {
+    /// `legend`: the text of the legend (empty: the name of the layer and its unit).
+    pub fn export_ui(&mut self, ui: &mut egui::Ui, id: u32, screen: [u32; 2], stamp: bool, legend_text: &str) {
         let ctx = ui.ctx().clone();
         let rect = ctx.content_rect();
         let ppp = ctx.pixels_per_point();
@@ -782,6 +783,7 @@ impl App {
             let name = if l.kind == Kind::Wind { "Wind speed".to_string() } else { l.comp_name() };
             (l.stops.clone(), l.invert, l.st[0].lo, l.st[0].hi, if unit.is_empty() { name } else { format!("{name} ({unit})") })
         });
+        let legend = legend.map(|(s, i, lo, hi, name)| (s, i, lo, hi, if legend_text.is_empty() { name } else { legend_text.to_string() }));
         self.sync();
         self.paint(&ctx, Some(id));
         if let Some((stops, invert, lo, hi, name)) = legend {

@@ -40,6 +40,8 @@ pub struct Settings {
     pub stamp: bool,
     /// The preview of the animate workspace has 1 / `proxy` of the size of the frames (2, 4, 8 or 16).
     pub proxy: u32,
+    /// Text of the legend of the frames. Empty: the name of the layer and its unit.
+    pub legend: String,
     /// Keep the frames as PNG files next to a video output, and make the video at the end. A render that
     /// stopped then continues after its last frame.
     pub keep: bool,
@@ -52,7 +54,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, keep: false, fit: false, view: None }
+        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, legend: String::new(), keep: false, fit: false, view: None }
     }
 }
 
@@ -380,7 +382,7 @@ impl App {
         }
         let (Some(win), Some(job)) = (&self.win, &self.job) else { return };
         let (device, queue) = (win.gpu.device.clone(), win.gpu.queue.clone());
-        let (ctx, pane, w, h, stamp) = (job.ctx.clone(), job.pane, job.set.width, job.set.height, job.set.stamp);
+        let (ctx, pane, w, h, stamp, legend) = (job.ctx.clone(), job.pane, job.set.width, job.set.height, job.set.stamp, job.set.legend.clone());
         // The text and the lines have the same size on a 1080 pixel high frame as on a screen.
         let ppp = h as f32 / 1080.0;
         ctx.set_zoom_factor(ppp);
@@ -389,7 +391,7 @@ impl App {
             time: Some(job.done as f64 / job.set.fps.max(0.01) as f64),
             ..Default::default()
         };
-        let out = ctx.run_ui(raw, |ui| self.export_ui(ui, pane, [w, h], stamp));
+        let out = ctx.run_ui(raw, |ui| self.export_ui(ui, pane, [w, h], stamp, &legend));
         let Some(job) = &mut self.job else { return };
         crate::draw_egui(&device, &queue, &mut job.egui, &job.target.view, &ctx, out, [w, h]);
     }
@@ -445,7 +447,8 @@ impl App {
         let ppp = (h as f32 / 1080.0).max(0.3);
         ctx.set_zoom_factor(ppp);
         let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32 / ppp, h as f32 / ppp))), time: Some(t), ..Default::default() };
-        let out = ctx.run_ui(raw, |ui| self.export_ui(ui, id, [w, h], stamp));
+        let legend = self.render_set.legend.clone();
+        let out = ctx.run_ui(raw, |ui| self.export_ui(ui, id, [w, h], stamp, &legend));
         let Some(pv) = &mut self.preview else { return };
         crate::draw_egui(&device, &queue, &mut pv.egui, &pv.target.view, &ctx, out, [w, h]);
         // Without a camera in the settings (the start, or "Fit"): the camera of the view after its fit.
