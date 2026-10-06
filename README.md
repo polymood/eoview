@@ -328,6 +328,26 @@ The script gets the expected values from GDAL, h5py and zarr-python.
 
 Remote data: `EOVIEW_TEST_URL=<URL of a COG or a Zarr store> cargo test --release --test reference remote_tile -- --nocapture` opens the URL in two sessions with a disk cache in a temporary directory. It compares the coarsest tile of the two sessions and writes the times from the open to the tile.
 
+## Animate workspace
+
+The window has two workspaces: **View** and **Animate** (at the right of the menu bar, or F6). The animate
+workspace is for an animation: make the scene with a fast preview, then render the frames. The scene is
+the active view, with its layers.
+
+| Part | |
+|---|---|
+| Left | The layers of the scene and the settings of the selected layer (the side panel) |
+| Center | The viewport: the preview, in the shape of the frames. Drag moves the camera, the mouse wheel changes its width, a double-click shows all the data |
+| Right | **Preview**: the quality (1/2, 1/4, 1/8 or 1/16 of the size of the frames). **Camera**: map or globe, the center and the width of the frame. **Overlays**: coasts, country borders, country names, time and legend. **Time**: first step, last step, interval, frames for a step. **Output**: size, rate, file. Then **Render animation**, with the progress |
+| Bottom | The timeline: play the steps in the preview, or move to a step |
+
+The preview draws the scene with the same code as the frames of the render, at a smaller size. A smaller
+preview reads coarser levels of the data: use 1/8 or 1/16 for large data. The render reads the data of
+one frame at a time: the size of the data has no limit, but a render of much data takes much time.
+
+The map overlays (coasts, country borders, country names) are also commands of the command palette, for
+all views. Their data is Natural Earth.
+
 ## Render
 
 A render makes a video file or PNG files from a view: one frame for each time step, at a set size. It is
@@ -348,6 +368,7 @@ eoview --render --out frames --steps ::4 project.eoview
 | `--steps` | all steps | First step, last step and interval, from 0. Empty parts are the defaults: `100:` is from step 100, `::4` is one step of 4 |
 | `--bbox` | all the data | `WEST,SOUTH,EAST,NORTH`: the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The frame keeps its shape: the area gives its center and its width |
 | `--stretch` | automatic | `LOW,HIGH`: the limits of the color map, in the units of the data. Without it, the first frame gets the automatic stretch (a project file keeps its stretch) |
+| `--overlays` | none | Map overlays on the frames: `coasts`, `borders`, `names` (for example `coasts,borders,names`) |
 | `--sub` | 1 | Frames for each time step. More than 1: the frames between two steps are a blend of the two steps, for a smooth change (data and particles) |
 | `--no-stamp` | | Do not write the time of the step and the legend of the color map on the frames |
 

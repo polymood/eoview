@@ -1,4 +1,5 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+mod animate;
 mod app;
 mod bench;
 mod icons;
@@ -171,6 +172,8 @@ impl App {
             raw
         };
         let ctx = self.ctx.clone();
+        // The animate workspace shows the preview of this frame.
+        self.preview_frame();
         let mut out = ctx.run_ui(raw, |ui| self.ui(ui));
         let t2 = Instant::now();
         // A debug build of egui does not permit the drop of texture changes that are not applied.
