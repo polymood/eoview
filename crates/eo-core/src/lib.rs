@@ -128,6 +128,59 @@ pub struct ChunkLoc {
 impl ChunkLoc {
     pub const WHOLE: u64 = u64::MAX;
     pub const SHARD: u64 = u64::MAX - 1;
+    /// The chunk is object number `off` of the source, which is a keyed source (the chunk objects of a
+    /// Zarr array). The source makes the name of the object.
+    pub const KEYED: u64 = u64::MAX - 2;
+}
+
+/// Locations of the chunks of an array, in C order over the chunk grid.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Chunks {
+    /// One location for each chunk.
+    List(Vec<ChunkLoc>),
+    /// `n` chunks: chunk `i` is object `i` of keyed source `src`. The locations are not in memory: a
+    /// data cube can have millions of chunks for each variable.
+    Keyed { src: u32, n: usize },
+}
+
+impl Chunks {
+    pub fn len(&self) -> usize {
+        match self {
+            Chunks::List(v) => v.len(),
+            Chunks::Keyed { n, .. } => *n,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Location of chunk `i`. Panics if `i` is not a chunk of the array.
+    pub fn at(&self, i: usize) -> ChunkLoc {
+        match self {
+            Chunks::List(v) => v[i],
+            Chunks::Keyed { src, n } => {
+                assert!(i < *n, "chunk {i} of {n}");
+                ChunkLoc { src: *src, off: i as u64, len: ChunkLoc::KEYED }
+            }
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = ChunkLoc> + '_ {
+        (0..self.len()).map(|i| self.at(i))
+    }
+}
+
+impl FromIterator<ChunkLoc> for Chunks {
+    fn from_iter<I: IntoIterator<Item = ChunkLoc>>(it: I) -> Chunks {
+        Chunks::List(it.into_iter().collect())
+    }
+}
+
+impl From<Vec<ChunkLoc>> for Chunks {
+    fn from(v: Vec<ChunkLoc>) -> Chunks {
+        Chunks::List(v)
+    }
 }
 
 /// Chunked N-dimensional array. Dimension names include "y", "x", "band" and "time".
@@ -141,8 +194,8 @@ pub struct Array {
     /// True for little-endian values.
     pub le: bool,
     pub codecs: Vec<Codec>,
-    /// One location for each chunk, in C order over the chunk grid.
-    pub chunks: Vec<ChunkLoc>,
+    /// The location of each chunk, in C order over the chunk grid.
+    pub chunks: Chunks,
     /// Position of an overview on level 0: [kx, ky, ox, oy]. Level-0 pixel position = (ox + col * kx, oy + row * ky).
     /// None: the overview covers the same area as level 0 (kx = level-0 width / width, GDAL convention).
     pub place: Option<[f64; 4]>,
@@ -276,7 +329,8 @@ pub struct Variable {
     pub georef: Georef,
     /// Time of each step of the "time" dimension (see `time`). Empty: no time dimension, or times that are
     /// not known (the number of steps is then the length of the dimension).
-    pub times: Vec<f64>,
+    /// The variables of a product share the times of a dimension (a cube has many variables and steps).
+    pub times: std::sync::Arc<Vec<f64>>,
 }
 
 impl Variable {
@@ -313,7 +367,7 @@ mod tests {
             dtype: DType::CI16,
             le: true,
             codecs: vec![],
-            chunks: vec![ChunkLoc { src: 0, off: 0, len: 0 }; 3 * 2 * 4],
+            chunks: vec![ChunkLoc { src: 0, off: 0, len: 0 }; 3 * 2 * 4].into(),
             place: None,
         };
         assert_eq!(a.grid(), [3, 2, 4]);

@@ -419,7 +419,10 @@ fn timeline(app: &mut App, ui: &mut egui::Ui, id: u32, bar: Rect, cmds: &mut Vec
     let Some(p) = app.pane_mut(id) else { return };
     let Some(l) = p.timed() else { return };
     let (n, step) = (l.steps.len(), l.step);
-    let states: Vec<u8> = (0..n).map(|s| p.buffer(l, s)).collect();
+    // One cell for each step, or one cell for each screen pixel if the layer has more steps (a data cube
+    // can have a million steps): the cell shows the first of its steps.
+    let cells = n.min(bar.width().max(1.0) as usize).max(1);
+    let states: Vec<u8> = (0..cells).map(|c| p.buffer(l, c * n / cells)).collect();
     let text = format!("{} / {n}   {}{}", step + 1, l.step_label(step), if l.shown != step { "   loading" } else { "" });
     let play = p.play;
     ui.painter().rect_filled(bar, 0.0, Color32::from_gray(30));
@@ -445,23 +448,23 @@ fn timeline(app: &mut App, ui: &mut egui::Ui, id: u32, bar: Rect, cmds: &mut Vec
     if track.width() < 20.0 {
         return;
     }
-    let w = track.width() / n as f32;
+    let (w, sw) = (track.width() / cells as f32, track.width() / n as f32);
     for (s, st) in states.iter().enumerate() {
         let c = [Color32::from_gray(60), Color32::from_gray(115), Color32::from_rgb(225, 165, 40), Color32::from_rgb(80, 190, 110)][*st as usize];
         let r = Rect::from_min_size(egui::pos2(track.left() + s as f32 * w, track.top()), vec2((w - 1.0).max(1.0), track.height()));
         ui.painter().rect_filled(r, 1.0, c);
     }
-    let cur = Rect::from_min_size(egui::pos2(track.left() + step as f32 * w, track.top()), vec2(w.max(2.0), track.height()));
+    let cur = Rect::from_min_size(egui::pos2(track.left() + step as f32 * sw, track.top()), vec2(sw.max(2.0), track.height()));
     ui.painter().rect_stroke(cur.expand(2.0), 1.0, Stroke::new(2.0, Color32::WHITE), egui::StrokeKind::Outside);
     let resp = ui.interact(track.expand2(vec2(2.0, 7.0)), ui.id().with(("timeline", id)), Sense::click_and_drag());
-    let at = |q: Pos2| (((q.x - track.left()) / w).max(0.0) as usize).min(n - 1);
+    let at = |q: Pos2| (((q.x - track.left()) / sw).max(0.0) as usize).min(n - 1);
     if let Some(q) = resp.interact_pointer_pos().filter(|_| resp.clicked() || resp.dragged())
         && at(q) != step
     {
         cmds.push((Cmd::SetStep(at(q)), id));
     }
     if let Some(s) = resp.hover_pos().map(at) {
-        let state = ["not open", "open", "tiles load", "ready"][states[s] as usize];
+        let state = ["not open", "open", "tiles load", "ready"][states[s * cells / n] as usize];
         let label = app.pane(id).and_then(|p| p.timed()).map_or(String::new(), |l| l.step_label(s));
         resp.on_hover_text_at_pointer(format!("{} / {n}   {label}\n{state}\nGreen: ready for this view. Amber: tiles load. Gray: open. Dark: not open.", s + 1));
     }

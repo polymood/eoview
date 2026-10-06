@@ -45,7 +45,7 @@ fn find<'a>(p: &'a eo_core::Product, n: &str) -> &'a Variable {
 fn read(ds: &Dataset, v: &Variable, level: usize, band: u64, time: u64, p: Part, x: u64, y: u64) -> f64 {
     let a = &v.levels[level];
     let (ch, cw) = (a.chunk[a.axis("y").unwrap()], a.chunk[a.axis("x").unwrap()]);
-    let c = a.chunks[chunk_at(a, band, time, y / ch, x / cw)];
+    let c = a.chunks.at(chunk_at(a, band, time, y / ch, x / cw));
     let s = &ds.sources[c.src as usize];
     let raw = s.read_chunk(c).unwrap();
     // A chunk that was not written: all values are the fill value.

@@ -29,6 +29,8 @@ pub struct Source {
     shard: Option<(u64, bool, u64)>,
     /// Shard index: (offset, length) of each inner chunk. Empty: the shard does not exist.
     index: tokio::sync::OnceCell<Vec<u64>>,
+    /// A keyed source (the chunk objects of a Zarr array): the path or URL of object `i`.
+    keys: Option<Box<dyn Fn(u64) -> String + Send + Sync>>,
 }
 
 enum Inner {
@@ -128,7 +130,19 @@ pub fn is_remote(url: &str) -> bool {
 impl Source {
     /// Source for a local path or an HTTP(S) URL. No I/O: the source opens at the first use.
     pub fn new(url: &str, rt: &Handle) -> Source {
-        Source { name: url.into(), rt: rt.clone(), state: OnceLock::new(), len: OnceLock::new(), shard: None, index: Default::default() }
+        Source { name: url.into(), rt: rt.clone(), state: OnceLock::new(), len: OnceLock::new(), shard: None, index: Default::default(), keys: None }
+    }
+
+    /// Keyed source for the chunk objects of the array at `url`: `key(i)` is the path or URL of object
+    /// `i`. No I/O, and no memory for each object: an array can have millions of chunks.
+    pub fn keyed(url: &str, rt: &Handle, key: impl Fn(u64) -> String + Send + Sync + 'static) -> Source {
+        Source { keys: Some(Box::new(key)), ..Source::new(url, rt) }
+    }
+
+    /// All bytes of object `i` of a keyed source. None: the object does not exist (fill value).
+    pub async fn get_keyed(&self, i: u64) -> Result<Option<Bytes>> {
+        let key = self.keys.as_ref().ok_or_else(|| Error(format!("{}: not a keyed source", self.name)))?;
+        Source::new(&key(i), &self.rt).get_whole().await
     }
 
     /// Source for a shard of the Zarr sharding codec with `n` inner chunks. No I/O: the index is read at
@@ -178,6 +192,7 @@ impl Source {
         let r = match loc.len {
             0 => return Ok(Bytes::new()),
             ChunkLoc::WHOLE => return Ok(self.get_whole().await?.unwrap_or_default()),
+            ChunkLoc::KEYED => return Ok(self.get_keyed(loc.off).await?.unwrap_or_default()),
             ChunkLoc::SHARD => match self.inner_chunk(loc.off).await? {
                 Some(r) => r,
                 None => return Ok(Bytes::new()),

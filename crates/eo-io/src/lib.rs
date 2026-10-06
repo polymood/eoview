@@ -60,7 +60,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         let bands = (1..=levels[0].len_of("band") as usize).map(|b| if rgb && b <= 3 { ["red", "green", "blue"][b - 1].into() } else { format!("Band {b}") }).collect();
         let (w, h) = (levels[0].len_of("x"), levels[0].len_of("y"));
         let desc = format!("JPEG 2000 {:?}, {w} x {h}, {} level(s)", levels[0].dtype, levels.len());
-        let var = Variable { name: name.clone(), group: String::new(), levels, bands, fill: None, scale: 1.0, offset: 0.0, units: String::new(), georef: Georef::None, times: vec![] };
+        let var = Variable { name: name.clone(), group: String::new(), levels, bands, fill: None, scale: 1.0, offset: 0.0, units: String::new(), georef: Georef::None, times: Default::default() };
         Product { name, desc, vars: vec![var] }
     } else if nitf::is_nitf(&head) {
         nitf::open(&src, 0)?

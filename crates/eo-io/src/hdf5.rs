@@ -650,6 +650,6 @@ impl Dataset {
                 _ => format!("dim_{i}"),
             })
             .collect();
-        Ok(Array { dims, shape: self.shape.clone(), chunk: self.chunk.clone(), dtype: self.dtype, le: self.le, codecs: self.codecs.clone(), chunks, place: None })
+        Ok(Array { dims, shape: self.shape.clone(), chunk: self.chunk.clone(), dtype: self.dtype, le: self.le, codecs: self.codecs.clone(), chunks: chunks.into(), place: None })
     }
 }

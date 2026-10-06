@@ -37,7 +37,7 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>)> {
             offset: d.num("add_offset").unwrap_or(0.0),
             units: d.text("units").unwrap_or("").to_string(),
             georef: Georef::None,
-            times: vec![],
+            times: Default::default(),
         });
     }
     // Time dimension: the reader does not read the dimension lists of HDF5, it compares the lengths.
@@ -52,7 +52,7 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>)> {
         let Some((c, k)) = t.filter_map(|c| Some((*c, v.levels[0].shape[..n - 2].iter().position(|&s| s == c.shape[0])?))).next() else { continue };
         v.levels[0].dims[k] = "time".into();
         if let (Some((unit, t0)), Ok(vals)) = (c.text("units").and_then(time::cf), read_1d(src, c)) {
-            v.times = vals.into_iter().map(|x| t0 + x * unit).collect();
+            v.times = std::sync::Arc::new(vals.into_iter().map(|x| t0 + x * unit).collect());
         }
     }
     Ok((vars, one_d))
@@ -63,7 +63,7 @@ pub fn read_1d(src: &Source, d: &H5) -> Result<Vec<f64>> {
     let a = d.array(0)?;
     let n = d.shape[0] as usize;
     let mut out = Vec::with_capacity(n);
-    for c in &a.chunks {
+    for c in a.chunks.iter() {
         let b = if c.len == 0 { bytes::Bytes::new() } else { src.read(c.off..c.off + c.len)? };
         out.extend(codec::to_f64(&a, &codec::decode(&a, &b)?));
     }
