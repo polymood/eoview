@@ -260,6 +260,10 @@ On Windows, the build puts the icon in the executable (`crates/eoview/build.rs`)
 cargo test --release
 ```
 
+`eoview --shot FILE.png [--do "command name"]... [products]` writes one frame of the interface to a PNG file,
+then stops. The commands run first, by their name in the command palette. The window is hidden. It is for
+checks of the interface without a person.
+
 `scripts/make_testdata.py` writes the files in `testdata/` and the expected values with tifffile, numpy, GDAL, netCDF4 and zarr-python. The tests compare the values, the overviews, the georeferencing and the geolocation that eoview reads with these values.
 
 Real products: put unzipped products in a directory (a Sentinel-2 SAFE, a Sentinel-1 GRD SAFE, a Sentinel-3 OLCI SAFE, EOPF Zarr stores `s2l2a_v2` and `s2l2a_v3`), then:
@@ -292,6 +296,11 @@ eoview --render --out frames --steps ::4 project.eoview
 | `--fps` | 24 | Frames for each second of the video |
 | `--steps` | all steps | First step, last step and interval, from 0. Empty parts are the defaults: `100:` is from step 100, `::4` is one step of 4 |
 | `--no-stamp` | | Do not write the time of the step on the frames |
+
+In the interface, **File**, then **Render video or frames** (Ctrl+R) opens the render window for the
+active view: the size of the frames, the rate, the first step, the last step and the interval, the frame
+(the view as it is, or all the data), and the output. During a render, the window shows the progress and
+the last frame, and the views stay usable. The render draws a copy of the view: the view does not change.
 
 `ffmpeg` writes the video file (H.264 for `mp4`, `mov` and `mkv`). The viewer looks for it at the path of
 the preferences (`ffmpeg` in `prefs.json`), then in the directory of the executable, then in the search

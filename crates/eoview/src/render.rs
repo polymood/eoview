@@ -7,7 +7,7 @@
 //! The render draws a copy of the view (a temporary view that is not in the dock) into an offscreen
 //! target, with its own egui context.
 
-use crate::app::App;
+use crate::app::{App, Dialog};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -35,6 +35,8 @@ pub struct Settings {
     pub out: String,
     /// Write the time of the step on each frame.
     pub stamp: bool,
+    /// The frames show all the data. Else they show the view as it is at the start of the render.
+    pub fit: bool,
     /// Camera: the center of the view and the width of the view, in display units. It does not depend on
     /// the size of the frames. None: the frame shows all the data.
     pub view: Option<([f64; 2], f64)>,
@@ -42,7 +44,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, out: "eoview.mp4".into(), stamp: true, view: None }
+        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, out: "eoview.mp4".into(), stamp: true, fit: false, view: None }
     }
 }
 
@@ -109,6 +111,8 @@ pub struct Job {
     pub t0: Instant,
     /// Time of the last progress line of `eoview --render`.
     pub said: Instant,
+    /// The offscreen target as a texture of the main window, for the render window.
+    preview: Option<egui::TextureId>,
     /// The output is not the one of the settings (no `ffmpeg`): where the frames go, and why.
     pub note: Option<String>,
 }
@@ -187,7 +191,8 @@ impl App {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            // TEXTURE_BINDING: the render window shows the target as the last frame.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -215,7 +220,7 @@ impl App {
         // The main window does not draw this view, and no window opens for it (`reconcile`).
         self.floating.push(pane);
         let set = Settings { width: w, height: h, ..set };
-        self.job = Some(Job { pane, set, steps, done: 0, stepped: false, target, ctx: egui::Context::default(), egui, sink, t0: Instant::now(), said: Instant::now(), note });
+        self.job = Some(Job { pane, set, steps, done: 0, stepped: false, target, ctx: egui::Context::default(), egui, sink, t0: Instant::now(), said: Instant::now(), preview: None, note });
         self.render_msg = None;
         Ok(())
     }
@@ -247,6 +252,9 @@ impl App {
         }
         if let Some(note) = job.note {
             text = format!("{text}\n{note}");
+        }
+        if let (Some(id), Some(w)) = (job.preview, &mut self.win) {
+            w.egui.free_texture(&id);
         }
         self.floating.retain(|&f| f != job.pane);
         self.engine.want(job.pane, vec![]);
@@ -316,38 +324,214 @@ impl App {
     /// Bring the pixels of the offscreen target back from the GPU, and write them to the output.
     fn write_frame(&mut self) -> Result<(), String> {
         let (Some(win), Some(job)) = (&self.win, &mut self.job) else { return Ok(()) };
-        let (device, queue) = (&win.gpu.device, &win.gpu.queue);
         let (w, h, t) = (job.set.width, job.set.height, &job.target);
-        let mut enc = device.create_command_encoder(&Default::default());
-        enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::TexelCopyBufferInfo { buffer: &t.buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(t.row), rows_per_image: None } },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
-        queue.submit([enc.finish()]);
-        let slice = t.buffer.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::PollType::wait_indefinitely()).map_err(err("GPU"))?;
-        let mut px = Vec::with_capacity((w * h * 4) as usize);
-        {
-            let data = slice.get_mapped_range().map_err(err("GPU"))?;
-            for r in 0..h as usize {
-                let at = r * t.row as usize;
-                px.extend_from_slice(&data[at..at + w as usize * 4]);
-            }
-        }
-        t.buffer.unmap();
+        let mut px = read_pixels(&win.gpu.device, &win.gpu.queue, &t.texture, &t.buffer, t.row, w, h)?;
         match &mut job.sink {
             Sink::Video(child) => child.stdin.as_mut().ok_or("ffmpeg has no input")?.write_all(&px).map_err(err("ffmpeg")),
             Sink::Images(dir) => {
-                for p in px.chunks_exact_mut(4) {
-                    if t.bgra {
-                        p.swap(0, 2);
-                    }
-                    p[3] = 255;
-                }
+                to_rgba(&mut px, t.bgra);
                 write_png(&dir.join(format!("frame_{:05}.png", job.done + 1)), w, h, &px)
             }
         }
+    }
+
+    /// Start the render of view `src` with the settings of the render window.
+    pub fn render_start(&mut self, src: u32) {
+        let mut set = self.render_set.clone();
+        let cam = self.pane(src).filter(|p| p.v.px.width() > 1.0 && p.v.scale > 0.0).map(|p| (p.v.center, p.v.px.width() as f64 / p.v.scale));
+        set.view = cam.filter(|_| !set.fit);
+        // The project file keeps the camera of the last render.
+        self.render_set.view = set.view;
+        if let Err(e) = self.start_render(src, set) {
+            self.render_msg = Some(e);
+        }
+    }
+
+    /// Write the frame of the main window to a PNG file (`eoview --shot`).
+    pub fn screenshot(&self, path: &str) -> Result<(), String> {
+        let win = self.win.as_ref().ok_or("no window")?;
+        let texture = win.offscreen_texture().ok_or("no offscreen target")?;
+        let (w, h) = (texture.width(), texture.height());
+        let row = (w * 4).div_ceil(256) * 256;
+        let buffer = win.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("screenshot"),
+            size: row as u64 * h as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut px = read_pixels(&win.gpu.device, &win.gpu.queue, texture, &buffer, row, w, h)?;
+        to_rgba(&mut px, matches!(win.gpu_format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb));
+        write_png(Path::new(path), w, h, &px)
+    }
+}
+
+/// Pixels of `texture` (`w` x `h`, 4 bytes for each pixel) from the GPU, through `buffer` (rows of `row` bytes).
+fn read_pixels(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, buffer: &wgpu::Buffer, row: u32, w: u32, h: u32) -> Result<Vec<u8>, String> {
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    queue.submit([enc.finish()]);
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).map_err(err("GPU"))?;
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    {
+        let data = slice.get_mapped_range().map_err(err("GPU"))?;
+        for r in 0..h as usize {
+            let at = r * row as usize;
+            px.extend_from_slice(&data[at..at + w as usize * 4]);
+        }
+    }
+    buffer.unmap();
+    Ok(px)
+}
+
+/// Pixels for a PNG file: red, green, blue, and no transparency.
+fn to_rgba(px: &mut [u8], bgra: bool) {
+    for p in px.chunks_exact_mut(4) {
+        if bgra {
+            p.swap(0, 2);
+        }
+        p[3] = 255;
+    }
+}
+
+/// Frame sizes of the render window.
+const SIZES: &[(&str, u32, u32)] = &[("1280 x 720 (720p)", 1280, 720), ("1920 x 1080 (1080p)", 1920, 1080), ("2560 x 1440 (1440p)", 2560, 1440), ("3840 x 2160 (4K)", 3840, 2160)];
+
+impl App {
+    /// Render window: the settings of the render of the active view, the progress and the last frame.
+    pub fn render_ui(&mut self, ctx: &egui::Context) {
+        if !self.render_open {
+            return;
+        }
+        let src = self.active;
+        let (title, n) = self.pane(src).map_or((String::new(), 1), |p| (p.title(), p.timed().map_or(1, |l| l.steps.len())));
+        let label = |s: usize| self.pane(src).and_then(|p| p.timed()).map_or(String::new(), |l| l.step_label(s));
+        let (first, last) = (self.render_set.first.min(n - 1), self.render_set.last.unwrap_or(n - 1).min(n - 1));
+        let (first_label, last_label) = (label(first), label(last));
+        if self.ffmpeg_found.is_none() {
+            self.ffmpeg_found = Some(ffmpeg(&self.prefs.ffmpeg).is_some());
+        }
+        let no_ffmpeg = self.ffmpeg_found == Some(false) && self.render_set.video();
+        // The offscreen target of the render that runs, as a texture of this window.
+        if let (Some(j), Some(w)) = (&mut self.job, &mut self.win)
+            && j.preview.is_none()
+        {
+            j.preview = Some(w.egui.register_native_texture(&w.gpu.device, &j.target.view, wgpu::FilterMode::Linear));
+        }
+        let progress = self.job.as_ref().map(|j| (j.done, j.frames(), j.t0.elapsed().as_secs_f32(), j.preview, j.set.width as f32 / j.set.height as f32));
+        let (mut open, mut start, mut stop, mut browse) = (true, false, false, false);
+        egui::Window::new("Render").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.set_width(440.0);
+            let set = &mut self.render_set;
+            ui.add_enabled_ui(progress.is_none(), |ui| {
+                egui::Grid::new("render").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
+                    ui.label("View");
+                    ui.label(&title);
+                    ui.end_row();
+
+                    ui.label("Size");
+                    ui.horizontal(|ui| {
+                        let cur = SIZES.iter().find(|x| (x.1, x.2) == (set.width, set.height)).map_or("Custom", |x| x.0);
+                        egui::ComboBox::from_id_salt("render size").selected_text(cur).show_ui(ui, |ui| {
+                            for (name, w, h) in SIZES {
+                                if ui.selectable_label((set.width, set.height) == (*w, *h), *name).clicked() {
+                                    (set.width, set.height) = (*w, *h);
+                                }
+                            }
+                        });
+                        ui.add(egui::DragValue::new(&mut set.width).range(16..=16384));
+                        ui.label("x");
+                        ui.add(egui::DragValue::new(&mut set.height).range(16..=16384));
+                    });
+                    ui.end_row();
+
+                    ui.label("Rate");
+                    ui.add(egui::DragValue::new(&mut set.fps).range(1.0..=120.0).speed(0.2).suffix(" frames/s"));
+                    ui.end_row();
+
+                    // The interface counts the steps from 1.
+                    ui.label("First step");
+                    ui.horizontal(|ui| {
+                        let mut v = first + 1;
+                        if ui.add(egui::DragValue::new(&mut v).range(1..=n)).changed() {
+                            set.first = v - 1;
+                        }
+                        ui.weak(&first_label);
+                    });
+                    ui.end_row();
+                    ui.label("Last step");
+                    ui.horizontal(|ui| {
+                        let mut v = last + 1;
+                        if ui.add(egui::DragValue::new(&mut v).range(1..=n)).changed() {
+                            set.last = Some(v - 1).filter(|l| l + 1 < n);
+                        }
+                        ui.weak(&last_label);
+                    });
+                    ui.end_row();
+                    ui.label("Interval");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut set.stride).range(1..=n.max(1)).suffix(" step(s)"));
+                        let frames = set.steps(n).len();
+                        ui.weak(format!("{frames} frames, {:.1} s of video", frames as f32 / set.fps.max(0.01)));
+                    });
+                    ui.end_row();
+
+                    ui.label("Frame");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut set.fit, false, "The view as it is now");
+                        ui.radio_value(&mut set.fit, true, "All the data");
+                    });
+                    ui.end_row();
+
+                    ui.label("Time");
+                    ui.checkbox(&mut set.stamp, "Write the time of the step on the frames");
+                    ui.end_row();
+
+                    ui.label("Output");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut set.out).desired_width(280.0)).on_hover_text("A video file (mp4, mov, mkv, webm, gif), or a directory for PNG files");
+                        browse = ui.button("Browse...").clicked();
+                    });
+                    ui.end_row();
+                });
+            });
+            if no_ffmpeg {
+                ui.colored_label(egui::Color32::from_rgb(225, 165, 40), "ffmpeg was not found: the frames will be PNG files. Set the path of ffmpeg in the preferences.");
+            }
+            ui.separator();
+            match progress {
+                Some((done, frames, secs, preview, aspect)) => {
+                    let rate = done as f32 / secs.max(1e-3);
+                    let left = if rate > 0.0 { format!("{:.0} s left", (frames - done) as f32 / rate) } else { "waits for data".into() };
+                    ui.add(egui::ProgressBar::new(done as f32 / frames.max(1) as f32).text(format!("Frame {done} of {frames}   {rate:.1} frames/s   {left}")));
+                    if let Some(id) = preview {
+                        let w = ui.available_width();
+                        ui.image(egui::load::SizedTexture::new(id, egui::vec2(w, w / aspect)));
+                    }
+                    stop = ui.button("Stop").clicked();
+                }
+                None => {
+                    start = ui.add_enabled(n >= 1 && !title.is_empty(), egui::Button::new("Render")).clicked();
+                    if let Some(m) = &self.render_msg {
+                        ui.label(m);
+                    }
+                }
+            }
+        });
+        if start {
+            self.render_start(src);
+        }
+        if stop {
+            self.cancel_render();
+        }
+        if browse {
+            self.dialog = Some(Dialog::RenderOut);
+        }
+        self.render_open = open;
     }
 }
