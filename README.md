@@ -128,8 +128,9 @@ limits of the view, command palette), **View** (zoom, display CRS, side panel, v
 F1). The toolbar below it has the frequent commands as buttons. Each button shows its key in its tooltip.
 The icons are drawn by the viewer: they do not depend on the fonts of the system.
 
-At the start, the viewer shows a splash screen while the products of the command line open. A click or
-Escape closes it.
+At the start, a splash window shows first, with a progress bar: the GPU starts, then the products of the
+command line open. Then the main window shows. The splash window closes after 15 seconds at most:
+products that are slow to open continue in the main window.
 
 ### Views
 

@@ -18,6 +18,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 pub const APP: &str = "eoview";
+/// Maximum time of the splash window after the start of the GPU. Products that are slow to open continue in the main window.
+const SPLASH_MAX: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub enum Ev {
     Wake,
@@ -178,13 +180,14 @@ fn app_icon(size: Option<u32>) -> Option<winit::window::Icon> {
     }
 }
 
-fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: bool) -> Win {
+/// `visible`: show the window now. Else the window stays hidden until its first frame (`App::boot_tick`).
+fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: bool, visible: bool) -> Win {
     let offscreen_size = std::env::var("EOVIEW_BENCH_SIZE").ok().filter(|_| bench).and_then(|s| {
         let (x, y) = s.split_once('x')?;
         Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?))
     });
     let size = if bench { winit::dpi::LogicalSize::new(3840, 2160) } else { winit::dpi::LogicalSize::new(1500, 950) };
-    let attrs = Window::default_attributes().with_title(APP).with_inner_size(size).with_window_icon(app_icon(None));
+    let attrs = Window::default_attributes().with_title(APP).with_inner_size(size).with_visible(visible).with_window_icon(app_icon(None));
     #[cfg(windows)]
     let attrs = winit::platform::windows::WindowAttributesExtWindows::with_taskbar_icon(attrs, app_icon(Some(256)));
     let window = Arc::new(el.create_window(attrs).unwrap());
@@ -246,40 +249,54 @@ fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: boo
 
 impl ApplicationHandler<Ev> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
-        if self.win.is_some() {
+        if self.win.is_some() || self.splash.is_some() {
             return;
         }
-        self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some()));
+        // The splash window shows first. The GPU starts after the first frame of the splash window.
         if self.bench.is_none() {
-            self.load_recent();
-            let mut files: Vec<String> = std::env::args().skip(1).collect();
-            // --globe: the first view is a globe view.
-            if let Some(i) = files.iter().position(|f| f == "--globe") {
-                files.remove(i);
-                self.set_globe(self.active, true);
-            }
-            // --series: the products are the time steps of one layer.
-            if files.first().is_some_and(|f| f == "--series") {
-                self.open_series(self.active, files[1..].to_vec(), false);
-            } else if !files.is_empty() {
-                self.open_many(self.active, files, false);
-            }
+            self.splash = splash::Splash::new(el);
+        }
+        if self.splash.is_none() {
+            self.boot(el);
         }
     }
 
-    fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) {
-        if let (StartCause::ResumeTimeReached { .. }, Some(w)) = (cause, &self.win) {
+    fn new_events(&mut self, el: &ActiveEventLoop, cause: StartCause) {
+        if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            return;
+        }
+        if self.splash.is_some() {
+            self.boot_tick(el);
+        } else if let Some(w) = &self.win {
             w.window.request_redraw();
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, _: Ev) {
-        if let Some(w) = &self.win {
+    fn user_event(&mut self, el: &ActiveEventLoop, _: Ev) {
+        if self.splash.is_some() {
+            self.boot_tick(el);
+        } else if let Some(w) = &self.win {
             w.window.request_redraw();
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, ev: WindowEvent) {
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
+        if self.splash.as_ref().is_some_and(|s| s.id() == id) {
+            match ev {
+                WindowEvent::CloseRequested => el.exit(),
+                WindowEvent::RedrawRequested => {
+                    let first = self.splash.as_mut().is_some_and(|s| {
+                        s.draw();
+                        !std::mem::replace(&mut s.drawn, true)
+                    });
+                    if first {
+                        self.boot(el);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         let Some(w) = &mut self.win else { return };
         let resp = w.egui_state.on_window_event(&w.window, &ev);
         match ev {
@@ -296,6 +313,64 @@ impl ApplicationHandler<Ev> for App {
             }
             _ if resp.repaint => w.window.request_redraw(),
             _ => {}
+        }
+    }
+}
+
+impl App {
+    /// Start the GPU, make the main window and open the products of the command line. This blocks the
+    /// thread. With a splash window, the main window stays hidden (see `boot_tick`).
+    fn boot(&mut self, el: &ActiveEventLoop) {
+        self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some(), self.splash.is_none()));
+        if self.bench.is_none() {
+            self.load_recent();
+            let mut files: Vec<String> = std::env::args().skip(1).collect();
+            // --globe: the first view is a globe view.
+            if let Some(i) = files.iter().position(|f| f == "--globe") {
+                files.remove(i);
+                self.set_globe(self.active, true);
+            }
+            // --series: the products are the time steps of one layer.
+            if files.first().is_some_and(|f| f == "--series") {
+                self.open_series(self.active, files[1..].to_vec(), false);
+            } else if !files.is_empty() {
+                self.open_many(self.active, files, false);
+            }
+        }
+        let opens = self.opens_pending();
+        if let Some(s) = &mut self.splash {
+            (s.opens, s.t0) = (opens, Instant::now());
+            s.set(0.5);
+        }
+        self.boot_tick(el);
+    }
+
+    /// Splash window: move the progress bar while the products open. Then draw the first frame of the
+    /// main window, show the main window and close the splash window.
+    fn boot_tick(&mut self, el: &ActiveEventLoop) {
+        let Some(s) = &self.splash else { return };
+        if self.win.is_none() {
+            return;
+        }
+        let (total, late) = (s.opens.max(1), s.t0.elapsed() > SPLASH_MAX);
+        self.events();
+        let left = self.opens_pending();
+        if left > 0 && !late {
+            if let Some(s) = &mut self.splash {
+                s.set(0.5 + 0.45 * (1.0 - left as f32 / total as f32));
+            }
+            return el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + std::time::Duration::from_millis(200)));
+        }
+        if let Some(s) = &mut self.splash {
+            s.set(1.0);
+        }
+        // The first frame goes to the hidden window: the window then shows with its content.
+        self.render(el);
+        self.splash = None;
+        if let Some(w) = &self.win {
+            w.window.set_visible(true);
+            w.window.focus_window();
+            w.window.request_redraw();
         }
     }
 }

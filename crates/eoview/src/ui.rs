@@ -694,7 +694,6 @@ impl App {
         }
         self.sync();
         self.paint(&ctx);
-        self.splash_ui(&ctx);
     }
 
     fn keys(&mut self, ctx: &egui::Context, cmds: &mut Vec<(Cmd, u32)>) {
