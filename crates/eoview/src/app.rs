@@ -313,6 +313,8 @@ pub enum Dialog {
     Open { pane: u32, add: bool, what: What },
     Save,
     Load,
+    /// The output file of a render.
+    RenderOut,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -416,9 +418,12 @@ pub struct App {
     pub render_set: crate::render::Settings,
     pub render_msg: Option<String>,
     pub render_open: bool,
+    /// True if `ffmpeg` runs. None: not examined yet (the preferences changed).
+    pub ffmpeg_found: Option<bool>,
     /// `eoview --render`: the products, and the render to start when they are open. The application
     /// stops at the end of the render.
     pub cli_files: Option<Vec<String>>,
+    pub shot: Option<crate::Shot>,
     pub cli_render: Option<crate::render::Settings>,
     /// Detached views: they are not in the dock, each one has its own window (`wins`).
     pub floating: Vec<u32>,
@@ -470,7 +475,9 @@ impl App {
             render_set: Default::default(),
             render_msg: None,
             render_open: false,
+            ffmpeg_found: None,
             cli_files: None,
+            shot: None,
             cli_render: None,
             floating: vec![],
             wins: vec![],
@@ -566,6 +573,10 @@ impl App {
     /// A copy of view `id` (same layers and settings) to its right, in the same link group.
     pub fn duplicate(&mut self, id: u32) {
         let n = self.split(id);
+        // The two views are in a link group.
+        if let Some(s) = self.pane_mut(id) {
+            s.link = s.link.max(1);
+        }
         self.copy_to(id, n);
     }
 
@@ -582,9 +593,6 @@ impl App {
         let Some(src) = self.pane(id) else { return };
         let (layers, space, center, scale, link, globe) = (src.layers.clone(), src.v.space, src.v.center, src.v.scale, src.link.max(1), src.v.globe);
         let cmp = (src.cmp, src.swipe, src.vertical, src.blend, src.flicker_hz, src.diff, src.dlo, src.dhi, src.dcmap, src.dinvert);
-        if let Some(s) = self.pane_mut(id) {
-            s.link = link;
-        }
         let uids: Vec<u64> = (0..layers.len()).map(|_| self.uid()).collect();
         let p = self.pane_mut(n).unwrap();
         p.layers = layers;

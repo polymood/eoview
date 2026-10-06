@@ -26,6 +26,15 @@ pub enum Ev {
     Wake,
 }
 
+/// `eoview --shot`: write the frame of the main window to a PNG file, then stop. For the tests of the
+/// interface without a person: the commands run first, one for each frame, by their name in the command palette.
+pub struct Shot {
+    path: String,
+    cmds: std::collections::VecDeque<String>,
+    /// Frames to draw before the capture.
+    wait: u32,
+}
+
 pub struct Win {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -127,6 +136,11 @@ impl Win {
         self.config.format
     }
 
+    /// The offscreen target of the frames, if the window has one (benchmark, `eoview --shot`).
+    pub fn offscreen_texture(&self) -> Option<&wgpu::Texture> {
+        self.offscreen.as_ref().map(|o| &o.0)
+    }
+
     /// Size of the frame in physical pixels.
     pub fn size(&self) -> [u32; 2] {
         match &self.offscreen {
@@ -174,21 +188,29 @@ impl App {
         let free: Vec<egui::TextureId> = textures.free.iter().copied().collect();
         textures.clear();
         let t3 = Instant::now();
-        let frame = match w.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                w.surface.configure(&device, &w.config);
-                w.window.request_redraw();
-                return;
+        // `eoview --shot`: the window is hidden and its surface gets no frame. The frame goes to the offscreen target.
+        let frame = if self.shot.is_some() {
+            None
+        } else {
+            match w.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    w.surface.configure(&device, &w.config);
+                    w.window.request_redraw();
+                    return;
+                }
+                _ => return,
             }
-            _ => return,
         };
         let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: w.size(), pixels_per_point: out.pixels_per_point };
         let mut enc = device.create_command_encoder(&Default::default());
         let cmds = w.egui.update_buffers(&device, &queue, &mut enc, &prims, &sd);
         let view = match &w.offscreen {
             Some((_, v)) => v.clone(),
-            None => frame.texture.create_view(&Default::default()),
+            None => match &frame {
+                Some(f) => f.texture.create_view(&Default::default()),
+                None => return,
+            },
         };
         {
             let mut pass = enc
@@ -217,8 +239,10 @@ impl App {
             // The frame time includes the GPU work. The window shows the last presented frame.
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
         }
-        w.window.pre_present_notify();
-        queue.present(frame);
+        if let Some(frame) = frame {
+            w.window.pre_present_notify();
+            queue.present(frame);
+        }
         // EOVIEW_DEBUG: time of each part of the frames longer than 12 ms.
         if t0.elapsed().as_millis() > 12 && std::env::var_os("EOVIEW_DEBUG").is_some() {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
@@ -256,6 +280,35 @@ impl App {
         } else if let Some(t) = until {
             self.wake = Some(t);
         }
+        self.shot_tick(el);
+    }
+
+    /// `eoview --shot`: when the views are complete, run the next command, or write the frame and stop.
+    fn shot_tick(&mut self, el: &ActiveEventLoop) {
+        let Some(s) = &self.shot else { return };
+        let busy = self.opens_pending() > 0 || self.panes.iter().any(|p| !self.floating.contains(&p.id) && p.painter.is_some() && !p.layers.is_empty() && (p.missing || p.v.fit));
+        let (wait, next) = (s.wait, s.cmds.front().cloned());
+        let cmd = next.as_ref().and_then(|n| ui::command(self, n));
+        let Some(s) = &mut self.shot else { return };
+        if busy {
+            s.wait = 20;
+        } else if let Some(n) = next {
+            s.cmds.pop_front();
+            s.wait = 20;
+            match cmd {
+                Some(c) => self.run(c, self.active),
+                None => eprintln!("shot: no command {n:?}"),
+            }
+        } else if wait > 0 {
+            s.wait -= 1;
+        } else {
+            let path = s.path.clone();
+            if let Err(e) = self.screenshot(&path) {
+                eprintln!("shot: {e}");
+            }
+            self.shot = None;
+            el.exit();
+        }
     }
 }
 
@@ -275,11 +328,13 @@ fn app_icon(size: Option<u32>) -> Option<winit::window::Icon> {
 }
 
 /// `visible`: show the window now. Else the window stays hidden until its first frame (`App::boot_tick`).
-fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: bool, visible: bool) -> Win {
+/// `shot`: the frames go to an offscreen target of 1600 x 1000 pixels (`eoview --shot`).
+fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: bool, visible: bool, shot: bool) -> Win {
     let offscreen_size = std::env::var("EOVIEW_BENCH_SIZE").ok().filter(|_| bench).and_then(|s| {
         let (x, y) = s.split_once('x')?;
         Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?))
     });
+    let offscreen_size = offscreen_size.or(shot.then_some((1600, 1000)));
     let size = if bench { winit::dpi::LogicalSize::new(3840, 2160) } else { winit::dpi::LogicalSize::new(1500, 950) };
     let attrs = Window::default_attributes().with_title(APP).with_inner_size(size).with_visible(visible).with_window_icon(app_icon(None));
     #[cfg(windows)]
@@ -331,7 +386,7 @@ fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: boo
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: config.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let v = t.create_view(&Default::default());
@@ -347,7 +402,7 @@ impl ApplicationHandler<Ev> for App {
             return;
         }
         // The splash window shows first. The GPU starts after the first frame of the splash window.
-        if self.bench.is_none() && self.cli_render.is_none() {
+        if self.bench.is_none() && self.cli_render.is_none() && self.shot.is_none() {
             self.splash = splash::Splash::new(el);
         }
         if self.splash.is_none() {
@@ -361,6 +416,11 @@ impl ApplicationHandler<Ev> for App {
         }
         if self.splash.is_some() {
             self.boot_tick(el);
+        } else if self.shot.is_some() && self.win.is_some() {
+            self.wake = None;
+            self.render(el);
+            self.job_tick(el);
+            self.set_wake(el);
         } else {
             self.job_tick(el);
             self.redraw_all();
@@ -435,6 +495,8 @@ impl ApplicationHandler<Ev> for App {
                 self.wake = None;
                 self.render(el);
                 self.reconcile(el);
+                // A render also gets time here: with frames all the time, the timer does not run.
+                self.job_tick(el);
                 self.set_wake(el);
             }
             _ if resp.repaint => self.redraw_all(),
@@ -486,7 +548,7 @@ impl App {
 
     /// Wait for events, or until the earliest frame that a window asked for.
     fn set_wake(&self, el: &ActiveEventLoop) {
-        let job = (self.job.is_some() || self.cli_render.is_some()).then(|| Instant::now() + std::time::Duration::from_millis(15));
+        let job = (self.job.is_some() || self.cli_render.is_some() || self.shot.is_some()).then(|| Instant::now() + std::time::Duration::from_millis(15));
         let t = self.wins.iter().filter_map(|d| d.wake).chain(self.wake).chain(job).min();
         el.set_control_flow(t.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
@@ -555,7 +617,7 @@ impl App {
     /// Start the GPU, make the main window and open the products of the command line. This blocks the
     /// thread. With a splash window, the main window stays hidden (see `boot_tick`).
     fn boot(&mut self, el: &ActiveEventLoop) {
-        self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some(), self.splash.is_none() && self.cli_render.is_none()));
+        self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some(), self.splash.is_none() && self.cli_render.is_none() && self.shot.is_none(), self.shot.is_some()));
         if self.bench.is_none() {
             self.load_recent();
             let mut files: Vec<String> = self.cli_files.take().unwrap_or_else(|| std::env::args().skip(1).collect());
@@ -571,7 +633,7 @@ impl App {
                 self.open_many(self.active, files, false);
             }
         }
-        if self.cli_render.is_some() {
+        if self.cli_render.is_some() || self.shot.is_some() {
             self.set_wake(el);
         }
         let opens = self.opens_pending();
@@ -760,6 +822,14 @@ fn main() {
         disk_cache(&engine);
     }
     let mut app = App::new(engine, events, env_mb("EOVIEW_GPU_MB").unwrap_or(1 << 30), bench);
+    // eoview --shot FILE.png [--do "command name"]... [products]
+    if args.get(1).map(String::as_str) == Some("--shot") && args.len() > 2 {
+        let (mut cmds, mut files, mut it) = (std::collections::VecDeque::new(), vec![], args[3..].iter());
+        while let Some(a) = it.next() {
+            if a == "--do" { cmds.extend(it.next().cloned()) } else { files.push(a.clone()) }
+        }
+        (app.shot, app.cli_files) = (Some(Shot { path: args[2].clone(), cmds, wait: 20 }), Some(files));
+    }
     if args.get(1).map(String::as_str) == Some("--render") {
         match render_args(&args[2..]) {
             Ok((set, files)) => (app.cli_render, app.cli_files) = (Some(set), Some(files)),

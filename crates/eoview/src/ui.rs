@@ -68,6 +68,10 @@ pub enum Cmd {
     Fullscreen,
     /// Open or close the preferences window.
     Prefs,
+    /// Open or close the render window.
+    Render,
+    /// Start a render of the view with the settings of the render window.
+    RenderStart,
     /// Preference: full resolution at all zoom levels, on or off.
     FullRes,
 }
@@ -94,6 +98,11 @@ pub fn fuzzy(q: &str, s: &str) -> Option<usize> {
 
 fn mb(b: usize) -> String {
     format!("{:.0} MB", b as f64 / (1 << 20) as f64)
+}
+
+/// The command with this name in the command palette.
+pub fn command(app: &App, name: &str) -> Option<Cmd> {
+    commands(app, app.active).into_iter().find(|c| c.0 == name).map(|c| c.2)
 }
 
 /// Commands of the palette: name, key, command. Some depend on the selected layer of view `id`.
@@ -136,6 +145,8 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         ("Copy view extent (west, south, east, north)", "Ctrl+Shift+C", Cmd::CopyExtent),
         ("3D globe: on or off", "G", Cmd::Globe),
         ("Preferences...", "Ctrl+,", Cmd::Prefs),
+        ("Render video or frames...", "Ctrl+R", Cmd::Render),
+        ("Render: start with the settings of the render window", "", Cmd::RenderStart),
         ("Full resolution at all zoom levels: on or off", "", Cmd::FullRes),
         ("Keys...", "F1", Cmd::Help),
         ("Quit", "Ctrl+Q", Cmd::Quit),
@@ -697,6 +708,7 @@ impl App {
         self.url_ui(&ctx);
         self.help_ui(&ctx);
         self.prefs_ui(&ctx);
+        self.render_ui(&ctx);
 
         if let Some(b) = &mut self.bench {
             if let Some(p) = self.panes.first_mut()
@@ -793,7 +805,7 @@ impl App {
             match c {
                 Cmd::Panel => self.wins[k].panel ^= true,
                 // The dialogs of these commands are in the main window.
-                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Open(..) | Cmd::Save | Cmd::Load => {
+                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Render | Cmd::Open(..) | Cmd::Save | Cmd::Load => {
                     self.run(c, i);
                     if let Some(w) = &self.win {
                         w.window.focus_window();
@@ -832,6 +844,7 @@ impl App {
             (cmd, Key::S, Cmd::Save),
             (cmd, Key::K, Cmd::Palette),
             (cmd, Key::Comma, Cmd::Prefs),
+            (cmd, Key::R, Cmd::Render),
             (cmd, Key::Q, Cmd::Quit),
             (sh, Key::C, Cmd::CopyExtent),
             (none, Key::F1, Cmd::Help),
@@ -893,6 +906,8 @@ impl App {
             Cmd::CloseView => self.close(id),
             Cmd::Detach => self.detach(id),
             Cmd::Prefs => self.prefs_open ^= true,
+            Cmd::Render => self.render_open ^= true,
+            Cmd::RenderStart => self.render_start(id),
             Cmd::FullRes => {
                 self.prefs.full_res ^= true;
                 self.save_prefs();
@@ -1119,6 +1134,7 @@ impl App {
                 ui.menu_button("Add layer", |ui| open_menu(ui, true, id, &self.recent, cmds));
                 ui.separator();
                 entry(ui, cmds, id, "Save workspace...", "Ctrl+S", Cmd::Save);
+                entry(ui, cmds, id, "Render video or frames...", "Ctrl+R", Cmd::Render);
                 entry(ui, cmds, id, "Open workspace...", "", Cmd::Load);
                 ui.separator();
                 entry(ui, cmds, id, "Quit", "Ctrl+Q", Cmd::Quit);
@@ -1230,8 +1246,12 @@ impl App {
                 .small()
                 .weak(),
             );
+            ui.add_space(8.0);
+            ui.label("Path of ffmpeg (for the renders)");
+            changed |= ui.add(egui::TextEdit::singleline(&mut self.prefs.ffmpeg).hint_text("Empty: next to eoview, then the search path").desired_width(360.0)).changed();
         });
         if changed {
+            self.ffmpeg_found = None;
             self.save_prefs();
         }
         self.prefs_open = open;
@@ -2007,6 +2027,12 @@ pub fn dialogs(app: &mut App) {
                 if let Err(e) = app.save_workspace(&p.to_string_lossy()) {
                     app.error = Some(e);
                 }
+            }
+        }
+        Dialog::RenderOut => {
+            let d = rfd::FileDialog::new().set_title("Output of the render").add_filter("Video", crate::render::VIDEO_EXT).set_file_name("eoview.mp4");
+            if let Some(p) = d.save_file() {
+                app.render_set.out = p.to_string_lossy().into_owned();
             }
         }
         Dialog::Load => {
