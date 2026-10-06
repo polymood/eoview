@@ -31,25 +31,37 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
    - Tile requests from the real footprint of the view, and the level from the distance of each tile.
    - Checks: a globe view in a link group with 2D views, and 4 layers at 60 frames per second.
 
+5. **Render and wind (Jules, 2026-10-06).** Done: the render of a view to a video file or to PNG files
+   (`eoview --render`, the render window, ffmpeg), wind layers (speed and arrows), the repeat of a global
+   grid in longitude, detached views, product lists, a hidden screenshot mode (`eoview --shot`). To do:
+   - ffmpeg with the Windows executable (now: the path of the preferences, the directory of the
+     executable, or the search path).
+   - Particles that follow the wind, and arrows that are correct in a map projection and on the globe.
+   - A time range and an interval for the timeline of a layer (now: only for a render).
+   - Linear pixels without the edges of the tiles.
+   - Checks with the real ERA5 store (wind over France, one year). The viewer did not open it after the
+     fix of the open of large cubes: only a test cube with the same structure.
+   - A mosaic layer: many products of an area as one image.
+
 ## Asked by Jules, not started
 
-5. **Precise control of the bounding box.** Type the limits of the view (west, south, east, north, or
+6. **Precise control of the bounding box.** Type the limits of the view (west, south, east, north, or
    center and scale), go to a latitude and longitude, draw a box and read its coordinates, copy and paste
    an extent, use the box as the area of a STAC search and of an export.
-6. **1D data.** A variable with one dimension has no view now (the readers ignore it). Show it as a
+7. **1D data.** A variable with one dimension has no view now (the readers ignore it). Show it as a
    line plot: along-track data (Sentinel-6, CryoSat-2 altimetry), coordinates, time series. A 1D variable
    with latitude and longitude can also be a track on the map and on the globe.
-7. **Plots for publications.** Scientists make figures from the data. Plot types: histogram, scatter
+8. **Plots for publications.** Scientists make figures from the data. Plot types: histogram, scatter
    plot of two bands (density), spectral profile, time profile, transect along a line, Hovmoller diagram.
    Each plot needs axes with units, a legend, a color bar, and an export to PNG, SVG and PDF. A map figure
    export: the view with a graticule, a scale bar, a color bar and a title.
-8. **Pipeline graph editor (Python).** A node graph: sources (layers), operations, outputs (a new layer,
+9. **Pipeline graph editor (Python).** A node graph: sources (layers), operations, outputs (a new layer,
    a plot, a file). Nodes run Python functions (numpy, xarray) on the tiles that the view needs, so the
    result stays interactive. Premade nodes, and a node with user code. The specification lists processing
    chains and scripting as non-goals "unless the user asks": Jules asked for it on 2026-10-06.
    Questions to answer first: where does Python run (a child process with shared memory, or PyO3), how
    does a node get the data (chunks, with halo pixels for filters), how are results cached.
-9. **Filters and nodes that are useful for EO data.** To examine, then select a first set:
+10. **Filters and nodes that are useful for EO data.** To examine, then select a first set:
    - Radiometry: SAR calibration (sigma0, gamma0, beta0), dB, top-of-atmosphere to reflectance, scale and
      offset.
    - SAR: speckle filters (Lee, refined Lee, Gamma-MAP, boxcar), multilook, coherence and interferogram of
