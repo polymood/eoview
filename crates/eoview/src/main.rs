@@ -525,6 +525,8 @@ impl App {
                 let pane = j.pane;
                 for l in self.pane_mut(pane).into_iter().flat_map(|p| p.layers.iter_mut()) {
                     match st {
+                        // The limits are for the data layers. A color image keeps its colors.
+                        Some(_) if l.kind == layer::Kind::Rgb => {}
                         Some((lo, hi)) => l.st.iter_mut().for_each(|s| (s.lo, s.hi, l.auto_pending) = (lo, hi, false)),
                         None => l.auto_pending = true,
                     }
@@ -638,9 +640,15 @@ impl App {
                 files.remove(i);
                 self.set_globe(self.active, true);
             }
+            // --stack: the products are the layers of one view, the first product at the bottom.
+            let stack = files.iter().position(|f| f == "--stack").map(|i| files.remove(i)).is_some();
             // --series: the products are the time steps of one layer.
             if files.first().is_some_and(|f| f == "--series") {
                 self.open_series(self.active, files[1..].to_vec(), false);
+            } else if stack && !files.is_empty() {
+                let first = files.remove(0);
+                self.open(self.active, first, false);
+                self.open_many(self.active, files, true);
             } else if !files.is_empty() {
                 self.open_many(self.active, files, false);
             }

@@ -237,9 +237,10 @@ impl View {
             // A layer of the full globe in longitude and latitude (360 degrees) repeats to the east and to
             // the west: a grid from 0 to 360 degrees also shows at the longitudes below 0.
             let span = warp.at(warp.w, warp.h / 2.0)[0] - warp.at(0.0, warp.h / 2.0)[0];
-            let wrap = self.space == Some(4326) && !self.globe && (span.abs() - 360.0).abs() < 1.0;
+            let wrap = self.space == Some(4326) && (span.abs() - 360.0).abs() < 1.0;
             self.wraps[k] = wrap;
-            for &shift in if wrap { &[0.0, -360.0, 360.0][..] } else { &[0.0][..] } {
+            // The globe shows a longitude and the same longitude plus 360 degrees at the same place.
+            for &shift in if wrap && !self.globe { &[0.0, -360.0, 360.0][..] } else { &[0.0][..] } {
             let Some(pb) = warp.pixel_bbox([view[0] - shift, view[1], view[2] - shift, view[3]]) else { continue };
             let n = l.levels.len();
             let lim = 1.0 / (self.scale * warp.px_size());
