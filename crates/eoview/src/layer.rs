@@ -239,6 +239,8 @@ pub struct MapLayer {
     /// its layers are ready).
     pub step: usize,
     pub shown: usize,
+    /// The first step and the last step with data, if the product gives the times of its data.
+    pub valid: Option<(usize, usize)>,
     /// Interval in steps between the selected step and the steps that the view loads ahead: 1, or the
     /// interval between the frames of a render.
     pub stride: usize,
@@ -279,6 +281,11 @@ impl MapLayer {
     /// A new layer with the first layer of a dataset. The composite is a default preset, or the first band.
     pub fn new(uid: u64, path: String, first: Arc<Layer>) -> MapLayer {
         let name = std::path::Path::new(&path).file_name().map_or(path.clone(), |n| n.to_string_lossy().into());
+        let steps = time_steps(&first.ds.product);
+        let valid = first.ds.product.valid.filter(|_| steps.len() > 1).map(|(a, b)| {
+            let at = |t: f64| steps.partition_point(|s| s.t < t);
+            (at(a).min(steps.len() - 1), at(b).saturating_sub(1).min(steps.len() - 1))
+        });
         let mut m = MapLayer {
             uid,
             order: usize::MAX,
@@ -286,9 +293,11 @@ impl MapLayer {
             name,
             chans: channels(&first.ds.product),
             cache: HashMap::new(),
-            steps: time_steps(&first.ds.product),
-            step: 0,
-            shown: 0,
+            steps,
+            // A cube opens at its first step with data.
+            step: valid.map_or(0, |v| v.0),
+            shown: valid.map_or(0, |v| v.0),
+            valid,
             stride: 1,
             blend: false,
             fill: true,

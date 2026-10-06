@@ -352,6 +352,9 @@ pub struct Product {
     /// Short format description for the user.
     pub desc: String,
     pub vars: Vec<Variable>,
+    /// The first time and the last time with data (see `time`), if the product gives them. A data cube
+    /// can have a time axis that is longer than its data (ERA5: from 1900 to 2050, with data from 1940).
+    pub valid: Option<(f64, f64)>,
 }
 
 #[cfg(test)]

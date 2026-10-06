@@ -272,8 +272,9 @@ impl App {
         // The main window does not draw this view, and no window opens for it (`reconcile`).
         self.floating.push(pane);
         let set = Settings { width: w, height: h, ..set };
+        // Kept frames: continue after the frames that are there, also without ffmpeg (the video comes later).
         let done = match &sink {
-            Sink::Images(dir, Some(_)) => frames_done(dir).min(frames(steps.len(), set.sub)),
+            Sink::Images(dir, _) if set.keep => frames_done(dir).min(frames(steps.len(), set.sub)),
             _ => 0,
         };
         self.job = Some(Job { pane, set, steps, done, stepped: false, target, ctx: egui::Context::default(), egui, sink, t0: Instant::now(), said: Instant::now(), preview: None, note });
@@ -316,6 +317,7 @@ impl App {
                 }
             }
             Sink::Images(dir, Some(_)) => text = format!("{text}\nThe frames are in {}: the next render continues after them.", dir.display()),
+            Sink::Images(dir, None) if job.set.keep && n < job.frames() => text = format!("{text}\nThe frames are in {}: the next render continues after them.", dir.display()),
             Sink::Images(_, None) => {}
         }
         if let Some(note) = job.note {
