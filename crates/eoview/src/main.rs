@@ -353,6 +353,27 @@ fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: boo
         ..Default::default()
     }))
     .expect("no GPU adapter");
+    // The views draw the data to 32-bit float targets. An adapter without this (for example OpenGL ES
+    // without the float buffer extension, as on some WSL systems) is not usable: use an other adapter of
+    // the system that can do it, a GPU before a software adapter.
+    let float = |a: &wgpu::Adapter| a.get_texture_format_features(wgpu::TextureFormat::R32Float).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
+    let adapter = if float(&adapter) {
+        adapter
+    } else {
+        let mut all: Vec<wgpu::Adapter> = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all())).into_iter().filter(|a| float(a) && a.is_surface_supported(&surface)).collect();
+        all.sort_by_key(|a| a.get_info().device_type == wgpu::DeviceType::Cpu);
+        let first = adapter.get_info();
+        match all.into_iter().next() {
+            Some(a) => {
+                eprintln!("GPU adapter {} ({:?}) cannot draw to float targets: the viewer uses {} ({:?})", first.name, first.backend, a.get_info().name, a.get_info().backend);
+                a
+            }
+            None => {
+                eprintln!("GPU adapter {} ({:?}) cannot draw to 32-bit float targets, and the system has no other adapter that can. Update the graphics driver, or set WGPU_BACKEND (vulkan, dx12, metal, gl).", first.name, first.backend);
+                std::process::exit(1);
+            }
+        }
+    };
     let info = adapter.get_info();
     let name = format!("{} ({:?})", info.name, info.backend);
     if bench {
