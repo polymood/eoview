@@ -74,6 +74,8 @@ pub enum Cmd {
     RenderStart,
     /// Smooth pixels in the view (linear when magnified), or squares.
     Smooth,
+    /// Map overlay of the view, on or off: 0 coasts, 1 country borders, 2 country names.
+    Overlay(u8),
     /// Preference: full resolution at all zoom levels, on or off.
     FullRes,
 }
@@ -147,6 +149,9 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         ("Copy view extent (west, south, east, north)", "Ctrl+Shift+C", Cmd::CopyExtent),
         ("3D globe: on or off", "G", Cmd::Globe),
         ("Smooth pixels: on or off", "", Cmd::Smooth),
+        ("Coasts: on or off", "", Cmd::Overlay(0)),
+        ("Country borders: on or off", "", Cmd::Overlay(1)),
+        ("Country names: on or off", "", Cmd::Overlay(2)),
         ("Preferences...", "Ctrl+,", Cmd::Prefs),
         ("Render video or frames...", "Ctrl+R", Cmd::Render),
         ("Render: start with the settings of the render window", "", Cmd::RenderStart),
@@ -1028,6 +1033,14 @@ impl App {
                         p.smooth ^= true;
                         false
                     }
+                    Cmd::Overlay(k) => {
+                        match k {
+                            0 => p.overlays.coasts ^= true,
+                            1 => p.overlays.borders ^= true,
+                            _ => p.overlays.names ^= true,
+                        }
+                        false
+                    }
                     _ => {
                         let Some(l) = p.layers.get_mut(sel) else { return };
                         match c {
@@ -1793,6 +1806,16 @@ impl App {
                 continue;
             };
             let mpp = self.meters_per_px(id);
+            // Map overlays of a view that is not in longitude and latitude: the lines in its CRS, and the
+            // positions of the names.
+            let pv = &self.panes[i];
+            let projected = pv.v.space.filter(|&e| e != 4326 && !pv.v.globe && pv.overlays.any());
+            let with_names = pv.overlays.names;
+            let outline = projected.map(|e| self.outline_points(id, e));
+            let names: Vec<Option<[f64; 2]>> = match projected.filter(|_| with_names) {
+                Some(e) => crate::outlines::data().labels.iter().map(|l| self.from_lonlat(e, l.0)).collect(),
+                None => vec![],
+            };
             let cross = match self.cursor {
                 Some((g, from, cam)) if g == self.panes[i].link && from != id => self.uncam(i, cam).map(|c| c.0),
                 _ => None,
@@ -1890,6 +1913,11 @@ impl App {
                 if p.layers[li].visible && p.layers[li].kind == Kind::Wind && p.layers[li].particles {
                     p.field_miss |= crate::wind::particles(p, li, &self.fields, &mut need, &painter, ppp, t);
                 }
+            }
+            if p.v.space.is_some() || p.v.globe {
+                let labels = &crate::outlines::data().labels;
+                let at = |ll: [f64; 2]| if names.is_empty() { Some(ll) } else { labels.iter().position(|l| l.0 == ll).and_then(|k| names[k]) };
+                crate::outlines::draw(p, &painter, ppp, outline.as_ref().map(|v| &v[..]), &at);
             }
             let keys: Vec<eo_cache::TileKey> = need.iter().map(|n| n.1).collect();
             if keys != p.field_sent {

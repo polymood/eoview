@@ -3,6 +3,7 @@ mod app;
 mod bench;
 mod icons;
 mod layer;
+mod outlines;
 mod render;
 mod splash;
 mod ui;
@@ -520,6 +521,9 @@ impl App {
                 return self.set_wake(el);
             }
             let set = self.cli_render.clone().unwrap();
+            if let (Some(o), Some(p)) = (self.cli_overlays, self.pane_mut(self.active)) {
+                p.overlays = o;
+            }
             let failed = self.error.clone().or_else(|| self.start_render(self.active, set).err());
             if let (Some(st), Some(j)) = (self.cli_stretch, &self.job) {
                 let pane = j.pane;
@@ -763,6 +767,7 @@ fn info(path: &str) {
 }
 
 const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--bbox WEST,SOUTH,EAST,NORTH] [--no-stamp] <project file or products>
+  --overlays LIST  map overlays on the frames: coasts, borders, names (for example coasts,borders,names)
   --sub N   frames for each time step. More than 1: the frames between two steps are a blend of the steps
   --stretch LOW,HIGH  limits of the color map, in the units of the data. Without it and without a project file: the automatic stretch of the first frame
   --bbox    the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The height of the area is the height of the frame at this width
@@ -771,13 +776,13 @@ const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--
 A project file (.eoview) has its render settings: the options change them.";
 
 /// Options of `eoview --render`, and the paths of the products.
-fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option<(f32, f32)>), String> {
+fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option<(f32, f32)>, Option<outlines::Overlays>), String> {
     let (mut set, mut files, mut it) = (None::<render::Settings>, vec![], args.iter());
     let mut opts: Vec<(&str, String)> = vec![];
     while let Some(a) = it.next() {
         match a.as_str() {
             "--no-stamp" => opts.push(("--no-stamp", String::new())),
-            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" | "--sub" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
+            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" | "--sub" | "--overlays" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
             _ => files.push(a.clone()),
         }
     }
@@ -793,6 +798,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
     }
     let mut set = set.unwrap_or_default();
     let mut stretch = None;
+    let mut overlays = None;
     let bad = |o: &str, v: &str| format!("{o}: bad value {v}");
     for (o, v) in opts {
         match o {
@@ -805,6 +811,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
                 (set.fit, set.view) = (false, Some(([(w + e) / 2.0, (s + n) / 2.0], e - w)));
             }
             "--fps" => set.fps = v.parse().ok().filter(|f| *f > 0.0).ok_or(bad(o, &v))?,
+            "--overlays" => overlays = Some(outlines::Overlays { coasts: v.contains("coasts"), borders: v.contains("borders"), names: v.contains("names") }),
             "--sub" => set.sub = v.parse().ok().filter(|n| *n >= 1).ok_or(bad(o, &v))?,
             "--size" => {
                 let (w, h) = v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).ok_or(bad(o, &v))?;
@@ -817,7 +824,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
             }
         }
     }
-    Ok((set, files, stretch))
+    Ok((set, files, stretch, overlays))
 }
 
 fn main() {
@@ -863,7 +870,8 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("--render") {
         match render_args(&args[2..]) {
-            Ok((set, files, stretch)) => {
+            Ok((set, files, stretch, overlays)) => {
+                app.cli_overlays = overlays;
                 // Products without a project file have no stretch from a person: the limits of the option, or
                 // the automatic stretch of the first frame (the first step of a data cube can have no data).
                 let project = files.len() == 1 && files[0].ends_with(&format!(".{}", app::WORKSPACE_EXT));
