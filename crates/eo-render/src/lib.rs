@@ -329,10 +329,12 @@ fn program(layers: &[LayerSpec], cmp: Compare) -> String {
                 let ndc = l.inputs.iter().map(|j| format!("nd(c{j})")).collect::<Vec<_>>().join(" || ");
                 format!(
                     "let x = f32({speed});
-            if (finite(x)) {{
+            if (finite(x) && (u.l[{k}].flags & 16u) == 0u) {{
                 col = over(col, vec4f(cmap(stretch(x, {k}u, 0u), {k}u, (u.l[{k}].flags & 8u) != 0u), u.l[{k}].opacity));
             }}
-            {}",
+            if ((u.l[{k}].flags & 32u) == 0u) {{
+            {}
+            }}",
                     arrows(k, &center(u), &center(v), if ndc.is_empty() { "false" } else { &ndc })
                 )
             }
@@ -349,7 +351,8 @@ pub struct LayerParams {
     pub lo: [f32; 4],
     pub hi: [f32; 4],
     pub gamma: [f32; 4],
-    /// Bit c: channel c in dB. Bit 3: invert the color map.
+    /// Bit c: channel c in dB. Bit 3: invert the color map. A wind layer: bit 4, no colors of the speed;
+    /// bit 5, no arrows.
     pub flags: u32,
     pub opacity: f32,
     /// A wind layer: the size in pixels of the cell of an arrow, and the phase of the pulse of the arrows.

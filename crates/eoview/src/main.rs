@@ -7,6 +7,7 @@ mod render;
 mod splash;
 mod ui;
 mod view;
+mod wind;
 
 use app::App;
 use eo_cache::{Engine, Event};
