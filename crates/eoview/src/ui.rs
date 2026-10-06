@@ -755,8 +755,26 @@ impl App {
             let (a, b) = (l.steps[l.shown].t, l.steps[(l.shown + l.stride.max(1)) % l.steps.len()].t);
             if l.blend && p.tmix > 0.0 && a.is_finite() && b.is_finite() { eo_core::time::text(a + (b - a) * p.tmix as f64) } else { l.step_label(l.shown) }
         });
+        // The legend of the frame: the color map of the top data layer, with its limits and its unit.
+        let legend = p.layers.iter().rev().find(|l| l.visible && l.kind != Kind::Rgb && !l.inputs.is_empty()).filter(|_| stamp).map(|l| {
+            let unit = l.inputs[0].var().units.clone();
+            let name = if l.kind == Kind::Wind { "Wind speed".to_string() } else { l.comp_name() };
+            (l.stops.clone(), l.invert, l.st[0].lo, l.st[0].hi, if unit.is_empty() { name } else { format!("{name} ({unit})") })
+        });
         self.sync();
         self.paint(&ctx, Some(id));
+        if let Some((stops, invert, lo, hi, name)) = legend {
+            let pt = ui.painter();
+            let bar = Rect::from_min_size(rect.right_bottom() + vec2(-16.0 - 12.0 - 260.0, -16.0 - 44.0), vec2(260.0, 12.0));
+            pt.rect_filled(bar.expand2(vec2(12.0, 0.0)).with_min_y(bar.top() - 24.0).with_max_y(bar.bottom() + 24.0), 4.0, Color32::from_black_alpha(170));
+            gradient(ui, bar, &stops, invert);
+            let text = |pos: Pos2, align: Align2, s: String, size: f32| {
+                pt.text(pos, align, s, FontId::proportional(size), Color32::WHITE);
+            };
+            text(bar.left_top() + vec2(0.0, -5.0), Align2::LEFT_BOTTOM, name, 13.0);
+            text(bar.left_bottom() + vec2(0.0, 4.0), Align2::LEFT_TOP, format!("{lo:.4}").trim_end_matches('0').trim_end_matches('.').to_string(), 12.0);
+            text(bar.right_bottom() + vec2(0.0, 4.0), Align2::RIGHT_TOP, format!("{hi:.4}").trim_end_matches('0').trim_end_matches('.').to_string(), 12.0);
+        }
         if let Some(text) = label {
             let pt = ui.painter();
             let g = pt.layout_no_wrap(text, FontId::monospace(18.0), Color32::WHITE);

@@ -36,7 +36,11 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
    grid in longitude, detached views, product lists, a hidden screenshot mode (`eoview --shot`). To do:
    - ffmpeg with the Windows executable (now: the path of the preferences, the directory of the
      executable, or the search path).
-   - Particles that follow the wind, and arrows that are correct in a map projection and on the globe.
+   - Done: particles that follow the wind (correct on the globe), a blend of two time steps for the
+     frames between them, the wind on an image (`--stack`), a legend on the frames.
+   - Arrows that are correct in a map projection and on the globe (the particles are).
+   - A camera path for a render (now the camera does not move).
+   - Coasts and borders.
    - A time range and an interval for the timeline of a layer (now: only for a render).
    - Linear pixels without the edges of the tiles.
    - Checks with the real ERA5 store (wind over France, one year). The viewer did not open it after the
