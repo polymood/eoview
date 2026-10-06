@@ -771,6 +771,7 @@ fn info(path: &str) {
 
 const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--bbox WEST,SOUTH,EAST,NORTH] [--no-stamp] <project file or products>
   --overlays LIST  map overlays on the frames: coasts, borders, names (for example coasts,borders,names)
+  --keep    keep the frames as PNG files next to the video. A render that stopped continues after its last frame
   --sub N   frames for each time step. More than 1: the frames between two steps are a blend of the steps
   --stretch LOW,HIGH  limits of the color map, in the units of the data. Without it and without a project file: the automatic stretch of the first frame
   --bbox    the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The height of the area is the height of the frame at this width
@@ -785,6 +786,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
     while let Some(a) = it.next() {
         match a.as_str() {
             "--no-stamp" => opts.push(("--no-stamp", String::new())),
+            "--keep" => opts.push(("--keep", String::new())),
             "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" | "--sub" | "--overlays" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
             _ => files.push(a.clone()),
         }
@@ -806,6 +808,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option
     for (o, v) in opts {
         match o {
             "--no-stamp" => set.stamp = false,
+            "--keep" => set.keep = true,
             "--out" => set.out = v,
             "--stretch" => stretch = Some(v.split_once(',').and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?))).ok_or(bad(o, &v))?),
             "--bbox" => {
@@ -885,4 +888,10 @@ fn main() {
         }
     }
     el.run_app(&mut app).unwrap();
+    // ponytail: no orderly stop of the engine. Its threads stop with the process: at the end of `main`,
+    // a thread with a timer panics when the runtime goes away before it. Stop the engine in order if
+    // the engine gets work that must complete at the exit.
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(0);
 }

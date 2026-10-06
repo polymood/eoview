@@ -370,6 +370,7 @@ eoview --render --out frames --steps ::4 project.eoview
 | `--stretch` | automatic | `LOW,HIGH`: the limits of the color map, in the units of the data. Without it, the first frame gets the automatic stretch (a project file keeps its stretch) |
 | `--overlays` | none | Map overlays on the frames: `coasts`, `borders`, `names` (for example `coasts,borders,names`) |
 | `--sub` | 1 | Frames for each time step. More than 1: the frames between two steps are a blend of the two steps, for a smooth change (data and particles) |
+| `--keep` | | Keep the frames as PNG files in a directory next to the video (`name.frames`), and make the video at the end. A render that stopped continues after its last frame: for a long render. The particles of a wind layer start again at this frame |
 | `--no-stamp` | | Do not write the time of the step and the legend of the color map on the frames |
 
 The products of a render can have `--stack` (the products are the layers of one view, the first at the
