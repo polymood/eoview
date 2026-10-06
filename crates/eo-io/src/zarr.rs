@@ -561,7 +561,10 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     vars.sort_by_key(|v| (!v.name.contains("reflectance"), v.name.clone()));
     let name = url.trim_end_matches('/').rsplit('/').next().unwrap_or(url).to_string();
     let desc = format!("Zarr v{ver}, {} variables", vars.len());
-    Ok(Dataset { product: Product { name, desc, vars }, sources })
+    // The times with data, from the attributes of the store (the ARCO ERA5 store has them).
+    let day = |k: &str| nodes.get("").and_then(|n| n.2.get(k)).and_then(Value::as_str).and_then(time::parse);
+    let valid = day("valid_time_start").zip(day("valid_time_stop")).map(|(a, b)| (a, b + 86_399.0));
+    Ok(Dataset { product: Product { name, desc, vars, valid }, sources })
 }
 
 #[cfg(test)]

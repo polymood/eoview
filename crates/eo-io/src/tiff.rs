@@ -202,7 +202,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
         georef: georef(&rd, first),
         levels,
     };
-    Ok(Product { name, desc, vars: vec![var] })
+    Ok(Product { name, desc, vars: vec![var], valid: None })
 }
 
 fn array(rd: &Rd, ifd: &Ifd, src: u32) -> Result<Array> {

@@ -20,6 +20,11 @@ impl App {
             // The camera of the scene: the area that the view shows now.
             let cam = self.pane(self.active).filter(|p| p.v.px.width() > 1.0 && p.v.scale > 0.0 && !p.layers.is_empty()).map(|p| (p.v.center, p.v.px.width() as f64 / p.v.scale));
             self.render_set.view = cam;
+            // A new animation of a cube with a time axis longer than its data: the steps with data.
+            let valid = self.pane(self.active).and_then(|p| p.timed()).and_then(|l| l.valid);
+            if let (Some((a, b)), 0, None) = (valid, self.render_set.first, self.render_set.last) {
+                (self.render_set.first, self.render_set.last) = (a, Some(b));
+            }
             self.animate = true;
         } else {
             if let (Some(id), Some((center, width))) = (self.scene_pane(), self.render_set.view) {
@@ -130,6 +135,11 @@ impl App {
             go = Some(s);
             self.anim_play = Some((next + 1.0 / self.render_set.fps.max(0.2) as f64).max(now));
         }
+        // The preview shows a step of the animation. A data cube opens at its first step, which can be
+        // years before the steps of the animation, and without data.
+        if go.is_none() && (step < first || step > last) && self.job.is_none() {
+            go = Some(first);
+        }
         if let Some(s) = go.filter(|&s| s != step) {
             self.set_time(scene, s);
         }
@@ -143,6 +153,9 @@ impl App {
         let (first, last) = (self.render_set.first.min(n - 1), self.render_set.last.unwrap_or(n - 1).min(n - 1));
         let (first_label, last_label) = (label(first), label(last));
         let (globe, mut overlays, empty) = self.pane(scene).map_or((false, Default::default(), true), |p| (p.v.globe, p.overlays, p.layers.is_empty()));
+        let mut smooth = self.pane(scene).is_some_and(|p| p.smooth);
+        // A date that the user typed for the first step (0) or the last step (1).
+        let mut typed: Option<(usize, f64)> = None;
         if self.ffmpeg_found.is_none() {
             self.ffmpeg_found = Some(crate::render::ffmpeg(&self.prefs.ffmpeg).is_some());
         }
@@ -153,7 +166,7 @@ impl App {
             ui.strong(name);
         };
         ui.add_enabled_ui(!busy, |ui| {
-            let set = &mut self.render_set;
+            let (set, dates) = (&mut self.render_set, &mut self.anim_dates);
             section(ui, "Preview");
             ui.horizontal(|ui| {
                 ui.label("Quality");
@@ -192,17 +205,31 @@ impl App {
             ui.checkbox(&mut overlays.borders, "Country borders");
             ui.checkbox(&mut overlays.names, "Country names");
             ui.checkbox(&mut set.stamp, "Time and legend");
+            ui.horizontal(|ui| {
+                ui.label("Legend");
+                ui.add(egui::TextEdit::singleline(&mut set.legend).hint_text("The name of the layer and its unit").desired_width(190.0));
+            });
+            ui.checkbox(&mut smooth, "Smooth pixels").on_hover_text("Linear between the pixels of the data, not squares: for data at a low resolution");
 
             section(ui, "Time");
             egui::Grid::new("time").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 // The interface counts the steps from 1.
+                // The step as a number, or as a date: the step nearest to the date that the user types.
+                let mut date = |ui: &mut egui::Ui, k: usize, label: &str| {
+                    let mut text = if dates[k].is_empty() { label.to_string() } else { dates[k].clone() };
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0)).on_hover_text("A date and a time, for example 2025-01-01 12:00:00. Enter: the step nearest to it");
+                    if r.lost_focus() {
+                        typed = eo_core::time::parse(text.trim()).map(|t| (k, t)).or(typed);
+                    }
+                    dates[k] = if r.has_focus() { text } else { String::new() };
+                };
                 ui.label("First step");
                 ui.horizontal(|ui| {
                     let mut v = first + 1;
                     if ui.add(egui::DragValue::new(&mut v).range(1..=n)).changed() {
                         set.first = v - 1;
                     }
-                    ui.weak(&first_label);
+                    date(ui, 0, &first_label);
                 });
                 ui.end_row();
                 ui.label("Last step");
@@ -211,7 +238,7 @@ impl App {
                     if ui.add(egui::DragValue::new(&mut v).range(1..=n)).changed() {
                         set.last = Some(v - 1).filter(|l| l + 1 < n);
                     }
-                    ui.weak(&last_label);
+                    date(ui, 1, &last_label);
                 });
                 ui.end_row();
                 ui.label("Interval");
@@ -282,7 +309,14 @@ impl App {
             }
         }
         if let Some(p) = self.pane_mut(scene) {
-            p.overlays = overlays;
+            (p.overlays, p.smooth) = (overlays, smooth);
+        }
+        if let Some((k, s)) = typed.and_then(|(k, t)| Some((k, self.step_at(scene, t)?))) {
+            if k == 0 {
+                self.render_set.first = s;
+            } else {
+                self.render_set.last = Some(s).filter(|l| l + 1 < n);
+            }
         }
         if fit {
             self.fit_scene(scene);

@@ -61,7 +61,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         let (w, h) = (levels[0].len_of("x"), levels[0].len_of("y"));
         let desc = format!("JPEG 2000 {:?}, {w} x {h}, {} level(s)", levels[0].dtype, levels.len());
         let var = Variable { name: name.clone(), group: String::new(), levels, bands, fill: None, scale: 1.0, offset: 0.0, units: String::new(), georef: Georef::None, times: Default::default() };
-        Product { name, desc, vars: vec![var] }
+        Product { name, desc, vars: vec![var], valid: None }
     } else if nitf::is_nitf(&head) {
         nitf::open(&src, 0)?
     } else if head.starts_with(&[0x89, b'H', b'D', b'F']) {
@@ -74,7 +74,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             return Err(format!("{url}: no dataset with 2 or more dimensions").into());
         }
         let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len());
-        Product { name, desc, vars }
+        Product { name, desc, vars, valid: None }
     } else {
         return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-4, HDF5, Zarr or SAFE expected)").into());
     };

@@ -452,6 +452,8 @@ pub struct App {
     pub preview: Option<crate::render::Preview>,
     /// The preview plays the time steps: the egui time of the next step.
     pub anim_play: Option<f64>,
+    /// Text of the date fields of the first step and of the last step, while the user types.
+    pub anim_dates: [String; 2],
     /// After the animate workspace: the camera of the scene view (view, center, width in display units).
     pub cam_restore: Option<(u32, [f64; 2], f64)>,
     /// True if `ffmpeg` runs. None: not examined yet (the preferences changed).
@@ -522,6 +524,7 @@ impl App {
             animate: false,
             preview: None,
             anim_play: None,
+            anim_dates: Default::default(),
             cam_restore: None,
             ffmpeg_found: None,
             cli_files: None,
@@ -552,6 +555,13 @@ impl App {
         }
         let tabs: Vec<u32> = self.dock.iter_all_tabs().map(|t| *t.1).collect();
         if tabs.contains(&self.active) { Some(self.active) } else { tabs.first().copied() }
+    }
+
+    /// The step of the timeline of view `id` that is nearest to time `t` (seconds from 1970).
+    pub fn step_at(&self, id: u32, t: f64) -> Option<usize> {
+        let steps = &self.pane(id)?.timed()?.steps;
+        let i = steps.partition_point(|s| s.t < t).min(steps.len() - 1);
+        Some(if i > 0 && (t - steps[i - 1].t).abs() < (steps[i].t - t).abs() { i - 1 } else { i })
     }
 
     /// View for a command: the view under the mouse, else the active view.
