@@ -35,6 +35,50 @@ pub struct Win {
     pub name: String,
     /// Benchmark: offscreen target (EOVIEW_BENCH_SIZE). The frames go there, and the frame waits for the GPU.
     offscreen: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// For the surfaces of the windows of the detached views.
+    instance: wgpu::Instance,
+}
+
+/// The window of a detached view. It has its own egui context. It uses the GPU device of the main window.
+pub struct Detached {
+    /// The view of this window.
+    pub pane: u32,
+    pub window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    egui: egui_wgpu::Renderer,
+    egui_state: egui_winit::State,
+    ctx: egui::Context,
+    /// The side panel shows in this window.
+    pub panel: bool,
+    /// Title of the window: the name of the view and its link group.
+    pub title: String,
+    /// Time of the next frame, if the interface asked for one.
+    wake: Option<Instant>,
+}
+
+/// Make the window of detached view `pane`. None: the system did not make the window or its surface.
+fn open_detached(el: &ActiveEventLoop, main: &Win, pane: u32) -> Option<Detached> {
+    let attrs = Window::default_attributes().with_title(APP).with_inner_size(winit::dpi::LogicalSize::new(1100, 800)).with_window_icon(app_icon(None));
+    let window = Arc::new(el.create_window(attrs).ok()?);
+    let surface = main.instance.create_surface(window.clone()).ok()?;
+    let device = &main.gpu.device;
+    let size = window.inner_size();
+    // Same format as the main window: the pipelines of the views draw to the two windows.
+    let mut config = main.config.clone();
+    (config.width, config.height) = (size.width.max(1), size.height.max(1));
+    surface.configure(device, &config);
+    let ctx = egui::Context::default();
+    let egui = egui_wgpu::Renderer::new(device, config.format, egui_wgpu::RendererOptions::default());
+    let egui_state = egui_winit::State::new(
+        ctx.clone(),
+        egui::ViewportId::ROOT,
+        &window,
+        Some(window.scale_factor() as f32),
+        None,
+        Some(device.limits().max_texture_dimension_2d as usize),
+    );
+    Some(Detached { pane, window, surface, config, egui, egui_state, ctx, panel: false, title: String::new(), wake: None })
 }
 
 impl Win {
@@ -160,7 +204,7 @@ impl App {
         if again {
             w.window.request_redraw();
         } else if let Some(t) = until {
-            el.set_control_flow(ControlFlow::WaitUntil(t));
+            self.wake = Some(t);
         }
     }
 }
@@ -244,7 +288,7 @@ fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: boo
         (t, v)
     });
     let gpu = Gpu::new(device, queue, config.format, budget);
-    Win { window, surface, config, egui, egui_state, gpu, name, offscreen }
+    Win { window, surface, config, egui, egui_state, gpu, name, offscreen, instance }
 }
 
 impl ApplicationHandler<Ev> for App {
@@ -267,16 +311,16 @@ impl ApplicationHandler<Ev> for App {
         }
         if self.splash.is_some() {
             self.boot_tick(el);
-        } else if let Some(w) = &self.win {
-            w.window.request_redraw();
+        } else {
+            self.redraw_all();
         }
     }
 
     fn user_event(&mut self, el: &ActiveEventLoop, _: Ev) {
         if self.splash.is_some() {
             self.boot_tick(el);
-        } else if let Some(w) = &self.win {
-            w.window.request_redraw();
+        } else {
+            self.redraw_all();
         }
     }
 
@@ -297,6 +341,34 @@ impl ApplicationHandler<Ev> for App {
             }
             return;
         }
+        if let Some(k) = self.wins.iter().position(|d| d.window.id() == id) {
+            let d = &mut self.wins[k];
+            let resp = d.egui_state.on_window_event(&d.window, &ev);
+            match ev {
+                // The close button of the window attaches the view to the main window.
+                WindowEvent::CloseRequested => {
+                    let pane = d.pane;
+                    self.detach(pane);
+                    self.reconcile(el);
+                }
+                WindowEvent::Resized(s) => {
+                    (d.config.width, d.config.height) = (s.width.max(1), s.height.max(1));
+                    if let Some(w) = &self.win {
+                        d.surface.configure(&w.gpu.device, &d.config);
+                    }
+                    d.window.request_redraw();
+                }
+                WindowEvent::RedrawRequested => {
+                    self.render_detached(k);
+                    self.reconcile(el);
+                    self.set_wake(el);
+                }
+                // The other windows follow: linked views, crosshair, side panel.
+                _ if resp.repaint => self.redraw_all(),
+                _ => {}
+            }
+            return;
+        }
         let Some(w) = &mut self.win else { return };
         let resp = w.egui_state.on_window_event(&w.window, &ev);
         match ev {
@@ -308,16 +380,121 @@ impl ApplicationHandler<Ev> for App {
                 w.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                el.set_control_flow(ControlFlow::Wait);
+                self.wake = None;
                 self.render(el);
+                self.reconcile(el);
+                self.set_wake(el);
             }
-            _ if resp.repaint => w.window.request_redraw(),
+            _ if resp.repaint => self.redraw_all(),
             _ => {}
         }
     }
 }
 
 impl App {
+    /// Ask for a frame of all windows.
+    fn redraw_all(&self) {
+        self.win.iter().for_each(|w| w.window.request_redraw());
+        self.wins.iter().for_each(|d| d.window.request_redraw());
+    }
+
+    /// Wait for events, or until the earliest frame that a window asked for.
+    fn set_wake(&self, el: &ActiveEventLoop) {
+        let t = self.wins.iter().filter_map(|d| d.wake).chain(self.wake).min();
+        el.set_control_flow(t.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+    }
+
+    /// Open the windows of the views that the user detached. Close the windows of the views that are
+    /// not detached now.
+    fn reconcile(&mut self, el: &ActiveEventLoop) {
+        let floating = self.floating.clone();
+        let n = self.wins.len();
+        self.wins.retain(|d| floating.contains(&d.pane));
+        let mut changed = self.wins.len() != n;
+        for id in floating {
+            if self.wins.iter().any(|d| d.pane == id) {
+                continue;
+            }
+            match self.win.as_ref().and_then(|w| open_detached(el, w, id)) {
+                Some(d) => self.wins.push(d),
+                // No window: the view goes back to the dock.
+                None => self.detach(id),
+            }
+            changed = true;
+        }
+        if changed {
+            self.redraw_all();
+        }
+    }
+
+    /// Draw one frame of the window of a detached view (`wins[k]`).
+    fn render_detached(&mut self, k: usize) {
+        let Some(main) = &self.win else { return };
+        let (device, queue) = (main.gpu.device.clone(), main.gpu.queue.clone());
+        // The main window can be minimized: this frame also takes the events of the engine.
+        if self.events() {
+            self.redraw_all();
+        }
+        let (raw, ctx, size) = {
+            let d = &mut self.wins[k];
+            (d.egui_state.take_egui_input(&d.window), d.ctx.clone(), [d.config.width, d.config.height])
+        };
+        let out = ctx.run_ui(raw, |ui| self.detached_ui(ui, k, size));
+        let d = &mut self.wins[k];
+        d.egui_state.handle_platform_output(&d.window, out.platform_output);
+        let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+        for (id, delta) in &out.textures_delta.set {
+            delta.iter().for_each(|x| d.egui.update_texture(&device, &queue, *id, x));
+        }
+        let frame = match d.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                d.surface.configure(&device, &d.config);
+                d.window.request_redraw();
+                return;
+            }
+            _ => return,
+        };
+        let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point: out.pixels_per_point };
+        let mut enc = device.create_command_encoder(&Default::default());
+        let cmds = d.egui.update_buffers(&device, &queue, &mut enc, &prims, &sd);
+        let view = frame.texture.create_view(&Default::default());
+        {
+            let mut pass = enc
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.06, b: 0.07, a: 1.0 }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            d.egui.render(&mut pass, &prims, &sd);
+        }
+        queue.submit(cmds.into_iter().chain([enc.finish()]));
+        d.window.pre_present_notify();
+        queue.present(frame);
+        for id in &out.textures_delta.free {
+            d.egui.free_texture(id);
+        }
+        let delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(std::time::Duration::MAX, |v| v.repaint_delay);
+        d.wake = None;
+        if delay.is_zero() {
+            d.window.request_redraw();
+        } else {
+            d.wake = Instant::now().checked_add(delay);
+        }
+    }
+
     /// Start the GPU, make the main window and open the products of the command line. This blocks the
     /// thread. With a splash window, the main window stays hidden (see `boot_tick`).
     fn boot(&mut self, el: &ActiveEventLoop) {

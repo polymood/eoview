@@ -62,6 +62,10 @@ pub enum Cmd {
     Quit,
     /// Globe view or 2D view.
     Globe,
+    /// Move the view to its own window, or back to the dock.
+    Detach,
+    /// Full screen mode of the window of the view: on or off.
+    Fullscreen,
 }
 
 #[derive(Default)]
@@ -102,6 +106,8 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         ("New view", "Ctrl+N", Cmd::NewView),
         ("Duplicate view", "Ctrl+D", Cmd::Duplicate),
         ("Close view", "Ctrl+W", Cmd::CloseView),
+        ("Detach view to a window, or attach it", "Ctrl+Shift+D", Cmd::Detach),
+        ("Full screen: on or off", "F11", Cmd::Fullscreen),
         ("Layout: 1 view", "Alt+1", Cmd::Layout(1)),
         ("Layout: 2 views", "Alt+2", Cmd::Layout(2)),
         ("Layout: 2 x 2 views", "Alt+3", Cmd::Layout(4)),
@@ -188,7 +194,7 @@ impl TabViewer for Tabs<'_> {
     }
 
     fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut u32, _: egui_dock::NodePath) {
-        view_menu(ui, *tab, &self.app.recent, &mut self.cmds);
+        view_menu(ui, *tab, false, &self.app.recent, &mut self.cmds);
     }
 
     fn on_close(&mut self, tab: &mut u32) -> OnCloseResponse {
@@ -264,7 +270,8 @@ fn check(ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>, id: u32, on: bool, name:
     }
 }
 
-fn view_menu(ui: &mut egui::Ui, id: u32, recent: &[String], cmds: &mut Vec<(Cmd, u32)>) {
+/// `out`: the view is detached (it has its own window).
+fn view_menu(ui: &mut egui::Ui, id: u32, out: bool, recent: &[String], cmds: &mut Vec<(Cmd, u32)>) {
     ui.menu_button("Open", |ui| open_menu(ui, false, id, recent, cmds));
     ui.menu_button("Add layer", |ui| open_menu(ui, true, id, recent, cmds));
     ui.separator();
@@ -292,6 +299,9 @@ fn view_menu(ui: &mut egui::Ui, id: u32, recent: &[String], cmds: &mut Vec<(Cmd,
     item(ui, "New view", "Ctrl+N", Cmd::NewView);
     item(ui, "Duplicate view", "Ctrl+D", Cmd::Duplicate);
     item(ui, "Close view", "Ctrl+W", Cmd::CloseView);
+    ui.separator();
+    item(ui, if out { "Attach to the main window" } else { "Detach to a window" }, "Ctrl+Shift+D", Cmd::Detach);
+    item(ui, "Full screen", "F11", Cmd::Fullscreen);
 }
 
 /// Input of one view: pan, zoom, swipe line, cursor. The drawing comes after the link sync (`paint`).
@@ -317,7 +327,8 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     if resp.contains_pointer() {
         app.hovered = Some(id);
     }
-    resp.context_menu(|ui| view_menu(ui, id, &app.recent, cmds));
+    let out = app.floating.contains(&id);
+    resp.context_menu(|ui| view_menu(ui, id, out, &app.recent, cmds));
     let p = app.pane_mut(id).unwrap();
     if p.layers.is_empty() {
         let c = rect.center();
@@ -620,8 +631,12 @@ impl App {
     /// The whole interface of one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        self.hovered = None;
-        self.panes.iter_mut().for_each(|p| p.painter = None);
+        // The detached views are not in this window: their windows set their state (`detached_ui`).
+        let floating = &self.floating;
+        if self.hovered.is_some_and(|h| !floating.contains(&h)) {
+            self.hovered = None;
+        }
+        self.panes.iter_mut().filter(|p| !floating.contains(&p.id)).for_each(|p| p.painter = None);
         let mut cmds: Vec<(Cmd, u32)> = vec![];
 
         egui::Panel::top("menu").show(ui, |ui| self.menus(ui, &mut cmds));
@@ -680,7 +695,18 @@ impl App {
                 p.moved = true;
             }
         }
-        // Crosshair: the cursor of the view under the mouse, in link group terms.
+        self.crosshair();
+        if let Some(dt) = self.play(ctx.input(|i| i.time)) {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(dt.max(0.0)));
+        }
+        self.sync();
+        self.paint(&ctx, None);
+        // The detached views follow the links, the time cursor and the crosshair of this frame.
+        self.wins.iter().for_each(|d| d.window.request_redraw());
+    }
+
+    /// Crosshair: the cursor of the view under the mouse, in link group terms.
+    fn crosshair(&mut self) {
         self.cursor = None;
         if let Some(i) = self.hovered.and_then(|h| self.panes.iter().position(|p| p.id == h))
             && self.panes[i].link != 0
@@ -689,11 +715,75 @@ impl App {
             let (g, id) = (self.panes[i].link, self.panes[i].id);
             self.cursor = self.cam(i, Some(c)).map(|cam| (g, id, cam));
         }
-        if let Some(dt) = self.play(ctx.input(|i| i.time)) {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(dt.max(0.0)));
+    }
+
+    /// The interface of the window of a detached view (`wins[k]`): the view on the full window. H shows or
+    /// hides the side panel in this window. The keys of this window are commands for its view.
+    pub fn detached_ui(&mut self, ui: &mut egui::Ui, k: usize, screen: [u32; 2]) {
+        let ctx = ui.ctx().clone();
+        let id = self.wins[k].pane;
+        if self.hovered == Some(id) {
+            self.hovered = None;
         }
+        let Some(p) = self.pane_mut(id) else { return };
+        p.painter = None;
+        let mut cmds: Vec<(Cmd, u32)> = vec![];
+        // Escape goes out of the full screen mode.
+        if self.wins[k].window.fullscreen().is_some() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.wins[k].window.set_fullscreen(None);
+        }
+        if self.wins[k].panel {
+            // The side panel shows the active view. In this window, it shows the view of the window.
+            let active = std::mem::replace(&mut self.active, id);
+            egui::Panel::left("side").resizable(true).default_size(330.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.side(ui, &mut cmds));
+            });
+            self.active = active;
+        }
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| pane_ui(self, ui, id, screen, &mut cmds));
+        let (dropped, shift) = ctx.input(|i| {
+            let d: Vec<String> = i.raw.dropped_files.iter().map(|f| f.path().to_string_lossy().into_owned()).collect();
+            (d, i.modifiers.shift)
+        });
+        if !dropped.is_empty() {
+            self.open_many(id, dropped, shift);
+        }
+        if !ctx.egui_wants_keyboard_input() {
+            let n = cmds.len();
+            self.keys(&ctx, &mut cmds);
+            cmds[n..].iter_mut().for_each(|c| c.1 = id);
+        }
+        let mut touched = !cmds.is_empty();
+        for (c, i) in cmds {
+            match c {
+                Cmd::Panel => self.wins[k].panel ^= true,
+                // The dialogs of these commands are in the main window.
+                Cmd::Palette | Cmd::Help | Cmd::Open(..) | Cmd::Save | Cmd::Load => {
+                    self.run(c, i);
+                    if let Some(w) = &self.win {
+                        w.window.focus_window();
+                    }
+                }
+                _ => self.run(c, i),
+            }
+        }
+        self.crosshair();
+        touched |= self.pane(id).is_some_and(|p| p.moved || p.v.fit);
         self.sync();
-        self.paint(&ctx);
+        self.paint(&ctx, Some(id));
+        // The main window shows the result: linked views, side panel, dialogs.
+        if touched && let Some(w) = &self.win {
+            w.window.request_redraw();
+        }
+        let title = self.pane(id).map_or(String::new(), |p| match p.link {
+            0 => p.title(),
+            g => format!("{}  [link {g}]", p.title()),
+        });
+        let d = &mut self.wins[k];
+        if d.title != title {
+            d.window.set_title(&format!("{title} - {}", crate::APP));
+            d.title = title;
+        }
     }
 
     fn keys(&mut self, ctx: &egui::Context, cmds: &mut Vec<(Cmd, u32)>) {
@@ -714,6 +804,8 @@ impl App {
             (none, Key::Equals, Cmd::Zoom(1.5)),
             (none, Key::Minus, Cmd::Zoom(1.0 / 1.5)),
             (cmd, Key::N, Cmd::NewView),
+            (sh, Key::D, Cmd::Detach),
+            (none, Key::F11, Cmd::Fullscreen),
             (cmd, Key::D, Cmd::Duplicate),
             (cmd, Key::W, Cmd::CloseView),
             (alt, Key::Num1, Cmd::Layout(1)),
@@ -763,6 +855,15 @@ impl App {
             Cmd::NewView => drop(self.split(id)),
             Cmd::Duplicate => self.duplicate(id),
             Cmd::CloseView => self.close(id),
+            Cmd::Detach => self.detach(id),
+            Cmd::Fullscreen => {
+                // The window of the view: its own window if the view is detached, else the main window.
+                let w = self.wins.iter().find(|d| d.pane == id).map(|d| &d.window).or(self.win.as_ref().map(|w| &w.window));
+                if let Some(w) = w {
+                    let on = w.fullscreen().is_none();
+                    w.set_fullscreen(on.then_some(winit::window::Fullscreen::Borderless(None)));
+                }
+            }
             Cmd::Layout(n) => {
                 self.active = id;
                 self.layout(n);
@@ -1006,6 +1107,8 @@ impl App {
                 entry(ui, cmds, id, "New view", "Ctrl+N", Cmd::NewView);
                 entry(ui, cmds, id, "Duplicate view", "Ctrl+D", Cmd::Duplicate);
                 entry(ui, cmds, id, "Close view", "Ctrl+W", Cmd::CloseView);
+                entry(ui, cmds, id, "Detach to a window", "Ctrl+Shift+D", Cmd::Detach);
+                entry(ui, cmds, id, "Full screen", "F11", Cmd::Fullscreen);
                 ui.menu_button("Layout", |ui| {
                     for (n, name, k) in [(1, "1 view", "Alt+1"), (2, "2 views", "Alt+2"), (4, "2 x 2 views", "Alt+3"), (9, "3 x 3 views", "Alt+4")] {
                         entry(ui, cmds, id, name, k, Cmd::Layout(n));
@@ -1528,17 +1631,22 @@ impl App {
 
     /// Draw the visible views: tile requests, composite, then the overlays (swipe line, crosshair,
     /// labels, scale bar). The views that are not visible cancel their tile requests.
-    fn paint(&mut self, ctx: &egui::Context) {
+    ///
+    /// `only`: the detached view to draw (the frame of its window). None: the views of the main window.
+    fn paint(&mut self, ctx: &egui::Context, only: Option<u32>) {
         let ppp = ctx.pixels_per_point();
         let t = ctx.input(|i| i.time);
         let mut missing = false;
         let mut next_flip: Option<f64> = None;
         for i in 0..self.panes.len() {
+            let id = self.panes[i].id;
+            if only.map_or(self.floating.contains(&id), |o| o != id) {
+                continue;
+            }
             let Some(painter) = self.panes[i].painter.clone() else {
                 self.panes[i].v.idle(&self.engine);
                 continue;
             };
-            let id = self.panes[i].id;
             let mpp = self.meters_per_px(id);
             let cross = match self.cursor {
                 Some((g, from, cam)) if g == self.panes[i].link && from != id => self.uncam(i, cam).map(|c| c.0),

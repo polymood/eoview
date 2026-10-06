@@ -147,6 +147,24 @@ click. Link modes:
 A new view joins the link group only if it shows data at the position of the group. Else it shows all its
 data and stays unlinked. The views of a group show the cursor of the view under the mouse as a crosshair.
 
+### Detached views
+
+A view can have its own window, for example on a second screen. **Detach to a window** (Ctrl+Shift+D) is in
+the right-click menu of a view or of a tab, and in the **View** menu. The window shows only the view and
+its timeline.
+
+- The view stays in its link group. The linked views pan and zoom together in all windows, with the
+  crosshair and the time cursor.
+- A click in the detached view makes it the active view. The side panel of the main window then shows its
+  layers and its settings.
+- The keys in the window are commands for its view. H shows or hides a side panel in the window.
+- F11 sets the full screen mode on or off, for the window of the view. Escape also stops the full screen
+  mode of a detached view.
+- To attach the view to the main window again, close its window or use Ctrl+Shift+D. Ctrl+W closes the view.
+
+The dialogs (open, URL, command palette, keys) show in the main window. A workspace file does not keep the
+windows: after a load, the detached views are tabs of the main window.
+
 ### 3D globe
 
 **Globe** in the toolbar (G) shows the active view on a 3D globe: the layers are on the WGS84 ellipsoid,

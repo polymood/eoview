@@ -393,6 +393,12 @@ pub struct App {
     pub help: bool,
     /// The splash window, until the products of the command line are open. Not in a benchmark.
     pub splash: Option<crate::splash::Splash>,
+    /// Detached views: they are not in the dock, each one has its own window (`wins`).
+    pub floating: Vec<u32>,
+    /// Windows of the detached views. `reconcile` opens and closes them after `floating` changes.
+    pub wins: Vec<crate::Detached>,
+    /// Time of the next frame of the main window, if the interface asked for one.
+    pub wake: Option<std::time::Instant>,
 }
 
 impl App {
@@ -431,6 +437,9 @@ impl App {
             quit: false,
             help: false,
             splash: None,
+            floating: vec![],
+            wins: vec![],
+            wake: None,
         }
     }
 
@@ -477,7 +486,31 @@ impl App {
         if let Some(t) = self.dock.find_tab(&id) {
             self.dock.remove_tab(t);
         }
+        self.floating.retain(|&f| f != id);
         self.closed(id);
+    }
+
+    /// Move view `id` from the dock to its own window, or from its window back to the dock. The window
+    /// opens or closes after the frame (`reconcile`).
+    pub fn detach(&mut self, id: u32) {
+        if self.pane(id).is_none() {
+            return;
+        }
+        if let Some(k) = self.floating.iter().position(|&f| f == id) {
+            self.floating.remove(k);
+            self.dock.push_to_focused_leaf(id);
+        } else {
+            if let Some(t) = self.dock.find_tab(&id) {
+                self.dock.remove_tab(t);
+            }
+            self.floating.push(id);
+            // The main window always has a view.
+            if self.dock.iter_all_tabs().next().is_none() {
+                let n = self.new_pane();
+                self.dock = DockState::new(vec![n]);
+            }
+        }
+        self.active = id;
     }
 
     /// The dock removed the tab of view `id`.
@@ -485,7 +518,8 @@ impl App {
         self.engine.want(id, vec![]);
         self.panes.retain(|p| p.id != id);
         if self.panes.is_empty() || self.dock.iter_all_tabs().next().is_none() {
-            self.panes.clear();
+            let floating = &self.floating;
+            self.panes.retain(|p| floating.contains(&p.id));
             let n = self.new_pane();
             self.dock = DockState::new(vec![n]);
         }
@@ -624,7 +658,7 @@ impl App {
         let n = cols * rows;
         let mut ids: Vec<u32> = vec![self.active];
         ids.extend(self.dock.iter_all_tabs().map(|t| *t.1).filter(|&i| i != self.active));
-        ids.extend(self.panes.iter().map(|p| p.id).filter(|i| !ids.contains(i)).collect::<Vec<_>>());
+        ids.extend(self.panes.iter().map(|p| p.id).filter(|i| !ids.contains(i) && !self.floating.contains(i)).collect::<Vec<_>>());
         while ids.len() < n {
             let id = self.new_pane();
             ids.push(id);
@@ -1087,7 +1121,10 @@ impl App {
                 globe: p.v.globe,
             })
             .collect();
-        let ws = Workspace { version: 1, dock: self.dock.clone(), active: self.active, link_px: self.link_px, panes };
+        // A workspace file does not keep the windows: the detached views are tabs of the dock.
+        let mut dock = self.dock.clone();
+        self.floating.iter().for_each(|&id| dock.push_to_focused_leaf(id));
+        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes };
         let mut v = serde_json::to_value(&ws).map_err(|e| e.to_string())?;
         finite(&mut v);
         let s = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
@@ -1105,6 +1142,7 @@ impl App {
         self.opens.clear();
         self.requests.clear();
         self.step_opens.clear();
+        self.floating.clear();
         self.dock = ws.dock;
         self.link_px = ws.link_px;
         self.error = None;
