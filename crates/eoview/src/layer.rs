@@ -214,6 +214,9 @@ pub struct MapLayer {
     /// its layers are ready).
     pub step: usize,
     pub shown: usize,
+    /// Interval in steps between the selected step and the steps that the view loads ahead: 1, or the
+    /// interval between the frames of a render.
+    pub stride: usize,
     pub kind: Kind,
     pub band: usize,
     pub rgb: [String; 3],
@@ -254,6 +257,7 @@ impl MapLayer {
             steps: time_steps(&first.ds.product),
             step: 0,
             shown: 0,
+            stride: 1,
             kind: Kind::Band,
             band: 0,
             rgb: Default::default(),
@@ -356,10 +360,15 @@ impl MapLayer {
     }
 
     /// Go to time step `s`. Until the layers of the step are ready, the layer shows the step before.
-    // ponytail: the layers of all visited steps stay in the cache (a sample of 64 K values each). Remove
-    // the far steps if a long data cube needs the memory.
+    /// A layer of each visited step stays in the cache (with a sample of 64 K values). A long data cube
+    /// has thousands of steps: with more than 64 layers, only the layers of the selected step, of the
+    /// step that shows and of the next steps stay.
     pub fn set_step(&mut self, s: usize) {
         self.step = s.min(self.steps.len().saturating_sub(1));
+        if self.cache.len() > 64 {
+            let (n, step, shown, st) = (self.steps.len().max(1), self.step, self.shown, self.stride.max(1));
+            self.cache.retain(|k, _| k.0 == step || k.0 == shown || (1..=crate::app::AHEAD).any(|a| (step + a * st) % n == k.0));
+        }
         self.ready();
     }
 

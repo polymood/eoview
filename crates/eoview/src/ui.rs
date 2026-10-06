@@ -715,6 +715,31 @@ impl App {
         self.wins.iter().for_each(|d| d.window.request_redraw());
     }
 
+    /// One frame of a render: view `id` on the full frame (`screen` pixels), without the controls, and the
+    /// time of its step at the bottom left if `stamp` is true.
+    pub fn export_ui(&mut self, ui: &mut egui::Ui, id: u32, screen: [u32; 2], stamp: bool) {
+        let ctx = ui.ctx().clone();
+        let rect = ctx.content_rect();
+        let ppp = ctx.pixels_per_point();
+        let Some(p) = self.pane_mut(id) else { return };
+        let vp = egui::epaint::ViewportInPixels::from_points(&rect, ppp, screen);
+        p.v.px = Rect::from_min_size(egui::pos2(vp.left_px as f32, vp.top_px as f32), vec2(vp.width_px as f32, vp.height_px as f32));
+        p.rect = rect;
+        p.painter = Some(ui.painter().clone());
+        p.v.cursor = None;
+        let label = p.timed().filter(|_| stamp).map(|l| l.step_label(l.shown));
+        self.sync();
+        self.paint(&ctx, Some(id));
+        if let Some(text) = label {
+            let pt = ui.painter();
+            let g = pt.layout_no_wrap(text, FontId::monospace(18.0), Color32::WHITE);
+            // Top left: the scale bar is at the bottom left.
+            let r = Rect::from_min_size(rect.left_top() + vec2(16.0, 16.0), g.size() + vec2(20.0, 12.0));
+            pt.rect_filled(r, 4.0, Color32::from_black_alpha(170));
+            pt.galley(r.min + vec2(10.0, 6.0), g, Color32::WHITE);
+        }
+    }
+
     /// Crosshair: the cursor of the view under the mouse, in link group terms.
     fn crosshair(&mut self) {
         self.cursor = None;

@@ -254,7 +254,7 @@ impl Pane {
         let mut ahead: Vec<Ahead> = vec![];
         for k in 1..=AHEAD {
             for l in self.layers.iter().filter(|l| l.visible && l.steps.len() > k) {
-                for x in l.inputs_at((l.step + k) % l.steps.len()).into_iter().flatten() {
+                for x in l.inputs_at((l.step + k * l.stride.max(1)) % l.steps.len()).into_iter().flatten() {
                     if !self.v.inputs.iter().any(|i| i.layer.id == x.id) && !ahead.iter().any(|a| a.input.layer.id == x.id) {
                         ahead.push(Ahead { miss: true, input: Input { warp: warps.get(&(x.id, space)).cloned(), layer: x } });
                     }
@@ -345,6 +345,9 @@ struct Workspace {
     active: u32,
     link_px: bool,
     panes: Vec<PaneSave>,
+    /// Settings of the render of the project.
+    #[serde(default)]
+    render: crate::render::Settings,
 }
 
 /// Preferences of the user (`eoview/prefs.json` in the configuration directory).
@@ -353,6 +356,9 @@ struct Workspace {
 pub struct Prefs {
     /// The views use the finest level of the data, not the level of the zoom.
     pub full_res: bool,
+    /// Path of the `ffmpeg` program for the renders. Empty: the directory of the executable, then the
+    /// search path of the system.
+    pub ffmpeg: String,
 }
 
 pub struct App {
@@ -404,6 +410,16 @@ pub struct App {
     pub prefs: Prefs,
     /// The preferences window is open.
     pub prefs_open: bool,
+    /// The render that runs, the settings of the next render, the result of the last render, and true if
+    /// the render window is open.
+    pub job: Option<crate::render::Job>,
+    pub render_set: crate::render::Settings,
+    pub render_msg: Option<String>,
+    pub render_open: bool,
+    /// `eoview --render`: the products, and the render to start when they are open. The application
+    /// stops at the end of the render.
+    pub cli_files: Option<Vec<String>>,
+    pub cli_render: Option<crate::render::Settings>,
     /// Detached views: they are not in the dock, each one has its own window (`wins`).
     pub floating: Vec<u32>,
     /// Windows of the detached views. `reconcile` opens and closes them after `floating` changes.
@@ -450,6 +466,12 @@ impl App {
             splash: None,
             prefs: Prefs::default(),
             prefs_open: false,
+            job: None,
+            render_set: Default::default(),
+            render_msg: None,
+            render_open: false,
+            cli_files: None,
+            cli_render: None,
             floating: vec![],
             wins: vec![],
             wake: None,
@@ -544,8 +566,22 @@ impl App {
     /// A copy of view `id` (same layers and settings) to its right, in the same link group.
     pub fn duplicate(&mut self, id: u32) {
         let n = self.split(id);
+        self.copy_to(id, n);
+    }
+
+    /// A copy of view `id` that is not in the dock (for a render). The caller puts it in `floating`.
+    pub fn copy_pane(&mut self, id: u32) -> u32 {
+        let (n, active) = (self.new_pane(), self.active);
+        self.copy_to(id, n);
+        self.active = active;
+        n
+    }
+
+    /// Copy the layers, the camera, the compare mode and the link group of view `id` to the new view `n`.
+    fn copy_to(&mut self, id: u32, n: u32) {
         let Some(src) = self.pane(id) else { return };
-        let (layers, space, center, scale, link) = (src.layers.clone(), src.v.space, src.v.center, src.v.scale, src.link.max(1));
+        let (layers, space, center, scale, link, globe) = (src.layers.clone(), src.v.space, src.v.center, src.v.scale, src.link.max(1), src.v.globe);
+        let cmp = (src.cmp, src.swipe, src.vertical, src.blend, src.flicker_hz, src.diff, src.dlo, src.dhi, src.dcmap, src.dinvert);
         if let Some(s) = self.pane_mut(id) {
             s.link = link;
         }
@@ -554,8 +590,17 @@ impl App {
         p.layers = layers;
         p.layers.iter_mut().zip(uids).for_each(|(l, u)| l.uid = u);
         p.sel = p.layers.len().saturating_sub(1);
-        (p.v.space, p.v.center, p.v.scale, p.link) = (space, center, scale, link);
+        (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe) = (space, center, scale, link, globe);
+        (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz, p.diff, p.dlo, p.dhi, p.dcmap, p.dinvert) = cmp;
         self.rebuild(n);
+    }
+
+    /// True if the last frame of view `id` shows all the data of its selected time step: the layers of the
+    /// step are ready, their tiles are on the GPU and the camera is set. A render writes only such frames.
+    pub fn frame_ready(&self, id: u32) -> bool {
+        let Some(p) = self.pane(id) else { return false };
+        let layers = p.layers.iter().filter(|l| l.visible);
+        !p.missing && !p.v.fit && !p.v.inputs.is_empty() && layers.clone().count() > 0 && layers.clone().all(|l| !l.inputs.is_empty() && l.err.is_none() && (l.steps.len() <= 1 || l.shown == l.step))
     }
 
     fn uid(&mut self) -> u64 {
@@ -748,7 +793,7 @@ impl App {
         let (uid, n) = (l.uid, l.steps.len().max(1));
         let (mut select, mut open) = (vec![], vec![]);
         for k in 0..=AHEAD.min(n - 1) {
-            let s = (l.step + k) % n;
+            let s = (l.step + k * l.stride.max(1)) % n;
             match l.base(s) {
                 Some(b) => {
                     for key in l.missing(s) {
@@ -1125,9 +1170,12 @@ impl App {
     }
 
     pub fn save_workspace(&self, path: &str) -> Result<(), String> {
+        // The temporary view of a render is not in the file.
+        let job = self.job.as_ref().map(|j| j.pane);
         let panes = self
             .panes
             .iter()
+            .filter(|p| Some(p.id) != job)
             .map(|p| PaneSave {
                 id: p.id,
                 space: p.v.space,
@@ -1150,8 +1198,8 @@ impl App {
             .collect();
         // A workspace file does not keep the windows: the detached views are tabs of the dock.
         let mut dock = self.dock.clone();
-        self.floating.iter().for_each(|&id| dock.push_to_focused_leaf(id));
-        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes };
+        self.floating.iter().filter(|&&id| Some(id) != job).for_each(|&id| dock.push_to_focused_leaf(id));
+        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes, render: self.render_set.clone() };
         let mut v = serde_json::to_value(&ws).map_err(|e| e.to_string())?;
         finite(&mut v);
         let s = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
@@ -1169,7 +1217,9 @@ impl App {
         self.opens.clear();
         self.requests.clear();
         self.step_opens.clear();
+        self.job = None;
         self.floating.clear();
+        self.render_set = ws.render;
         self.dock = ws.dock;
         self.link_px = ws.link_px;
         self.error = None;

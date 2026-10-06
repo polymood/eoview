@@ -273,6 +273,33 @@ The script gets the expected values from GDAL, h5py and zarr-python.
 
 Remote data: `EOVIEW_TEST_URL=<URL of a COG or a Zarr store> cargo test --release --test reference remote_tile -- --nocapture` opens the URL in two sessions with a disk cache in a temporary directory. It compares the coarsest tile of the two sessions and writes the times from the open to the tile.
 
+## Render
+
+A render makes a video file or PNG files from a view: one frame for each time step, at a set size. It is
+for data that is too large for the real time. A frame waits for all its data, then the render goes to the
+next step: only the data of some steps is in the memory.
+
+```
+eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--no-stamp] <project file or products>
+eoview --render --out wind.mp4 --size 1920x1080 --fps 24 --steps 0:1459:1 "cube.zarr#u10"
+eoview --render --out frames --steps ::4 project.eoview
+```
+
+| Option | Default | |
+|---|---|---|
+| `--out` | `eoview.mp4` | A video file (`mp4`, `mov`, `mkv`, `webm`, `gif`), or a directory for PNG files |
+| `--size` | `1920x1080` | Size of the frames in pixels. The sizes are even numbers |
+| `--fps` | 24 | Frames for each second of the video |
+| `--steps` | all steps | First step, last step and interval, from 0. Empty parts are the defaults: `100:` is from step 100, `::4` is one step of 4 |
+| `--no-stamp` | | Do not write the time of the step on the frames |
+
+`ffmpeg` writes the video file (H.264 for `mp4`, `mov` and `mkv`). The viewer looks for it at the path of
+the preferences (`ffmpeg` in `prefs.json`), then in the directory of the executable, then in the search
+path of the system. Without `ffmpeg`, the frames are PNG files in a directory next to the output.
+
+The settings of a render are in the project file (the workspace file, `.eoview`). The options of the
+command line change them.
+
 ## Stress tests
 
 Real data to find the limits of the viewer. No account is necessary. These products are not in the tests

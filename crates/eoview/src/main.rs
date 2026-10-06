@@ -3,6 +3,7 @@ mod app;
 mod bench;
 mod icons;
 mod layer;
+mod render;
 mod splash;
 mod ui;
 mod view;
@@ -57,6 +58,45 @@ pub struct Detached {
     wake: Option<Instant>,
 }
 
+/// Draw the output of an egui pass to `view` (`size` pixels): the textures, the buffers, one render pass
+/// that clears the target, and the submit.
+pub fn draw_egui(device: &wgpu::Device, queue: &wgpu::Queue, egui: &mut egui_wgpu::Renderer, view: &wgpu::TextureView, ctx: &egui::Context, mut out: egui::FullOutput, size: [u32; 2]) {
+    let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+    for (id, delta) in &out.textures_delta.set {
+        delta.iter().for_each(|x| egui.update_texture(device, queue, *id, x));
+    }
+    let free: Vec<egui::TextureId> = out.textures_delta.free.iter().copied().collect();
+    out.textures_delta.clear();
+    let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point: out.pixels_per_point };
+    let mut enc = device.create_command_encoder(&Default::default());
+    let cmds = egui.update_buffers(device, queue, &mut enc, &prims, &sd);
+    {
+        let mut pass = enc
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.06, b: 0.07, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+            .forget_lifetime();
+        egui.render(&mut pass, &prims, &sd);
+    }
+    queue.submit(cmds.into_iter().chain([enc.finish()]));
+    for id in &free {
+        egui.free_texture(id);
+    }
+}
+
 /// Make the window of detached view `pane`. None: the system did not make the window or its surface.
 fn open_detached(el: &ActiveEventLoop, main: &Win, pane: u32) -> Option<Detached> {
     let attrs = Window::default_attributes().with_title(APP).with_inner_size(winit::dpi::LogicalSize::new(1100, 800)).with_window_icon(app_icon(None));
@@ -82,6 +122,11 @@ fn open_detached(el: &ActiveEventLoop, main: &Win, pane: u32) -> Option<Detached
 }
 
 impl Win {
+    /// Format of the frames. The pipelines of the views draw to targets of this format.
+    pub fn gpu_format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
     /// Size of the frame in physical pixels.
     pub fn size(&self) -> [u32; 2] {
         match &self.offscreen {
@@ -110,9 +155,12 @@ impl App {
             raw
         };
         let ctx = self.ctx.clone();
-        let out = ctx.run_ui(raw, |ui| self.ui(ui));
+        let mut out = ctx.run_ui(raw, |ui| self.ui(ui));
         let t2 = Instant::now();
+        // A debug build of egui does not permit the drop of texture changes that are not applied.
+        let mut textures = std::mem::take(&mut out.textures_delta);
         if self.quit {
+            textures.clear();
             return el.exit();
         }
         ui::dialogs(self);
@@ -120,9 +168,11 @@ impl App {
         w.egui_state.handle_platform_output(&w.window, out.platform_output);
         let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
         let (device, queue) = (w.gpu.device.clone(), w.gpu.queue.clone());
-        for (id, d) in &out.textures_delta.set {
+        for (id, d) in &textures.set {
             d.iter().for_each(|d| w.egui.update_texture(&device, &queue, *id, d));
         }
+        let free: Vec<egui::TextureId> = textures.free.iter().copied().collect();
+        textures.clear();
         let t3 = Instant::now();
         let frame = match w.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -175,7 +225,7 @@ impl App {
             let t5 = Instant::now();
             eprintln!("slow frame {:.1} ms: events {:.1} ui {:.1} tessellate {:.1} acquire {:.1} submit {:.1}", ms(t0, t5), ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5));
         }
-        for id in &out.textures_delta.free {
+        for id in &free {
             w.egui.free_texture(id);
         }
 
@@ -297,7 +347,7 @@ impl ApplicationHandler<Ev> for App {
             return;
         }
         // The splash window shows first. The GPU starts after the first frame of the splash window.
-        if self.bench.is_none() {
+        if self.bench.is_none() && self.cli_render.is_none() {
             self.splash = splash::Splash::new(el);
         }
         if self.splash.is_none() {
@@ -312,6 +362,7 @@ impl ApplicationHandler<Ev> for App {
         if self.splash.is_some() {
             self.boot_tick(el);
         } else {
+            self.job_tick(el);
             self.redraw_all();
         }
     }
@@ -320,6 +371,7 @@ impl ApplicationHandler<Ev> for App {
         if self.splash.is_some() {
             self.boot_tick(el);
         } else {
+            self.job_tick(el);
             self.redraw_all();
         }
     }
@@ -392,6 +444,40 @@ impl ApplicationHandler<Ev> for App {
 }
 
 impl App {
+    /// Work of a render (see `render_tick`). `eoview --render`: start the render when the products are
+    /// open, and stop the application at its end. The main window is hidden and gets no frames: this
+    /// function also takes the events of the engine.
+    fn job_tick(&mut self, el: &ActiveEventLoop) {
+        if self.win.is_none() {
+            return;
+        }
+        if self.job.is_none() && self.cli_render.is_some() {
+            self.events();
+            if self.opens_pending() > 0 {
+                return self.set_wake(el);
+            }
+            let set = self.cli_render.clone().unwrap();
+            let failed = self.error.clone().or_else(|| self.start_render(self.active, set).err());
+            if let Some(e) = failed {
+                eprintln!("render: {e}");
+                self.cli_render = None;
+                return el.exit();
+            }
+        }
+        if self.render_tick() && self.cli_render.take().is_some() {
+            println!("{}", self.render_msg.clone().unwrap_or_default());
+            return el.exit();
+        }
+        if let Some(j) = &mut self.job {
+            // `eoview --render`: the progress, one line for each 2 seconds.
+            if self.cli_render.is_some() && j.said.elapsed().as_secs() >= 2 {
+                j.said = Instant::now();
+                eprintln!("frame {} of {}, {:.1} frames/s", j.done, j.frames(), j.done as f64 / j.t0.elapsed().as_secs_f64().max(1e-3));
+            }
+            self.set_wake(el);
+        }
+    }
+
     /// Ask for a frame of all windows.
     fn redraw_all(&self) {
         self.win.iter().for_each(|w| w.window.request_redraw());
@@ -400,14 +486,17 @@ impl App {
 
     /// Wait for events, or until the earliest frame that a window asked for.
     fn set_wake(&self, el: &ActiveEventLoop) {
-        let t = self.wins.iter().filter_map(|d| d.wake).chain(self.wake).min();
+        let job = (self.job.is_some() || self.cli_render.is_some()).then(|| Instant::now() + std::time::Duration::from_millis(15));
+        let t = self.wins.iter().filter_map(|d| d.wake).chain(self.wake).chain(job).min();
         el.set_control_flow(t.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
     /// Open the windows of the views that the user detached. Close the windows of the views that are
     /// not detached now.
     fn reconcile(&mut self, el: &ActiveEventLoop) {
-        let floating = self.floating.clone();
+        // The temporary view of a render is in `floating`, and has no window.
+        let job = self.job.as_ref().map(|j| j.pane);
+        let floating: Vec<u32> = self.floating.iter().copied().filter(|&f| Some(f) != job).collect();
         let n = self.wins.len();
         self.wins.retain(|d| floating.contains(&d.pane));
         let mut changed = self.wins.len() != n;
@@ -439,13 +528,10 @@ impl App {
             let d = &mut self.wins[k];
             (d.egui_state.take_egui_input(&d.window), d.ctx.clone(), [d.config.width, d.config.height])
         };
-        let out = ctx.run_ui(raw, |ui| self.detached_ui(ui, k, size));
+        let mut out = ctx.run_ui(raw, |ui| self.detached_ui(ui, k, size));
+        let delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(std::time::Duration::MAX, |v| v.repaint_delay);
         let d = &mut self.wins[k];
-        d.egui_state.handle_platform_output(&d.window, out.platform_output);
-        let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
-        for (id, delta) in &out.textures_delta.set {
-            delta.iter().for_each(|x| d.egui.update_texture(&device, &queue, *id, x));
-        }
+        d.egui_state.handle_platform_output(&d.window, std::mem::take(&mut out.platform_output));
         let frame = match d.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -455,38 +541,9 @@ impl App {
             }
             _ => return,
         };
-        let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point: out.pixels_per_point };
-        let mut enc = device.create_command_encoder(&Default::default());
-        let cmds = d.egui.update_buffers(&device, &queue, &mut enc, &prims, &sd);
-        let view = frame.texture.create_view(&Default::default());
-        {
-            let mut pass = enc
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: None,
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.06, b: 0.07, a: 1.0 }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                })
-                .forget_lifetime();
-            d.egui.render(&mut pass, &prims, &sd);
-        }
-        queue.submit(cmds.into_iter().chain([enc.finish()]));
+        draw_egui(&device, &queue, &mut d.egui, &frame.texture.create_view(&Default::default()), &ctx, out, size);
         d.window.pre_present_notify();
         queue.present(frame);
-        for id in &out.textures_delta.free {
-            d.egui.free_texture(id);
-        }
-        let delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(std::time::Duration::MAX, |v| v.repaint_delay);
         d.wake = None;
         if delay.is_zero() {
             d.window.request_redraw();
@@ -498,10 +555,10 @@ impl App {
     /// Start the GPU, make the main window and open the products of the command line. This blocks the
     /// thread. With a splash window, the main window stays hidden (see `boot_tick`).
     fn boot(&mut self, el: &ActiveEventLoop) {
-        self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some(), self.splash.is_none()));
+        self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some(), self.splash.is_none() && self.cli_render.is_none()));
         if self.bench.is_none() {
             self.load_recent();
-            let mut files: Vec<String> = std::env::args().skip(1).collect();
+            let mut files: Vec<String> = self.cli_files.take().unwrap_or_else(|| std::env::args().skip(1).collect());
             // --globe: the first view is a globe view.
             if let Some(i) = files.iter().position(|f| f == "--globe") {
                 files.remove(i);
@@ -513,6 +570,9 @@ impl App {
             } else if !files.is_empty() {
                 self.open_many(self.active, files, false);
             }
+        }
+        if self.cli_render.is_some() {
+            self.set_wake(el);
         }
         let opens = self.opens_pending();
         if let Some(s) = &mut self.splash {
@@ -620,6 +680,53 @@ fn info(path: &str) {
     }
 }
 
+const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--no-stamp] <project file or products>
+  --out     a video file (mp4, mov, mkv, webm, gif: ffmpeg writes it), or a directory for PNG files
+  --steps   time steps of the frames, from 0. Empty parts are the defaults: `100:` from step 100, `::4` one step of 4
+A project file (.eoview) has its render settings: the options change them.";
+
+/// Options of `eoview --render`, and the paths of the products.
+fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>), String> {
+    let (mut set, mut files, mut it) = (None::<render::Settings>, vec![], args.iter());
+    let mut opts: Vec<(&str, String)> = vec![];
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--no-stamp" => opts.push(("--no-stamp", String::new())),
+            "--out" | "--size" | "--fps" | "--steps" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
+            _ => files.push(a.clone()),
+        }
+    }
+    if files.is_empty() {
+        return Err("no product".into());
+    }
+    // The settings of a project file are the defaults.
+    if let [f] = &files[..]
+        && f.ends_with(&format!(".{}", app::WORKSPACE_EXT))
+    {
+        let v: Option<serde_json::Value> = std::fs::read_to_string(f).ok().and_then(|s| serde_json::from_str(&s).ok());
+        set = v.and_then(|v| serde_json::from_value(v.get("render")?.clone()).ok());
+    }
+    let mut set = set.unwrap_or_default();
+    let bad = |o: &str, v: &str| format!("{o}: bad value {v}");
+    for (o, v) in opts {
+        match o {
+            "--no-stamp" => set.stamp = false,
+            "--out" => set.out = v,
+            "--fps" => set.fps = v.parse().ok().filter(|f| *f > 0.0).ok_or(bad(o, &v))?,
+            "--size" => {
+                let (w, h) = v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).ok_or(bad(o, &v))?;
+                (set.width, set.height) = (w, h);
+            }
+            _ => {
+                let p: Vec<&str> = v.split(':').collect();
+                let num = |i: usize| p.get(i).filter(|s| !s.is_empty()).map(|s| s.parse::<usize>().map_err(|_| bad(o, &v))).transpose();
+                (set.first, set.last, set.stride) = (num(0)?.unwrap_or(0), num(1)?, num(2)?.unwrap_or(1).max(1));
+            }
+        }
+    }
+    Ok((set, files))
+}
+
 fn main() {
     let t0 = Instant::now();
     if let [_, flag, path] = &std::env::args().collect::<Vec<_>>()[..]
@@ -653,5 +760,11 @@ fn main() {
         disk_cache(&engine);
     }
     let mut app = App::new(engine, events, env_mb("EOVIEW_GPU_MB").unwrap_or(1 << 30), bench);
+    if args.get(1).map(String::as_str) == Some("--render") {
+        match render_args(&args[2..]) {
+            Ok((set, files)) => (app.cli_render, app.cli_files) = (Some(set), Some(files)),
+            Err(e) => return eprintln!("{e}\n{RENDER_USAGE}"),
+        }
+    }
     el.run_app(&mut app).unwrap();
 }
