@@ -142,6 +142,8 @@ pub struct Pane {
     /// Particles of the wind layers, by the uid of the layer. The tiles that they asked the engine for.
     /// True if a tile was missing in the last frame.
     pub swarms: HashMap<u64, crate::wind::Swarm>,
+    /// Blend of the layers that blend two time steps: 0 is the selected step, 1 is the next step.
+    pub tmix: f32,
     pub field_sent: Vec<eo_cache::TileKey>,
     pub field_miss: bool,
     /// Playback of the time steps: on or off, steps for each second, time of the next step (egui time).
@@ -181,6 +183,7 @@ impl Pane {
             err: None,
             flat_space: None,
             swarms: HashMap::new(),
+            tmix: 0.0,
             field_sent: vec![],
             field_miss: false,
             play: false,
@@ -238,23 +241,24 @@ impl Pane {
             if !l.visible || l.inputs.is_empty() {
                 continue;
             }
-            let new = l.inputs.iter().filter(|x| !inputs.iter().any(|y| y.id == x.id)).map(|x| x.id).collect::<HashSet<_>>().len();
+            // A layer that blends two time steps also has the inputs of the next step.
+            let next = l.next_inputs();
+            let all = l.inputs.iter().chain(next.iter().flatten());
+            let new = all.filter(|x| !inputs.iter().any(|y| y.id == x.id)).map(|x| x.id).collect::<HashSet<_>>().len();
             if self.specs.len() == 4 || inputs.len() + new > eo_render::MAX_INPUTS {
                 self.err = Some(format!("The view shows the {} lowest layers only", self.specs.len()));
                 break;
             }
-            let idx: Vec<usize> = l
-                .inputs
-                .iter()
-                .map(|x| match inputs.iter().position(|y| y.id == x.id) {
-                    Some(k) => k,
-                    None => {
-                        inputs.push(x.clone());
-                        inputs.len() - 1
-                    }
-                })
-                .collect();
-            if let Some(s) = l.spec(&idx) {
+            let mut slot = |x: &Arc<Layer>| match inputs.iter().position(|y| y.id == x.id) {
+                Some(k) => k,
+                None => {
+                    inputs.push(x.clone());
+                    inputs.len() - 1
+                }
+            };
+            let idx: Vec<usize> = l.inputs.iter().map(&mut slot).collect();
+            let idx2: Option<Vec<usize>> = next.map(|n| n.iter().map(&mut slot).collect());
+            if let Some(s) = l.spec(&idx, idx2.as_deref()) {
                 self.specs.push(s);
                 self.spec_layer.push(i);
             }
@@ -651,6 +655,9 @@ impl App {
             }
             if l.inputs.is_empty() || (l.steps.len() > 1 && l.shown != l.step) {
                 return Some(format!("the data of step {}", l.step + 1));
+            }
+            if l.blend && l.steps.len() > 1 && l.next_inputs().is_none() {
+                return Some("the data of the next step".into());
             }
         }
         if p.v.inputs.is_empty() || p.v.inputs.iter().any(|i| i.warp.is_none()) {

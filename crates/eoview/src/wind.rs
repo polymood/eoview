@@ -131,6 +131,15 @@ pub fn particles(p: &mut Pane, li: usize, fields: &Fields, need: &mut Vec<(Arc<L
         let level = p.v.levels.get(k).copied().unwrap_or(x.levels.len() - 1).min(x.levels.len() - 1);
         srcs.push(Src { layer: &p.v.inputs[k].layer, warp, level, wrap: p.v.wraps.get(k).copied().unwrap_or(false) });
     }
+    // The inputs of the next step, for a blend of the two steps.
+    let tmix = p.tmix as f64;
+    let mut srcs2 = vec![];
+    for x in l.next_inputs().filter(|_| tmix > 0.0).iter().flatten() {
+        let Some(k) = p.v.inputs.iter().position(|i| i.layer.id == x.id) else { return true };
+        let Some((warp, _)) = &p.v.inputs[k].warp else { return true };
+        let level = p.v.levels.get(k).copied().unwrap_or(x.levels.len() - 1).min(x.levels.len() - 1);
+        srcs2.push(Src { layer: &p.v.inputs[k].layer, warp, level, wrap: p.v.wraps.get(k).copied().unwrap_or(false) });
+    }
     let (tu, tv) = (&l.trees[1], &l.trees[2]);
     // The components at a display position. None: no data there.
     let missing = std::cell::Cell::new(false);
@@ -144,8 +153,18 @@ pub fn particles(p: &mut Pane, li: usize, fields: &Fields, need: &mut Vec<(Arc<L
                 _ => s.locate(x, y),
             };
             at = Some((s.warp, here));
+            // The same channel at the next step, on the same grid.
+            let other = srcs2.get(vals.len()).map(|s2| s2.value(fields, need, here));
             match s.value(fields, need, here) {
-                Value::Is(v) => vals.push(v),
+                Value::Is(v) => match other {
+                    Some(Value::Is(v2)) => vals.push(v + (v2 - v) * tmix),
+                    Some(Value::Missing) => {
+                        missing.set(true);
+                        return None;
+                    }
+                    Some(Value::NoData) => return None,
+                    None => vals.push(v),
+                },
                 Value::NoData => return None,
                 Value::Missing => {
                     missing.set(true);

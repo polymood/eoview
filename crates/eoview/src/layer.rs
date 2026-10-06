@@ -242,6 +242,9 @@ pub struct MapLayer {
     /// Interval in steps between the selected step and the steps that the view loads ahead: 1, or the
     /// interval between the frames of a render.
     pub stride: usize,
+    /// The view shows a blend of the selected step and of the next step (`Pane::tmix`): the frames
+    /// between two steps of a render.
+    pub blend: bool,
     /// Wind mode: show the speed with the color map, the arrows, the particles.
     pub fill: bool,
     pub arrows: bool,
@@ -287,6 +290,7 @@ impl MapLayer {
             step: 0,
             shown: 0,
             stride: 1,
+            blend: false,
             fill: true,
             arrows: false,
             particles: true,
@@ -389,6 +393,15 @@ impl MapLayer {
     /// Layers of the used channels for step `s`, if all are ready.
     pub fn inputs_at(&self, s: usize) -> Option<Vec<Arc<Layer>>> {
         self.used.iter().map(|&c| self.cache.get(&(s, self.chans[c].var, self.chans[c].choice)).cloned()).collect()
+    }
+
+    /// Layers of the used channels for the step after the step that shows (at the interval `stride`), if
+    /// the layer blends two steps and all are ready.
+    pub fn next_inputs(&self) -> Option<Vec<Arc<Layer>>> {
+        if !self.blend || self.steps.len() < 2 {
+            return None;
+        }
+        self.inputs_at((self.shown + self.stride.max(1)) % self.steps.len())
     }
 
     /// Go to time step `s`. Until the layers of the step are ready, the layer shows the step before.
@@ -587,15 +600,20 @@ impl MapLayer {
     }
 
     /// Layer spec for the composite. `inputs` are the view input indices of the inputs of this layer.
-    pub fn spec(&self, inputs: &[usize]) -> Option<LayerSpec> {
-        let map = |j: usize| inputs[j];
-        let w: Vec<String> = self.trees.iter().map(|t| t.wgsl_map(&map)).collect();
+    /// `inputs`: the view input of each used channel. `next`: the view inputs of the same channels at the
+    /// next time step; the value of a channel is then the blend of the two steps.
+    pub fn spec(&self, inputs: &[usize], next: Option<&[usize]>) -> Option<LayerSpec> {
+        let var = |j: usize| match next {
+            Some(n) => format!("mix(v{}, v{}, u.tmix)", inputs[j], n[j]),
+            None => format!("v{}", inputs[j]),
+        };
+        let w: Vec<String> = self.trees.iter().map(|t| t.wgsl_with(&var)).collect();
         let mode = match self.kind {
             Kind::Wind => Mode::Wind { speed: w.first()?.clone(), u: w.get(1)?.clone(), v: w.get(2)?.clone() },
             Kind::Rgb => Mode::Rgb([w.first()?.clone(), w.get(1)?.clone(), w.get(2)?.clone()]),
             _ => Mode::Gray(w.first()?.clone()),
         };
-        Some(LayerSpec { mode, inputs: inputs.to_vec() })
+        Some(LayerSpec { mode, inputs: inputs.iter().chain(next.into_iter().flatten()).copied().collect() })
     }
 
     pub fn params(&self) -> LayerParams {
