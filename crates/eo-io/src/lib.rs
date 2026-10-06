@@ -42,7 +42,12 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             return safe::open(dir, rt);
         }
     }
-    let src = Source::open(url, rt)?;
+    let src = match Source::open(url, rt) {
+        Ok(s) => s,
+        // A remote Zarr store without ".zarr" in its name (for example `zarr-v1`): the URL is not an object.
+        Err(_) if source::is_remote(url) && zarr::is_zarr(url.trim_end_matches('/'), rt) => return zarr::open(url.trim_end_matches('/'), rt),
+        Err(e) => return Err(e),
+    };
     // Sparse reads until the engine has the value sample.
     src.sparse(true);
     let head = src.read(0..16.min(src.len()?))?;

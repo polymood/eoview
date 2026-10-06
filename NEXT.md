@@ -18,7 +18,7 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
 2. **Real data with time.** Sentinel-2 COG series from a STAC search, ESA CCI and other data cubes (Zarr,
    NetCDF) from public buckets. A STAC search dialog (catalog, collection, area of the view, dates).
 3. **Interface layout.** Done: a menu bar (File, Edit, View, Layer, Compare, Time, Help) and a toolbar
-   with drawn icons. To do: a preferences dialog (budgets, cache directory), undo for display settings.
+   with drawn icons. Done: a preferences window (full resolution at all zoom levels). To do: more preferences (budgets, cache directory), undo for display settings.
 4. **3D globe.** Done: a view can be a globe (toolbar, G, `--globe`). The layer shader projects the
    tiles on the WGS84 ellipsoid from their longitude and latitude, the far side is not drawn, the view has
    meridians and parallels, and the globe uses the same camera as the 2D view (so links, layers, compare
