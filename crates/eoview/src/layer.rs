@@ -28,6 +28,31 @@ pub enum Kind {
     Band,
     Rgb,
     Expr,
+    /// A vector field (wind, current): `rgb[0]` and `rgb[1]` are the expressions of the components to
+    /// the east and to the north. The view shows the speed with the color map, and arrows.
+    Wind,
+}
+
+/// Color map of a new wind layer (Viridis): the white arrows show on all its colors.
+pub const WIND_CMAP: usize = 1;
+
+/// The components to the east and to the north of a vector field in the names of a product: the wind at
+/// 10 m of a weather model, else the first pair that it knows. None: the product has no such pair.
+pub fn wind_pair(names: &[String]) -> Option<[String; 2]> {
+    const PAIRS: &[(&str, &str)] = &[
+        ("u10", "v10"),
+        ("b10m_u_component_of_wind", "b10m_v_component_of_wind"),
+        ("u100", "v100"),
+        ("b100m_u_component_of_wind", "b100m_v_component_of_wind"),
+        ("u_component_of_wind", "v_component_of_wind"),
+        ("eastward_wind", "northward_wind"),
+        ("uwnd", "vwnd"),
+        ("ugrd", "vgrd"),
+        ("uo", "vo"),
+        ("u", "v"),
+    ];
+    let find = |n: &str| names.iter().find(|x| x.eq_ignore_ascii_case(n)).cloned();
+    PAIRS.iter().find_map(|(u, v)| Some([find(u)?, find(v)?]))
 }
 
 /// Presets: name, kind, expressions, color map, dB for each channel.
@@ -439,6 +464,8 @@ impl MapLayer {
             Kind::Band => vec![names.get(self.band).cloned().unwrap_or_default()],
             Kind::Rgb => self.rgb.to_vec(),
             Kind::Expr => vec![self.expr.clone()],
+            // The speed is the value of the layer (stretch, histogram, inspector). Then the two components.
+            Kind::Wind => vec![format!("sqrt(({})^2 + ({})^2)", self.rgb[0], self.rgb[1]), self.rgb[0].clone(), self.rgb[1].clone()],
         };
         let e: Vec<&str> = exprs.iter().map(String::as_str).collect();
         match bandmath::parse(&e, &names) {
@@ -556,7 +583,11 @@ impl MapLayer {
     pub fn spec(&self, inputs: &[usize]) -> Option<LayerSpec> {
         let map = |j: usize| inputs[j];
         let w: Vec<String> = self.trees.iter().map(|t| t.wgsl_map(&map)).collect();
-        let mode = if self.gray() { Mode::Gray(w.first()?.clone()) } else { Mode::Rgb([w.first()?.clone(), w.get(1)?.clone(), w.get(2)?.clone()]) };
+        let mode = match self.kind {
+            Kind::Wind => Mode::Wind { speed: w.first()?.clone(), u: w.get(1)?.clone(), v: w.get(2)?.clone() },
+            Kind::Rgb => Mode::Rgb([w.first()?.clone(), w.get(1)?.clone(), w.get(2)?.clone()]),
+            _ => Mode::Gray(w.first()?.clone()),
+        };
         Some(LayerSpec { mode, inputs: inputs.to_vec() })
     }
 
@@ -603,7 +634,7 @@ impl MapLayer {
                 && match self.kind {
                     Kind::Rgb => p.2 == exprs,
                     Kind::Expr => p.2[0] == self.expr,
-                    Kind::Band => false,
+                    Kind::Band | Kind::Wind => false,
                 }
         });
         match (preset, self.kind) {
@@ -611,6 +642,7 @@ impl MapLayer {
             (None, Kind::Band) => self.chans.get(self.band).map_or(String::new(), |c| c.id.clone()),
             (None, Kind::Rgb) => self.rgb.join(" "),
             (None, Kind::Expr) => self.expr.clone(),
+            (None, Kind::Wind) => format!("Wind {} {}", self.rgb[0], self.rgb[1]),
         }
     }
 

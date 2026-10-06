@@ -520,6 +520,15 @@ impl App {
             }
             let set = self.cli_render.clone().unwrap();
             let failed = self.error.clone().or_else(|| self.start_render(self.active, set).err());
+            if let (Some(st), Some(j)) = (self.cli_stretch, &self.job) {
+                let pane = j.pane;
+                for l in self.pane_mut(pane).into_iter().flat_map(|p| p.layers.iter_mut()) {
+                    match st {
+                        Some((lo, hi)) => l.st.iter_mut().for_each(|s| (s.lo, s.hi, l.auto_pending) = (lo, hi, false)),
+                        None => l.auto_pending = true,
+                    }
+                }
+            }
             if let Some(e) = failed {
                 eprintln!("render: {e}");
                 self.cli_render = None;
@@ -534,7 +543,9 @@ impl App {
             // `eoview --render`: the progress, one line for each 2 seconds.
             if self.cli_render.is_some() && j.said.elapsed().as_secs() >= 2 {
                 j.said = Instant::now();
-                eprintln!("frame {} of {}, {:.1} frames/s", j.done, j.frames(), j.done as f64 / j.t0.elapsed().as_secs_f64().max(1e-3));
+                let (pane, done, frames, rate) = (j.pane, j.done, j.frames(), j.done as f64 / j.t0.elapsed().as_secs_f64().max(1e-3));
+                let wait = self.frame_wait(pane).map_or(String::new(), |w| format!(", waits for {w}"));
+                eprintln!("frame {done} of {frames}, {rate:.1} frames/s{wait}");
             }
             self.set_wake(el);
         }
@@ -742,19 +753,21 @@ fn info(path: &str) {
     }
 }
 
-const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--no-stamp] <project file or products>
+const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--size WIDTHxHEIGHT] [--fps N] [--steps FIRST:LAST:INTERVAL] [--bbox WEST,SOUTH,EAST,NORTH] [--no-stamp] <project file or products>
+  --stretch LOW,HIGH  limits of the color map, in the units of the data. Without it and without a project file: the automatic stretch of the first frame
+  --bbox    the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The height of the area is the height of the frame at this width
   --out     a video file (mp4, mov, mkv, webm, gif: ffmpeg writes it), or a directory for PNG files
   --steps   time steps of the frames, from 0. Empty parts are the defaults: `100:` from step 100, `::4` one step of 4
 A project file (.eoview) has its render settings: the options change them.";
 
 /// Options of `eoview --render`, and the paths of the products.
-fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>), String> {
+fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>, Option<(f32, f32)>), String> {
     let (mut set, mut files, mut it) = (None::<render::Settings>, vec![], args.iter());
     let mut opts: Vec<(&str, String)> = vec![];
     while let Some(a) = it.next() {
         match a.as_str() {
             "--no-stamp" => opts.push(("--no-stamp", String::new())),
-            "--out" | "--size" | "--fps" | "--steps" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
+            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
             _ => files.push(a.clone()),
         }
     }
@@ -769,11 +782,18 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>), Strin
         set = v.and_then(|v| serde_json::from_value(v.get("render")?.clone()).ok());
     }
     let mut set = set.unwrap_or_default();
+    let mut stretch = None;
     let bad = |o: &str, v: &str| format!("{o}: bad value {v}");
     for (o, v) in opts {
         match o {
             "--no-stamp" => set.stamp = false,
             "--out" => set.out = v,
+            "--stretch" => stretch = Some(v.split_once(',').and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?))).ok_or(bad(o, &v))?),
+            "--bbox" => {
+                let b: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                let [w, s, e, n] = b[..] else { return Err(bad(o, &v)) };
+                (set.fit, set.view) = (false, Some(([(w + e) / 2.0, (s + n) / 2.0], e - w)));
+            }
             "--fps" => set.fps = v.parse().ok().filter(|f| *f > 0.0).ok_or(bad(o, &v))?,
             "--size" => {
                 let (w, h) = v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).ok_or(bad(o, &v))?;
@@ -786,7 +806,7 @@ fn render_args(args: &[String]) -> Result<(render::Settings, Vec<String>), Strin
             }
         }
     }
-    Ok((set, files))
+    Ok((set, files, stretch))
 }
 
 fn main() {
@@ -832,7 +852,13 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("--render") {
         match render_args(&args[2..]) {
-            Ok((set, files)) => (app.cli_render, app.cli_files) = (Some(set), Some(files)),
+            Ok((set, files, stretch)) => {
+                // Products without a project file have no stretch from a person: the limits of the option, or
+                // the automatic stretch of the first frame (the first step of a data cube can have no data).
+                let project = files.len() == 1 && files[0].ends_with(&format!(".{}", app::WORKSPACE_EXT));
+                app.cli_stretch = stretch.map(Some).or((!project).then_some(None));
+                (app.cli_render, app.cli_files) = (Some(set), Some(files));
+            }
             Err(e) => return eprintln!("{e}\n{RENDER_USAGE}"),
         }
     }
