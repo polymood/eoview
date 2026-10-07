@@ -32,6 +32,13 @@ pub enum Icon {
     Film,
     Keyboard,
     Info,
+    /// Tools of a view.
+    PixelGrid,
+    Graticule,
+    Ruler,
+    Transect,
+    Region,
+    Pin,
 }
 
 /// Draw `icon` in the square `r`.
@@ -188,6 +195,58 @@ pub fn draw(p: &Painter, icon: Icon, r: Rect, c: Color32) {
             p.circle_stroke(m, 0.5 * w, s);
             line(pos2(m.x, m.y - 0.05 * w), pos2(m.x, b - 0.22 * w));
             p.circle_filled(pos2(m.x, t + 0.26 * w), 0.07 * w, c);
+        }
+        Icon::PixelGrid => {
+            // A grid of 3 x 3 squares, the center one filled.
+            for k in 0..=3 {
+                let f = k as f32 / 3.0 * w;
+                line(pos2(l + f, t), pos2(l + f, b));
+                line(pos2(l, t + f), pos2(rt, t + f));
+            }
+            p.rect_filled(Rect::from_min_size(pos2(l + w / 3.0, t + w / 3.0), vec2(w / 3.0, w / 3.0)), 0.0, c);
+        }
+        Icon::Graticule => {
+            // Curved meridians and straight parallels.
+            for y in [0.3, 0.7] {
+                line(pos2(l, t + y * w), pos2(rt, t + y * w));
+            }
+            for k in [-0.3, 0.0, 0.3] {
+                let pts: Vec<Pos2> = (0..=8).map(|i| i as f32 / 8.0).map(|u| pos2(m.x + k * w * (1.0 - 0.4 * (2.0 * u - 1.0).powi(2)), t + u * w)).collect();
+                p.add(egui::Shape::line(pts, s));
+            }
+        }
+        Icon::Ruler => {
+            // A ruler at 45 degrees with its marks.
+            let (a, d) = (pos2(l, b - 0.3 * w), vec2(0.7071, -0.7071));
+            let n = vec2(0.7071, 0.7071) * 0.3 * w;
+            poly(vec![a, a + d * 1.0 * w, a + d * 1.0 * w + n, a + n]);
+            for k in 1..5 {
+                let q = a + d * (k as f32 * 0.2 * w);
+                line(q, q + n * if k % 2 == 0 { 0.6 } else { 0.35 });
+            }
+        }
+        Icon::Transect => {
+            // A line between two points, and a profile above it.
+            line(pos2(l, b - 0.1 * w), pos2(rt, b - 0.1 * w));
+            p.circle_filled(pos2(l + 0.05 * w, b - 0.1 * w), 0.1 * w, c);
+            p.circle_filled(pos2(rt - 0.05 * w, b - 0.1 * w), 0.1 * w, c);
+            p.add(egui::Shape::line(vec![pos2(l, t + 0.55 * w), pos2(l + 0.3 * w, t + 0.2 * w), pos2(l + 0.55 * w, t + 0.5 * w), pos2(l + 0.75 * w, t + 0.1 * w), pos2(rt, t + 0.4 * w)], s));
+        }
+        Icon::Region => {
+            // A polygon with its corners.
+            let pts = vec![pos2(l + 0.1 * w, t + 0.25 * w), pos2(rt - 0.2 * w, t + 0.05 * w), pos2(rt, b - 0.3 * w), pos2(l + 0.35 * w, b)];
+            for q in &pts {
+                p.circle_filled(*q, 0.09 * w, c);
+            }
+            poly(pts);
+        }
+        Icon::Pin => {
+            // A map pin: a circle with a point at the bottom.
+            let q = pos2(m.x, t + 0.36 * w);
+            p.circle_stroke(q, 0.3 * w, s);
+            p.circle_filled(q, 0.1 * w, c);
+            line(q + vec2(-0.22 * w, 0.22 * w), pos2(m.x, b));
+            line(q + vec2(0.22 * w, 0.22 * w), pos2(m.x, b));
         }
         Icon::Pause => {
             for x in [l + 0.22 * w, rt - 0.42 * w] {

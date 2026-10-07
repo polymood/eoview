@@ -7,6 +7,7 @@
 use crate::app::{App, Cmp, Dialog, Pane, WORKSPACE_EXT, What};
 use crate::icons::{self, Icon};
 use crate::lang::{t, tf};
+use crate::tools::Tool;
 use crate::layer::{self, BINS, CMAPS, Kind, MapLayer, PRESETS, Stretch};
 use eo_render::{Compare, CompositeUniforms, View2d};
 use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, vec2};
@@ -81,6 +82,15 @@ pub enum Cmd {
     Overlay(u8),
     /// Preference: full resolution at all zoom levels, on or off.
     FullRes,
+    /// The tool of the mouse: on, or off if it is on.
+    Tool(Tool),
+    /// Pixel grid, coordinate grid of the view: on or off.
+    PixelGrid,
+    CoordGrid,
+    /// Escape: the tool off and no shapes, else the compare mode off.
+    Escape,
+    /// Remove the pinned points.
+    ClearPins,
 }
 
 #[derive(Default)]
@@ -157,6 +167,9 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Copy view extent (west, south, east, north)"), "Ctrl+Shift+C", Cmd::CopyExtent),
         (t("3D globe: on or off"), "G", Cmd::Globe),
         (t("Smooth pixels: on or off"), "", Cmd::Smooth),
+        (t("Pixel grid: on or off"), "X", Cmd::PixelGrid),
+        (t("Coordinate grid: on or off"), "N", Cmd::CoordGrid),
+        (t("Remove the pinned points"), "", Cmd::ClearPins),
         (t("Coasts: on or off"), "", Cmd::Overlay(0)),
         (t("Country borders: on or off"), "", Cmd::Overlay(1)),
         (t("Country names: on or off"), "", Cmd::Overlay(2)),
@@ -179,6 +192,9 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     }
     for (c, n, k) in Cmp::ALL {
         v.push((tf("Compare: {}", &[t(n)]), k, Cmd::Compare(c)));
+    }
+    for (tl, n, k) in Tool::ALL {
+        v.push((tf("Tool: {}", &[t(n)]), k, Cmd::Tool(tl)));
     }
     for (i, (n, _)) in CMAPS.iter().enumerate() {
         v.push((tf("Color map: {}", &[n]), "", Cmd::Cmap(i)));
@@ -367,6 +383,11 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
     let ppp = ui.ctx().pixels_per_point();
     let active = app.active == id;
+    let tool = app.tool;
+    // The events of the tool: a click (display position, double-click), a rectangle (start, end, done).
+    let mut click: Option<([f64; 2], bool)> = None;
+    let mut drag: Option<([f64; 2], [f64; 2], bool)> = None;
+    let drag_from = app.drag_from;
     let Some(p) = app.pane_mut(id) else { return };
     let vp = egui::epaint::ViewportInPixels::from_points(&rect, ppp, screen);
     p.v.px = Rect::from_min_size(egui::pos2(vp.left_px as f32, vp.top_px as f32), vec2(vp.width_px as f32, vp.height_px as f32));
@@ -410,9 +431,17 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     if resp.drag_stopped() {
         p.swipe_drag = false;
     }
+    let disp = |p: &Pane, q: Pos2| Some(p.v.to_display([(q.x * ppp - p.v.px.min.x) as f64, (q.y * ppp - p.v.px.min.y) as f64])).filter(|c| c[0].is_finite());
     if p.swipe_drag {
         if let Some(q) = resp.interact_pointer_pos() {
             p.swipe = if p.vertical { (q.x - rect.left()) / rect.width() } else { (q.y - rect.top()) / rect.height() }.clamp(0.0, 1.0);
+        }
+    } else if tool == Tool::Region && (resp.dragged() || resp.drag_stopped()) {
+        // The region tool: a drag makes a rectangle.
+        if let Some(c) = resp.interact_pointer_pos().and_then(|q| disp(p, q)) {
+            let start = || ui.input(|i| i.pointer.press_origin()).and_then(|q| disp(p, q));
+            let from = if resp.drag_started() { start().unwrap_or(c) } else { drag_from.unwrap_or(c) };
+            drag = Some((from, c, resp.drag_stopped()));
         }
     } else if resp.dragged() {
         let d = resp.drag_delta() * ppp;
@@ -423,7 +452,12 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         p.v.clamp_globe();
         p.moved = true;
     }
-    if resp.double_clicked() {
+    if tool != Tool::None {
+        if let Some(c) = resp.interact_pointer_pos().filter(|_| resp.clicked() || resp.double_clicked()).and_then(|q| disp(p, q)) {
+            click = Some((c, resp.double_clicked()));
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    } else if resp.double_clicked() {
         p.v.fit = true;
         p.fit_user = true;
     }
@@ -447,6 +481,14 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         }
         p.v.cursor = Some(p.v.to_display(q)).filter(|c| c[0].is_finite());
     }
+    if let Some((c, double)) = click {
+        app.tool_click(id, c, double);
+    }
+    if let Some((a, b, done)) = drag {
+        app.drag_from = (!done).then_some(a);
+        app.tool_rect(id, a, b, done);
+    }
+    let p = app.pane_mut(id).unwrap();
     // Link badge: one click links or unlinks the view.
     if !p.layers.is_empty() {
         let (txt, tip) = if p.link > 0 { (tf("link {}", &[&p.link.to_string()]), t("Linked: this view pans and zooms with the other linked views. Click to unlink (L)")) } else { (t("unlinked").to_string(), t("Click to link this view (L)")) };
@@ -956,7 +998,13 @@ impl App {
             (none, Key::B, Cmd::Compare(Cmp::Blend)),
             (none, Key::D, Cmd::Compare(Cmp::Difference)),
             (none, Key::K, Cmd::Compare(Cmp::Flicker)),
-            (none, Key::Escape, Cmd::Compare(Cmp::Off)),
+            (none, Key::Escape, Cmd::Escape),
+            (none, Key::M, Cmd::Tool(Tool::Measure)),
+            (none, Key::T, Cmd::Tool(Tool::Transect)),
+            (none, Key::R, Cmd::Tool(Tool::Region)),
+            (none, Key::P, Cmd::Tool(Tool::Pin)),
+            (none, Key::X, Cmd::PixelGrid),
+            (none, Key::N, Cmd::CoordGrid),
             (none, Key::V, Cmd::SwipeOrient),
             (none, Key::Period, Cmd::Step(1)),
             (none, Key::Comma, Cmd::Step(-1)),
@@ -1007,6 +1055,19 @@ impl App {
                 self.layout(n);
             }
             Cmd::Panel => self.panel ^= true,
+            Cmd::Tool(tl) => {
+                self.tool = if self.tool == tl { Tool::None } else { tl };
+                self.drag_from = None;
+            }
+            Cmd::ClearPins => self.pins.clear(),
+            Cmd::Escape => {
+                if self.tool != Tool::None || self.panes.iter().any(|p| p.shape.is_some()) {
+                    self.tool = Tool::None;
+                    self.panes.iter_mut().for_each(|p| p.shape = None);
+                } else {
+                    self.run(Cmd::Compare(Cmp::Off), id);
+                }
+            }
             Cmd::LinkMode => self.link_px ^= true,
             Cmd::Palette => self.palette = Some(Palette::default()),
             Cmd::Space(s) => self.set_space(id, s),
@@ -1075,6 +1136,14 @@ impl App {
                     }
                     Cmd::Smooth => {
                         p.smooth ^= true;
+                        false
+                    }
+                    Cmd::PixelGrid => {
+                        p.pixel_grid ^= true;
+                        false
+                    }
+                    Cmd::CoordGrid => {
+                        p.coord_grid ^= true;
                         false
                     }
                     Cmd::Overlay(k) => {
@@ -1202,6 +1271,8 @@ impl App {
         let presets: Vec<usize> = (0..PRESETS.len()).filter(|&i| sel.is_some_and(|l| l.preset_ok(&PRESETS[i]))).collect();
         let (cmap, has_layer) = (sel.map_or(0, |l| l.cmap), sel.is_some());
         let (panel, link_px) = (self.panel, self.link_px);
+        let grids = self.pane(id).map_or((false, false), |p| (p.pixel_grid, p.coord_grid));
+        let (tool, pins) = (self.tool, !self.pins.is_empty());
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(t("File"), |ui| {
                 entry(ui, cmds, id, t("Open files..."), "Ctrl+O", Cmd::Open(false, What::Files));
@@ -1256,6 +1327,8 @@ impl App {
                 });
                 ui.separator();
                 check(ui, cmds, id, panel, t("Side panel"), "H", Cmd::Panel);
+                check(ui, cmds, id, grids.0, t("Pixel grid"), "X", Cmd::PixelGrid);
+                check(ui, cmds, id, grids.1, t("Coordinate grid"), "N", Cmd::CoordGrid);
                 ui.separator();
                 entry(ui, cmds, id, t("New view"), "Ctrl+N", Cmd::NewView);
                 entry(ui, cmds, id, t("Duplicate view"), "Ctrl+D", Cmd::Duplicate);
@@ -1300,6 +1373,15 @@ impl App {
                 }
                 ui.separator();
                 entry(ui, cmds, id, t("Swipe line: vertical or horizontal"), "V", Cmd::SwipeOrient);
+            });
+            ui.menu_button(t("Tools"), |ui| {
+                for (tl, n, k) in Tool::ALL {
+                    check(ui, cmds, id, tool == tl, t(n), k, Cmd::Tool(tl));
+                }
+                ui.add_enabled_ui(pins, |ui| entry(ui, cmds, id, t("Remove the pinned points"), "", Cmd::ClearPins));
+                ui.separator();
+                check(ui, cmds, id, grids.0, t("Pixel grid"), "X", Cmd::PixelGrid);
+                check(ui, cmds, id, grids.1, t("Coordinate grid"), "N", Cmd::CoordGrid);
             });
             ui.menu_button(t("Time"), |ui| {
                 ui.add_enabled_ui(timed, |ui| {
@@ -1383,6 +1465,18 @@ impl App {
             }
             if icons::button(ui, Icon::Globe, t("Globe"), globe).on_hover_text(t("Show the active view on a 3D globe, or as a 2D map (G)")).clicked() {
                 cmds.push((Cmd::Globe, id));
+            }
+            ui.separator();
+            let (pg, cg) = self.pane(id).map_or((false, false), |p| (p.pixel_grid, p.coord_grid));
+            for (icon, on, tip, c) in [(Icon::PixelGrid, pg, "Pixel grid: the edges of the pixels, and their values in a large zoom (X)", Cmd::PixelGrid), (Icon::Graticule, cg, "Coordinate grid: lines of longitude and latitude (N)", Cmd::CoordGrid)] {
+                if icons::button(ui, icon, "", on).on_hover_text(t(tip)).clicked() {
+                    cmds.push((c, id));
+                }
+            }
+            for ((tl, n, k), icon) in Tool::ALL.into_iter().zip([Icon::Ruler, Icon::Transect, Icon::Region, Icon::Pin]) {
+                if icons::button(ui, icon, "", self.tool == tl).on_hover_text(format!("{} ({k})", t(n))).clicked() {
+                    cmds.push((Cmd::Tool(tl), id));
+                }
             }
             ui.separator();
             let mut px = self.link_px;
@@ -1689,6 +1783,7 @@ impl App {
         }
 
         ui.separator();
+        egui::CollapsingHeader::new(t("Tools")).default_open(true).show(ui, |ui| crate::tools::results_ui(self, ui, id));
         egui::CollapsingHeader::new(t("Inspector")).default_open(true).show(ui, |ui| match self.hovered {
             Some(h) => {
                 let t = self.inspect(h).0;
@@ -1928,13 +2023,22 @@ impl App {
                 let at = |ll: [f64; 2]| if names.is_empty() { Some(ll) } else { labels.iter().position(|l| l.0 == ll).and_then(|k| names[k]) };
                 crate::outlines::draw(p, &painter, ppp, outline.as_ref().map(|v| &v[..]), &at);
             }
+            overlays(p, &painter, ppp, mpp, cross);
+            self.tools_paint(i, &painter, ppp, &mut need);
+            let p = &mut self.panes[i];
             let keys: Vec<eo_cache::TileKey> = need.iter().map(|n| n.1).collect();
             if keys != p.field_sent {
                 self.field_keys.extend(keys.iter().copied());
-                self.engine.want(0x8000_0000 | p.id, need);
+                self.engine.want_copy(0x8000_0000 | p.id, need);
                 p.field_sent = keys;
             }
-            overlays(p, &painter, ppp, mpp, cross);
+        }
+        // The tiles on the CPU that no view wants now go away.
+        if only.is_none() {
+            let panes = &self.panes;
+            let wanted = |k: &eo_cache::TileKey| panes.iter().any(|p| p.field_sent.contains(k));
+            self.fields.retain(|k, _| wanted(k));
+            self.field_keys.retain(wanted);
         }
         if let Some(b) = &mut self.bench {
             b.missing = missing;
