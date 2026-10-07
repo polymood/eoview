@@ -215,8 +215,9 @@ ev.output(fixed, name="sst corrected")   # a new layer in the view
 A figure is a page with a size in millimeters. It contains a map (a view) or a chart, and these parts:
 title, frame with coordinate labels, color bar with unit and ticks, scale bar, coasts and borders, text.
 
-- The user sets the width (with the column widths of the main journals as presets), the font and its
-  size in points, and the resolution of the data image.
+- The user sets any width and height in millimeters. The column widths of the main journals are presets
+  (for example Nature: 89 and 183 mm, Elsevier: 90 and 190 mm): a preset only sets the width. The user
+  also sets the font and its size in points, and the resolution of the data image.
 - Export formats: PDF and SVG (text and lines are vectors, the data is an image in the file), PNG at 300
   to 600 dots for each inch.
 - Charts: time profile of a point or a region, transect, histogram, scatter of two bands, time against
@@ -265,4 +266,5 @@ The figure workspace shows the page as it will print. The same drawing code make
    (from a histogram of each pixel) better for long series?
 3. Section 3.4: the steps must be on the same grid. Is this sufficient for the first version?
 4. Answered (2026-10-07): any Python script, with a module `eoview` for the inputs and the outputs (section 6).
-5. Section 7: which journal presets and which chart types are necessary first?
+5. Section 7, answered in part (2026-10-07): journal widths are presets, and any size is possible. Which
+   chart types are necessary first?
