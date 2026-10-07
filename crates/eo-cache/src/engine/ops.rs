@@ -66,11 +66,16 @@ pub enum StepIn {
 
 /// The operation of a computed layer.
 pub struct Op {
-    pub how: Agg,
-    /// One layer for each time step.
-    pub inputs: Vec<Arc<Layer>>,
+    pub kind: OpKind,
     /// The same for the same operation on the same data in all sessions: the key of the disk cache.
     key: String,
+}
+
+pub enum OpKind {
+    /// An aggregate over time of the layers of the time steps.
+    Agg { how: Agg, inputs: Vec<Arc<Layer>> },
+    /// Values in memory (the output of a Python script): `w` columns, NaN for no data.
+    Array { w: u64, data: Arc<Vec<f32>> },
 }
 
 /// The sums of the values of a tile, for the aggregates that do not keep all values.
@@ -159,13 +164,13 @@ fn phys(l: &Layer) -> (f32, f32) {
 }
 
 impl Engine {
-    /// Make a layer that is the aggregate `how` of the time steps `steps` of the variable of `first`. All
-    /// steps must be on the same grid. The result comes as `Event::Opened`.
-    pub fn aggregate(&self, first: Arc<Layer>, steps: Vec<StepIn>, how: Agg) -> u64 {
+    /// Make a layer that is the aggregate `how` of the time steps `steps` of variable `var` (and its choice)
+    /// of the product of `base`. All steps must be on the same grid. The result comes as `Event::Opened`.
+    pub fn aggregate(&self, base: Arc<Layer>, var: usize, choice: usize, steps: Vec<StepIn>, how: Agg) -> u64 {
         let i = self.inner.clone();
         let req = i.next.fetch_add(1, Relaxed);
         self.rt.spawn_blocking(move || {
-            let res = i.make_aggregate(&first, steps, how);
+            let res = i.make_aggregate(&base, var, choice, steps, how);
             i.send(Event::Opened { req, res });
         });
         req
@@ -173,21 +178,21 @@ impl Engine {
 }
 
 impl Inner {
-    fn make_aggregate(&self, first: &Arc<Layer>, steps: Vec<StepIn>, how: Agg) -> Result<Arc<Layer>> {
+    fn make_aggregate(&self, base: &Arc<Layer>, var: usize, choice: usize, steps: Vec<StepIn>, how: Agg) -> Result<Arc<Layer>> {
         if steps.is_empty() {
             return Err("no time step".into());
         }
-        let name = first.var().name.clone();
+        let name = base.ds.product.vars.get(var).ok_or("no such variable")?.name.clone();
         // The products open in parallel: the latency of remote products adds up otherwise.
         let open = |s: &StepIn| -> Result<Arc<Layer>> {
             match s {
                 StepIn::Layer(l) => Ok(l.clone()),
-                StepIn::Time(t) => self.layer(first.ds.clone(), first.ds_id, first.var, first.choice, *t),
+                StepIn::Time(t) => self.layer(base.ds.clone(), base.ds_id, var, choice, *t),
                 StepIn::Path(p) => {
                     let ds = eo_io::open(p, &self.rt)?;
                     let var = ds.product.vars.iter().position(|v| v.name == name).ok_or_else(|| Error(format!("{p}: no variable {name}")))?;
                     let ds_id = self.next.fetch_add(1, Relaxed);
-                    self.layer(Arc::new(ds), ds_id, var, first.choice, 0)
+                    self.layer(Arc::new(ds), ds_id, var, choice, 0)
                 }
             }
         };
@@ -234,11 +239,12 @@ impl Inner {
         };
         let desc = format!("{} of {} time steps of {name}", how.name(), inputs.len());
         let product = Product { name: format!("{name} {}", how.name().to_lowercase()), desc, vars: vec![var], valid: None };
-        let ds = Arc::new(Dataset { product, sources: first.ds.sources.clone() });
+        let ds = Arc::new(Dataset { product, sources: inputs[0].ds.sources.clone() });
         let src = |l: &Layer| l.var().levels[0].chunks.iter().next().and_then(|c| l.ds.sources.get(c.src as usize)).map_or(String::new(), |s| s.name().to_string());
         let key = format!("{how:?} {:?}", inputs.iter().map(|l| (src(l), l.var().name.clone(), l.choice, l.time)).collect::<Vec<_>>());
         let enc = choose_enc(DType::F32, Part::Real, &sample);
-        let op = Op { how, inputs, key };
+        let levels = inputs[0].levels.clone();
+        let op = Op { kind: OpKind::Agg { how, inputs }, key };
         let l = Layer {
             id: self.next.fetch_add(1, Relaxed),
             ds,
@@ -248,7 +254,7 @@ impl Inner {
             band: 0,
             time: 0,
             part: Part::Real,
-            levels: first.levels.clone(),
+            levels,
             enc,
             sample,
             sample_at,
@@ -257,8 +263,19 @@ impl Inner {
         Ok(Arc::new(l))
     }
 
-    /// The physical values (NaN: no data) of tile (tx, ty) of display level `lv` of the file layer `l`.
-    async fn values(self: &Arc<Self>, l: &Arc<Layer>, lv: usize, tx: u32, ty: u32, prio: u32) -> Result<Vec<f32>> {
+    /// The physical values (NaN: no data) of tile (tx, ty) of display level `lv` of layer `l`.
+    fn values<'a>(self: &'a Arc<Self>, l: &'a Arc<Layer>, lv: usize, tx: u32, ty: u32, prio: u32) -> BoxFuture<'a, Result<Vec<f32>>> {
+        async move {
+            match &l.op {
+                Some(op) => self.op_values(l, op, TileKey { layer: l.id, lv: lv as u8, tx, ty }, prio, None).await,
+                None => self.file_values(l, lv, tx, ty, prio).await,
+            }
+        }
+        .boxed()
+    }
+
+    /// `values` of a layer of a file.
+    async fn file_values(self: &Arc<Self>, l: &Arc<Layer>, lv: usize, tx: u32, ty: u32, prio: u32) -> Result<Vec<f32>> {
         let level = l.levels.get(lv).ok_or("bad level")?;
         let (x0, y0) = (tx as u64 * TILE, ty as u64 * TILE);
         let (w, h) = (TILE.min(level.w - x0), TILE.min(level.h - y0));
@@ -310,13 +327,14 @@ impl Inner {
     }
 
     /// Make tile `key` of the computed layer `l`. The partial tiles show the result of the steps that are read.
-    pub(super) async fn op_tile(self: &Arc<Self>, l: &Arc<Layer>, op: &Arc<Op>, key: TileKey, prio: u32, send: &impl Fn(Arc<Pixels>, bool)) -> Result<Arc<Pixels>> {
+    pub(super) async fn op_tile(self: &Arc<Self>, l: &Arc<Layer>, op: &Arc<Op>, key: TileKey, prio: u32, send: &(impl Fn(Arc<Pixels>, bool) + Sync)) -> Result<Arc<Pixels>> {
         let tk = DecKey::Tile(key);
         if let Some(p) = self.dec.lock().unwrap().get(&tk).cloned() {
             return Ok(p);
         }
         // A result with remote inputs stays on the disk: the next session does not read the steps again.
-        let disk = self.disk.get().filter(|_| op.inputs.iter().any(|i| !i.is_local())).cloned();
+        let remote = matches!(&op.kind, OpKind::Agg { inputs, .. } if inputs.iter().any(|i| !i.is_local()));
+        let disk = self.disk.get().filter(|_| remote).cloned();
         let lv = &l.levels[key.lv as usize];
         let n = (TILE.min(lv.w - key.tx as u64 * TILE) * TILE.min(lv.h - key.ty as u64 * TILE)) as usize;
         let dkey = (op.key.clone(), key.lv, key.tx, key.ty, l.enc.k.to_bits(), l.enc.off.to_bits());
@@ -329,33 +347,9 @@ impl Inner {
                 return Ok(px);
             }
         }
-        // The median keeps the values of all steps.
-        if op.how == Agg::Median && n * 4 * op.inputs.len() > self.limit / 4 {
-            return Err(Error(format!("a median of {} steps needs {} MB for one tile: more than a quarter of the memory budget. Use fewer steps", op.inputs.len(), (n * 4 * op.inputs.len()) >> 20)));
-        }
-        let _slot = self.ops.acquire().await.map_err(|_| Error("engine stopped".into()))?;
-        let _c = Charge::new(&self.work, n * if op.how == Agg::Median { 4 * op.inputs.len() } else { 16 });
-        let mut acc = Acc::new(op.how, n);
-        let mut jobs = stream::iter(op.inputs.clone())
-            .map(|inp| {
-                let i = self.clone();
-                async move { i.values(&inp, key.lv as usize, key.tx, key.ty, prio).await }
-            })
-            .buffer_unordered(4);
         let enc = |mut f: Vec<f32>| Arc::new(Pixels::F16(encode_f32(&mut f, &l.enc, None)));
-        let mut last = Instant::now();
-        while let Some(v) = jobs.next().await {
-            let v = v?;
-            if v.len() != n {
-                return Err("the time steps are not on the same grid".into());
-            }
-            acc.add(v);
-            if op.how != Agg::Median && last.elapsed() > PARTIAL {
-                send(enc(acc.result(op.how)), false);
-                last = Instant::now();
-            }
-        }
-        let px = enc(acc.result(op.how));
+        let partial = |f: Vec<f32>| send(enc(f), false);
+        let px = enc(self.op_values(l, op, key, prio, Some(&partial)).await?);
         self.dec.lock().unwrap().insert(tk, px.clone(), px.size());
         if let Some(d) = disk {
             let p = px.clone();
@@ -364,16 +358,171 @@ impl Inner {
         Ok(px)
     }
 
-    /// The value of the computed layer `l` at level-0 pixel (x, y): the aggregate of the exact values of its inputs.
-    pub(super) async fn probe_op(&self, l: &Layer, op: &Op, x: u64, y: u64) -> Result<Vec<Option<f64>>> {
-        let mut v = vec![];
-        for inp in &op.inputs {
-            let vals = self.probe_at(inp, x, y).await?;
-            v.push(vals.get(inp.band as usize).copied().flatten().map_or(f32::NAN, |x| x as f32));
+    /// The values of tile `key` of the computed layer `l`. `partial`: a function for the results before the
+    /// end (the steps that are read).
+    async fn op_values(self: &Arc<Self>, l: &Arc<Layer>, op: &Op, key: TileKey, prio: u32, partial: Option<&(dyn Fn(Vec<f32>) + Sync)>) -> Result<Vec<f32>> {
+        let lv = l.levels[key.lv as usize];
+        let (x0, y0) = (key.tx as u64 * TILE, key.ty as u64 * TILE);
+        let (tw, th) = (TILE.min(lv.w - x0), TILE.min(lv.h - y0));
+        let n = (tw * th) as usize;
+        match &op.kind {
+            OpKind::Array { w, data } => {
+                // The mean of the values of the array in each pixel of the level.
+                let (w, data) = (*w, data.clone());
+                let h = data.len() as u64 / w;
+                Ok(self
+                    .on_pool(prio, move || {
+                        let mut out = vec![f32::NAN; n];
+                        for j in 0..th {
+                            let (r0, r1) = (((y0 + j) as f64 * lv.ky + lv.oy) as u64, ((((y0 + j + 1) as f64 * lv.ky + lv.oy) as u64).max(1)).min(h));
+                            for i in 0..tw {
+                                let (c0, c1) = (((x0 + i) as f64 * lv.kx + lv.ox) as u64, ((((x0 + i + 1) as f64 * lv.kx + lv.ox) as u64).max(1)).min(w));
+                                let (mut s, mut c) = (0f64, 0u32);
+                                for r in r0..r1.max(r0 + 1).min(h) {
+                                    for v in &data[(r * w + c0) as usize..(r * w + c1.max(c0 + 1).min(w)) as usize] {
+                                        if v.is_finite() {
+                                            s += *v as f64;
+                                            c += 1;
+                                        }
+                                    }
+                                }
+                                if c > 0 {
+                                    out[(j * tw + i) as usize] = (s / c as f64) as f32;
+                                }
+                            }
+                        }
+                        out
+                    })
+                    .await)
+            }
+            OpKind::Agg { how, inputs } => {
+                let how = *how;
+                // The median keeps the values of all steps.
+                if how == Agg::Median && n * 4 * inputs.len() > self.limit / 4 {
+                    return Err(Error(format!("a median of {} steps needs {} MB for one tile: more than a quarter of the memory budget. Use fewer steps", inputs.len(), (n * 4 * inputs.len()) >> 20)));
+                }
+                let _slot = self.ops.acquire().await.map_err(|_| Error("engine stopped".into()))?;
+                let _c = Charge::new(&self.work, n * if how == Agg::Median { 4 * inputs.len() } else { 16 });
+                let mut acc = Acc::new(how, n);
+                let mut jobs = stream::iter(inputs.clone())
+                    .map(|inp| {
+                        let i = self.clone();
+                        async move { i.values(&inp, key.lv as usize, key.tx, key.ty, prio).await }
+                    })
+                    .buffer_unordered(4);
+                let mut last = Instant::now();
+                while let Some(v) = jobs.next().await {
+                    let v = v?;
+                    if v.len() != n {
+                        return Err("the time steps are not on the same grid".into());
+                    }
+                    acc.add(v);
+                    if let Some(p) = partial.filter(|_| how != Agg::Median && last.elapsed() > PARTIAL) {
+                        p(acc.result(how));
+                        last = Instant::now();
+                    }
+                }
+                Ok(acc.result(how))
+            }
         }
-        let _ = l;
-        let r = op.how.of(&mut v);
+    }
+
+    /// The value of the computed layer `l` at level-0 pixel (x, y): the aggregate of the exact values of its
+    /// inputs, or the value of the array.
+    pub(super) async fn probe_op(&self, op: &Op, x: u64, y: u64) -> Result<Vec<Option<f64>>> {
+        let r = match &op.kind {
+            OpKind::Array { w, data } => data.get((y * w + x) as usize).copied().unwrap_or(f32::NAN),
+            OpKind::Agg { how, inputs } => {
+                let mut v = vec![];
+                for inp in inputs {
+                    let vals = self.probe_at(inp, x, y).await?;
+                    v.push(vals.get(inp.band as usize).copied().flatten().map_or(f32::NAN, |x| x as f32));
+                }
+                how.of(&mut v)
+            }
+        };
         Ok(vec![r.is_finite().then_some(r as f64)])
+    }
+
+    /// The values of window (x0, y0, w, h) of level `lv` of layer `l`, and its georeferencing.
+    async fn read(self: &Arc<Self>, l: &Arc<Layer>, lv: usize, win: (u64, u64, u64, u64)) -> Result<(Vec<f32>, Georef)> {
+        let level = *l.levels.get(lv).ok_or("bad level")?;
+        let (x0, y0, w, h) = win;
+        if w == 0 || h == 0 || x0 + w > level.w || y0 + h > level.h {
+            return Err("the window is not in the layer".into());
+        }
+        if w * h * 4 > (self.limit / 4) as u64 {
+            return Err(Error(format!("{w} x {h} values need {} MB: more than a quarter of the memory budget. Use a coarser level or a smaller area", (w * h * 4) >> 20)));
+        }
+        let _c = Charge::new(&self.work, (w * h * 4) as usize);
+        let mut out = vec![f32::NAN; (w * h) as usize];
+        let tiles: Vec<(u32, u32)> = (y0 / TILE..=(y0 + h - 1) / TILE).flat_map(|ty| (x0 / TILE..=(x0 + w - 1) / TILE).map(move |tx| (tx as u32, ty as u32))).collect();
+        let mut jobs = stream::iter(tiles)
+            .map(|(tx, ty)| {
+                let i = self.clone();
+                async move { i.values(l, lv, tx, ty, 0).await.map(|v| (tx, ty, v)) }
+            })
+            .buffer_unordered(4);
+        while let Some(r) = jobs.next().await {
+            let (tx, ty, v) = r?;
+            let (tx0, ty0) = (tx as u64 * TILE, ty as u64 * TILE);
+            let tw = TILE.min(level.w - tx0);
+            for y in ty0.max(y0)..(ty0 + TILE).min(y0 + h).min(level.h) {
+                for x in tx0.max(x0)..(tx0 + tw).min(x0 + w) {
+                    out[((y - y0) * w + x - x0) as usize] = v[((y - ty0) * tw + x - tx0) as usize];
+                }
+            }
+        }
+        let g = self.georef(l)?.window(level.ox + x0 as f64 * level.kx, level.oy + y0 as f64 * level.ky, level.kx, level.ky);
+        Ok((out, g))
+    }
+
+    /// A computed layer with the values `data` (`w` columns, NaN: no data) and the georeferencing `g`.
+    fn memory_layer(&self, name: &str, units: &str, w: u64, data: Vec<f32>, g: Georef) -> Result<Arc<Layer>> {
+        let h = data.len() as u64 / w.max(1);
+        if w == 0 || h == 0 || w * h != data.len() as u64 {
+            return Err("the size of the array is not correct".into());
+        }
+        let c = TILE.min(w).max(1);
+        let a = Array { dims: vec!["y".into(), "x".into()], shape: vec![h, w], chunk: vec![TILE.min(h), c], dtype: DType::F32, le: true, codecs: vec![], chunks: vec![].into(), place: None };
+        let var = Variable { name: name.into(), group: String::new(), levels: vec![a], bands: vec![name.into()], fill: None, scale: 1.0, offset: 0.0, units: units.into(), georef: g, times: Default::default() };
+        let levels = display_levels(&var);
+        // The sample: 64 K values spread on the array.
+        let step = (data.len() / 65_536).max(1);
+        let sample_at: Vec<f32> = data.iter().step_by(step).copied().collect();
+        let mut sample: Vec<f32> = sample_at.iter().copied().filter(|v| v.is_finite()).collect();
+        sample.sort_unstable_by(f32::total_cmp);
+        let enc = choose_enc(DType::F32, Part::Real, &sample);
+        let product = Product { name: name.into(), desc: "Output of a Python script".into(), vars: vec![var], valid: None };
+        let id = self.next.fetch_add(1, Relaxed);
+        let op = Op { kind: OpKind::Array { w, data: Arc::new(data) }, key: format!("array {id}") };
+        let ds = Arc::new(Dataset { product, sources: vec![] });
+        Ok(Arc::new(Layer { id, ds, ds_id: self.next.fetch_add(1, Relaxed), var: 0, choice: 0, band: 0, time: 0, part: Part::Real, levels, enc, sample, sample_at, op: Some(Arc::new(op)) }))
+    }
+}
+
+impl Engine {
+    /// Read the values (NaN: no data) of window (x0, y0, width, height) of display level `lv` of layer `l`.
+    /// The result comes as `Event::Read`, with the georeferencing of the window.
+    pub fn read(&self, l: Arc<Layer>, lv: usize, win: (u64, u64, u64, u64)) -> u64 {
+        let i = self.inner.clone();
+        let req = i.next.fetch_add(1, Relaxed);
+        self.rt.spawn(async move {
+            let res = i.read(&l, lv, win).await.map(|(v, g)| (Arc::new(v), g));
+            i.send(Event::Read { req, res });
+        });
+        req
+    }
+
+    /// Make a layer of the values `data` (`w` columns, NaN: no data). The result comes as `Event::Opened`.
+    pub fn memory(&self, name: String, units: String, w: u64, data: Vec<f32>, g: Georef) -> u64 {
+        let i = self.inner.clone();
+        let req = i.next.fetch_add(1, Relaxed);
+        self.rt.spawn_blocking(move || {
+            let res = i.memory_layer(&name, &units, w, data, g);
+            i.send(Event::Opened { req, res });
+        });
+        req
     }
 }
 
@@ -396,7 +545,7 @@ mod tests {
         e.open(path.into());
         let Event::Opened { res, .. } = next(&|e| matches!(e, Event::Opened { .. })) else { unreachable!() };
         let first = res.unwrap();
-        e.aggregate(first, (0..3).map(StepIn::Time).collect(), Agg::Mean);
+        e.aggregate(first, 0, 0, (0..3).map(StepIn::Time).collect(), Agg::Mean);
         let Event::Opened { res, .. } = next(&|e| matches!(e, Event::Opened { .. })) else { unreachable!() };
         let l = res.unwrap();
         assert_eq!((l.size(), l.var().steps()), ((60, 40), 1));

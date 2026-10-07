@@ -39,6 +39,8 @@ pub enum Icon {
     Transect,
     Region,
     Pin,
+    /// Code: the Python panel.
+    Code,
 }
 
 /// Draw `icon` in the square `r`.
@@ -247,6 +249,14 @@ pub fn draw(p: &Painter, icon: Icon, r: Rect, c: Color32) {
             p.circle_filled(q, 0.1 * w, c);
             line(q + vec2(-0.22 * w, 0.22 * w), pos2(m.x, b));
             line(q + vec2(0.22 * w, 0.22 * w), pos2(m.x, b));
+        }
+        Icon::Code => {
+            // The signs < and >.
+            line(pos2(l + 0.3 * w, t + 0.2 * w), pos2(l, m.y));
+            line(pos2(l, m.y), pos2(l + 0.3 * w, b - 0.2 * w));
+            line(pos2(rt - 0.3 * w, t + 0.2 * w), pos2(rt, m.y));
+            line(pos2(rt, m.y), pos2(rt - 0.3 * w, b - 0.2 * w));
+            line(pos2(m.x + 0.1 * w, t + 0.1 * w), pos2(m.x - 0.1 * w, b - 0.1 * w));
         }
         Icon::Pause => {
             for x in [l + 0.22 * w, rt - 0.42 * w] {

@@ -2,7 +2,7 @@
 //! list of sections with icons, a search field, and the settings of the selected section.
 use crate::app::App;
 use crate::icons::{self, Icon};
-use crate::lang::t;
+use crate::lang::{t, tf};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -25,6 +25,8 @@ pub struct Prefs {
     pub disk_mb: usize,
     /// Directory of the disk cache, for the next start. Empty: `eoview/remote` in the cache directory of the system.
     pub cache_dir: String,
+    /// The Python program for the scripts. Empty: `python3` (`python` on Windows) of the search path.
+    pub python: String,
 }
 
 /// The configuration directory of eoview: `%APPDATA%\eoview` on Windows, `$XDG_CONFIG_HOME/eoview` or
@@ -51,16 +53,18 @@ pub enum Section {
     Performance,
     Network,
     Render,
+    Python,
     Keys,
     About,
 }
 
-const SECTIONS: [(Section, &str, Icon); 7] = [
+const SECTIONS: [(Section, &str, Icon); 8] = [
     (Section::General, "General", Icon::Gear),
     (Section::Appearance, "Appearance", Icon::Palette),
     (Section::Performance, "Performance", Icon::Gauge),
     (Section::Network, "Network", Icon::Cloud),
     (Section::Render, "Render", Icon::Film),
+    (Section::Python, "Python", Icon::Code),
     (Section::Keys, "Keys", Icon::Keyboard),
     (Section::About, "About", Icon::Info),
 ];
@@ -77,11 +81,12 @@ enum Item {
     Disk,
     CacheDir,
     Ffmpeg,
+    Python,
     Keys,
     About,
 }
 
-const ITEMS: [(Item, Section, &str, &str); 11] = [
+const ITEMS: [(Item, Section, &str, &str); 12] = [
     (Item::Lang, Section::General, "Language", "The language of the interface."),
     (Item::Recent, Section::General, "Recent products", "The list of the recent products and workspaces of the File menu."),
     (Item::Theme, Section::Appearance, "Theme", "Colors, corners, spacing and size of the text. To add a theme, put a JSON file in the themes directory."),
@@ -91,6 +96,7 @@ const ITEMS: [(Item, Section, &str, &str); 11] = [
     (Item::Disk, Section::Network, "Disk cache budget (MB)", "Disk space for the remote data. 0: 10 GB. For the next start."),
     (Item::CacheDir, Section::Network, "Disk cache directory", "Empty: the cache directory of the system. For the next start."),
     (Item::Ffmpeg, Section::Render, "Path of ffmpeg", "The program that writes the video files of a render. Empty: next to eoview, then the search path."),
+    (Item::Python, Section::Python, "Python program", "The Python of the scripts, with numpy (and xarray, matplotlib if the scripts use them). Empty: python3 on the search path. A path of a virtual environment or of conda is possible."),
     (Item::Keys, Section::Keys, "Keys", "The keys of the commands."),
     (Item::About, Section::About, "About", "Version, GPU, license."),
 ];
@@ -245,6 +251,13 @@ impl App {
                     Some(true) => ui.small(t("ffmpeg runs.")),
                     _ => ui.colored_label(ui.visuals().warn_fg_color, t("ffmpeg was not found: the renders write PNG files.")),
                 };
+                c
+            }
+            Item::Python => {
+                let c = ui.add(egui::TextEdit::singleline(&mut p.python).hint_text(if cfg!(windows) { "python" } else { "python3" }).desired_width(f32::INFINITY)).changed();
+                if let Some(d) = self.py.as_ref().and_then(|p| p.path.as_ref()) {
+                    ui.small(tf("The module eoview for the notebooks: {} (or pip install the directory python of eoview)", &[&d.display().to_string()]));
+                }
                 c
             }
             Item::Keys => {

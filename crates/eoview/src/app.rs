@@ -44,7 +44,7 @@ impl Cmp {
 
 /// Camera of a link group. Geographic: center longitude and latitude, and ground meters for one screen
 /// pixel. Pixel: center in level-0 pixels of the first input, and layer pixels for one screen pixel.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Cam {
     Geo { lon: f64, lat: f64, m: f64 },
     Px { x: f64, y: f64, k: f64 },
@@ -321,6 +321,9 @@ struct Open {
     series: Vec<(String, f64)>,
     /// Variable or band that the layer shows first (`path#name`).
     band: Option<String>,
+    /// The operation of a computed layer. If the layer that comes is not computed, it is the source of the
+    /// operation: the operation starts then.
+    op: Option<crate::layer::OpSave>,
 }
 
 /// What an open command opens.
@@ -376,6 +379,8 @@ struct PaneSave {
     pixel_grid: bool,
     #[serde(default)]
     coord_grid: bool,
+    #[serde(default)]
+    shape: Option<crate::tools::Shape>,
 }
 
 /// Workspace file: layout, views, layers, settings and cameras. No data, no credentials.
@@ -389,6 +394,12 @@ struct Workspace {
     /// Settings of the render of the project.
     #[serde(default)]
     render: crate::render::Settings,
+    /// The pinned points.
+    #[serde(default)]
+    pins: Vec<Cam>,
+    /// The Python script that makes layers of the project. It runs when the user says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    python: Option<String>,
 }
 
 pub struct App {
@@ -487,6 +498,10 @@ pub struct App {
     pub drag_from: Option<[f64; 2]>,
     /// The aggregate over time of the side panel: the aggregate, and the first and last steps (None: all).
     pub agg: (eo_cache::Agg, Option<(usize, usize)>),
+    /// Python scripts and notebooks (None: the server did not start).
+    pub py: Option<crate::py::Py>,
+    /// `eoview --python FILE`: the script to run when the products are open.
+    pub cli_python: Option<String>,
 }
 
 impl App {
@@ -553,6 +568,8 @@ impl App {
             pins: vec![],
             drag_from: None,
             agg: (eo_cache::Agg::Mean, None),
+            py: None,
+            cli_python: None,
         }
     }
 
@@ -783,7 +800,7 @@ impl App {
             self.rebuild(pane);
         }
         let req = self.engine.open(path.clone());
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band, op: None });
     }
 
     /// Put a path at the top of the recent list, and write the list.
@@ -1020,6 +1037,7 @@ impl App {
 
     /// Handle engine events. Upload at most `UPLOAD_BYTES` of tiles. Return true if tiles wait.
     pub fn events(&mut self) -> bool {
+        self.py_poll();
         let mut bytes = 0;
         let mut tiles = vec![];
         let more = self.events_into(&mut bytes, &mut tiles);
@@ -1132,6 +1150,7 @@ impl App {
                         self.request_probe(layer, x, y);
                     }
                 }
+                Event::Read { req, res } => self.py_read(req, res),
                 Event::Error(e) => self.error = Some(e),
             }
         }
@@ -1139,9 +1158,20 @@ impl App {
 
     /// A product is open: make its layer in the target view.
     fn opened(&mut self, mut o: Open, l: Arc<Layer>) {
+        // The source of a computed layer of a workspace: start the operation.
+        if let Some(op) = o.op.clone().filter(|_| l.op.is_none()) {
+            let mut m = MapLayer::new(0, op.source.path.clone(), l);
+            m.apply(&op.source);
+            let how = eo_cache::Agg::ALL.iter().find(|a| a.1 == op.how).map_or(eo_cache::Agg::Mean, |a| a.0);
+            match agg_start(&self.engine, &m, how, (op.first, op.last)) {
+                Ok((req, _, _)) => drop(self.opens.insert(req, o)),
+                Err(e) => self.error = Some(format!("{}: {e}", o.path)),
+            }
+            return;
+        }
         let uid = self.uid();
         let mut m = MapLayer::new(uid, o.path, l);
-        m.order = o.order;
+        (m.order, m.op) = (o.order, o.op.take());
         if !o.series.is_empty() {
             m.set_series(o.series);
         }
@@ -1182,7 +1212,10 @@ impl App {
         p.sel = at;
         // EOVIEW_PLAY: the playback starts when a product opens (for checks without a keyboard).
         p.play |= std::env::var_os("EOVIEW_PLAY").is_some();
-        self.active = o.pane;
+        // A layer of a workspace file does not change the active view of the file.
+        if o.save.is_none() {
+            self.active = o.pane;
+        }
         self.compile(o.pane, at);
         if let Some(w) = &self.win {
             let name = self.pane(o.pane).map(|p| p.title()).unwrap_or_default();
@@ -1193,30 +1226,16 @@ impl App {
     /// Make a new layer in view `id`: the aggregate `how` of the time steps `range` (first, last) of the
     /// selected band of the selected layer. The steps open in the engine if they are not open.
     pub fn aggregate(&mut self, id: u32, how: eo_cache::Agg, range: (usize, usize)) {
-        use eo_cache::StepIn;
         let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
-        if l.steps.len() < 2 {
-            return self.error = Some(t("The layer has no time steps.").into());
+        match agg_start(&self.engine, l, how, range) {
+            Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op) })),
+            Err(e) => self.error = Some(e),
         }
-        if l.kind != crate::layer::Kind::Band {
-            return self.error = Some(t("An aggregate over time uses one band: show one band of the layer.").into());
-        }
-        let Some(c) = l.chans.get(l.band) else { return };
-        let (var, choice) = (c.var, c.choice);
-        let Some(first) = l.cache.iter().find(|(k, _)| (k.1, k.2) == (var, choice)).map(|x| x.1.clone()) else {
-            return self.error = Some(t("The band is not open yet.").into());
-        };
-        let (a, b) = (range.0.min(l.steps.len() - 1), range.1.min(l.steps.len() - 1));
-        let steps: Vec<StepIn> = (a.min(b)..=a.max(b))
-            .map(|s| match (&l.steps[s], l.cache.get(&(s, var, choice))) {
-                (_, Some(x)) => StepIn::Layer(x.clone()),
-                (st, None) if st.path.is_empty() => StepIn::Time(l.time_of(s, var)),
-                (st, None) => StepIn::Path(st.path.clone()),
-            })
-            .collect();
-        let path = format!("{} {} {} - {}", l.chan_label(l.band), t(how.name()).to_lowercase(), l.step_label(a.min(b)), l.step_label(a.max(b)));
-        let req = self.engine.aggregate(first, steps, how);
-        self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None });
+    }
+
+    /// Engine request `req` makes a layer (a computed layer): put it in view `pane` when it comes, with the name `path`.
+    pub fn open_req(&mut self, req: u64, pane: u32, path: String) {
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band: None, op: None });
     }
 
     /// Number of products that open now, time steps included.
@@ -1383,19 +1402,22 @@ impl App {
                 dhi: p.dhi,
                 dcmap: crate::layer::CMAPS[p.dcmap].0.into(),
                 dinvert: p.dinvert,
-                // ponytail: a computed layer is not in the file (DESIGN.md 3.7: save its operation).
-                layers: p.layers.iter().filter(|l| l.any().is_none_or(|x| x.op.is_none())).map(MapLayer::save).collect(),
+                // A computed layer is in the file with its operation. The outputs of the Python script are
+                // not: the script makes them again.
+                layers: p.layers.iter().filter(|l| l.op.is_some() || l.any().is_none_or(|x| x.op.is_none())).map(MapLayer::save).collect(),
                 globe: p.v.globe,
                 smooth: p.smooth,
                 overlays: p.overlays,
                 pixel_grid: p.pixel_grid,
                 coord_grid: p.coord_grid,
+                shape: p.shape.clone().filter(|s| s.done),
             })
             .collect();
         // A workspace file does not keep the windows: the detached views are tabs of the dock.
         let mut dock = self.dock.clone();
         self.floating.iter().filter(|&&id| Some(id) != job).for_each(|&id| dock.push_to_focused_leaf(id));
-        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes, render: self.render_set.clone() };
+        let python = self.py.as_ref().filter(|p| p.used).map(|p| p.code.clone());
+        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes, render: self.render_set.clone(), pins: self.pins.clone(), python };
         let mut v = serde_json::to_value(&ws).map_err(|e| e.to_string())?;
         finite(&mut v);
         let s = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
@@ -1416,6 +1438,27 @@ impl App {
         self.job = None;
         self.floating.clear();
         self.render_set = ws.render;
+        self.pins = ws.pins;
+        if let (Some(code), Some(p)) = (ws.python, &mut self.py) {
+            (p.code, p.open, p.ask) = (code, true, true);
+        }
+        // Paths relative to the workspace file.
+        let dir = std::path::Path::new(path).parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let fix = |p: &mut String| {
+            if !p.contains("://") && std::path::Path::new(p.as_str()).is_relative() {
+                *p = dir.join(&*p).to_string_lossy().into_owned();
+            }
+        };
+        let fix_save = |s: &mut LayerSave| {
+            fix(&mut s.path);
+            s.series.iter_mut().for_each(|x| fix(&mut x.0));
+            if let Some(op) = &mut s.op {
+                fix(&mut op.source.path);
+                op.source.series.iter_mut().for_each(|x| fix(&mut x.0));
+            }
+        };
+        let mut ws_panes = ws.panes;
+        ws_panes.iter_mut().flat_map(|p| p.layers.iter_mut()).for_each(fix_save);
         self.dock = ws.dock;
         self.link_px = ws.link_px;
         self.error = None;
@@ -1427,15 +1470,17 @@ impl App {
         self.next_pane = ids.iter().max().unwrap() + 1;
         for id in ids {
             let mut p = Pane::new(id);
-            if let Some(s) = ws.panes.iter().find(|s| s.id == id) {
+            if let Some(s) = ws_panes.iter().find(|s| s.id == id) {
                 (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe, p.smooth) = (s.space, s.center, s.scale, s.link, s.globe, s.smooth);
-                (p.overlays, p.pixel_grid, p.coord_grid) = (s.overlays, s.pixel_grid, s.coord_grid);
+                (p.overlays, p.pixel_grid, p.coord_grid, p.shape) = (s.overlays, s.pixel_grid, s.coord_grid, s.shape.clone());
                 (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz) = (s.cmp, s.swipe, s.vertical, s.blend, s.flicker_hz);
                 (p.diff, p.dlo, p.dhi, p.dinvert) = (s.diff, s.dlo, s.dhi, s.dinvert);
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);
                 for (order, l) in s.layers.iter().enumerate() {
-                    let req = self.engine.open(l.path.clone());
-                    self.opens.insert(req, Open { pane: id, save: Some(l.clone()), order, path: l.path.clone(), series: vec![], band: None });
+                    // A computed layer: its source opens first.
+                    let src = l.op.as_ref().map_or(&l.path, |o| &o.source.path);
+                    let req = self.engine.open(src.clone());
+                    self.opens.insert(req, Open { pane: id, save: Some(l.clone()), order, path: l.path.clone(), series: vec![], band: None, op: l.op.clone() });
                 }
             }
             self.panes.push(p);
@@ -1444,13 +1489,42 @@ impl App {
     }
 }
 
+/// Start the aggregate `how` of the steps `range` of the band of layer `l`. Return the engine request, the
+/// name of the new layer and its operation (for the workspace file).
+fn agg_start(engine: &Engine, l: &MapLayer, how: eo_cache::Agg, range: (usize, usize)) -> Result<(u64, String, crate::layer::OpSave), String> {
+    use eo_cache::StepIn;
+    if l.steps.len() < 2 {
+        return Err(t("The layer has no time steps.").into());
+    }
+    if l.kind != crate::layer::Kind::Band {
+        return Err(t("An aggregate over time uses one band: show one band of the layer.").into());
+    }
+    let c = l.chans.get(l.band).ok_or("no band")?;
+    let (var, choice) = (c.var, c.choice);
+    let base = l.cache.values().next().cloned().ok_or_else(|| t("The band is not open yet.").to_string())?;
+    let (a, b) = (range.0.min(l.steps.len() - 1), range.1.min(l.steps.len() - 1));
+    let (a, b) = (a.min(b), a.max(b));
+    let steps: Vec<StepIn> = (a..=b)
+        .map(|s| match (&l.steps[s], l.cache.get(&(s, var, choice))) {
+            (_, Some(x)) => StepIn::Layer(x.clone()),
+            (st, None) if st.path.is_empty() => StepIn::Time(l.time_of(s, var)),
+            (st, None) => StepIn::Path(st.path.clone()),
+        })
+        .collect();
+    let path = format!("{} {} {} - {}", l.chan_label(l.band), t(how.name()).to_lowercase(), l.step_label(a), l.step_label(b));
+    let op = crate::layer::OpSave { how: how.name().into(), source: Box::new(l.save()), first: a, last: b };
+    Ok((engine.aggregate(base, var, choice, steps, how), path, op))
+}
+
 /// Replace each product list (a local `.txt` file) by its products: one path or URL on each line. Empty
-/// lines and lines that start with `#` are not products.
+/// lines and lines that start with `#` are not products. A relative path is relative to the list.
 fn lists(paths: Vec<String>) -> Vec<String> {
     let mut out = vec![];
     for p in paths {
+        let dir = std::path::Path::new(&p).parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let fix = |l: &str| if l.contains("://") || std::path::Path::new(l).is_absolute() { l.to_string() } else { dir.join(l).to_string_lossy().into_owned() };
         match std::fs::read_to_string(&p).ok().filter(|_| p.to_lowercase().ends_with(".txt")) {
-            Some(s) => out.extend(s.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from)),
+            Some(s) => out.extend(s.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(fix)),
             None => out.push(p),
         }
     }

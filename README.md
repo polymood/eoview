@@ -88,8 +88,62 @@ inspector shows the exact value (the aggregate of the values of the files). All 
 works for the result: stretch, color maps, compare modes, links, tools, render. The results stay in the
 memory caches, and in the disk cache for remote data.
 
-Limits of this version: one band (not band math or RGB), all steps on the same grid, a median of at most
-the steps that a quarter of the RAM budget permits, and the computed layers are not in the workspace file.
+Limits of this version: one band (not band math or RGB), all steps on the same grid, and a median of at
+most the steps that a quarter of the RAM budget permits. The workspace file keeps the operation of a
+computed layer: the layer is computed again when the workspace opens.
+
+### Python scripts and notebooks
+
+A Python script or a Jupyter notebook uses the module `eoview` to get layers from the viewer and to give
+new layers and charts to it:
+
+```python
+import eoview as ev
+
+img = ev.input()                         # the selected layer of the active view (xarray.DataArray)
+sst = ev.layer("sst", extent="all", level=0)   # a layer of a view, by its name: all the data, full resolution
+ev.output(img * 1.02 - 0.5, name="corrected")  # a new layer in the active view, on the grid of the input
+ev.plot(fig)                             # a matplotlib figure in the charts window
+print(ev.layers())                       # the layers of all views
+```
+
+- **Python panel** (Tools, then Python, or F7): type a script, then Run (Ctrl+Enter). The script runs in
+  an other process, with the Python of the preferences (Preferences, Python). Its output and its errors
+  show in the panel. `eoview --python script.py <products>` runs a script when the products show.
+- **Notebooks**: `import eoview as ev`, then `ev.connect()`. It connects to the eoview that runs on the
+  computer, or starts eoview (the program `eoview` on the search path, or `EOVIEW_EXE`). The module is in
+  `python/` (`pip install ./python`), and eoview writes a copy of it in the configuration directory
+  (`python/eoview`).
+- An input is an `xarray.DataArray` with x and y coordinates for an affine georeferencing, the unit, and
+  NaN for no data (a numpy array with `attrs` without xarray). `extent="view"` (the default) gives the
+  area of the view at the resolution of the view, `extent="all"` all the data. `level=0` is the full
+  resolution. eoview refuses an input that is more than a quarter of its RAM budget.
+- An output has the grid of the input that it comes from, or `transform` (GDAL order) and `crs`
+  (`"EPSG:4326"`). It is a computed layer in memory: all that works for a layer works for it.
+- eoview listens on a local port (127.0.0.1) only, with a random token for each session. The port and the
+  token are in `server.json` in the configuration directory.
+- A workspace file keeps the script that made layers. When the workspace opens, the panel shows the script
+  and asks the user to run it: a workspace file does not run code without the user.
+
+### Example project
+
+`examples/features.eoview` shows the new functions on synthetic data (land surface temperature of Europe,
+30 days with clouds). Make the data first (about 6 MB, in `examples/lst_europe/`):
+
+```
+uv run --with numpy --with netCDF4 python scripts/make_example.py
+eoview examples/features.eoview
+```
+
+- Left view: the 30 daily files as a time series (day 16, a heat wave) and the mean of the 30 days (a
+  computed layer), with the swipe compare mode, the coordinate grid, coasts and borders, and a region over
+  France with its statistics.
+- Right view (linked): the number of days with data of each pixel, and a transect.
+- Two pinned points (Paris and Madrid) show their values in the two views.
+- The Python panel has the script of the project (`examples/correct_lst.py`). Run it: it fills the gaps of
+  the mean, adds the result in degrees Celsius to the right view, and shows a chart of the temperature by
+  latitude. The script needs numpy and matplotlib (Preferences, Python).
+- Try also: Edit, then Preferences (Ctrl+,): the light and the high contrast themes, and French.
 
 Real data with time, without an account:
 

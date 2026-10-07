@@ -21,7 +21,7 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::task::AbortHandle;
 
 mod ops;
-pub use ops::{Agg, Op, StepIn};
+pub use ops::{Agg, Op, OpKind, StepIn};
 
 /// Width and height of a display tile.
 pub const TILE: u64 = 512;
@@ -197,6 +197,8 @@ pub enum Event {
     Probe { layer: u64, x: u64, y: u64, values: Vec<Option<f64>> },
     /// Warp grid of a layer to a display CRS (EPSG code; None: pixel space).
     Warp { layer: u64, dst: Option<u32>, res: Result<Arc<Warp>> },
+    /// Values of a window of a layer (see `Engine::read`), and the georeferencing of the window.
+    Read { req: u64, res: Result<(Arc<Vec<f32>>, Georef)> },
     Error(String),
 }
 
@@ -424,7 +426,7 @@ impl Engine {
         let i = self.inner.clone();
         self.rt.spawn(async move {
             let r = match &l.op {
-                Some(op) => i.probe_op(&l, op, x, y).await,
+                Some(op) => i.probe_op(op, x, y).await,
                 None => i.probe_at(&l, x, y).await,
             };
             match r {

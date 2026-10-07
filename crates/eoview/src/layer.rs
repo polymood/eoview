@@ -275,6 +275,8 @@ pub struct MapLayer {
     /// Product tree, and the filter text of the side panel.
     pub contents: Group,
     pub filter: String,
+    /// A computed layer: its operation (for the workspace file).
+    pub op: Option<OpSave>,
 }
 
 impl MapLayer {
@@ -322,6 +324,7 @@ impl MapLayer {
             hist: vec![],
             contents: Group::default(),
             filter: String::new(),
+            op: None,
         };
         m.contents = contents(&first.ds.product, &m.chans);
         if first.var().levels[0].dtype.is_complex() {
@@ -729,6 +732,19 @@ pub struct LayerSave {
     /// Wind mode: the colors of the speed, the arrows, the particles.
     #[serde(default)]
     pub wind: Option<[bool; 3]>,
+    /// A computed layer: its operation. The layer opens again from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op: Option<OpSave>,
+}
+
+/// The operation of a computed layer in a workspace file: an aggregate over time (`how`: the English name
+/// of `eo_cache::Agg`) of the steps `first` to `last` of the layer `source`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OpSave {
+    pub how: String,
+    pub source: Box<LayerSave>,
+    pub first: usize,
+    pub last: usize,
 }
 
 /// Path without the query, the fragment and the user information of a URL: they can contain credentials
@@ -762,6 +778,7 @@ impl MapLayer {
             series: self.steps.iter().filter(|s| !s.path.is_empty()).map(|s| (clean_path(&s.path), s.t.is_finite().then_some(s.t))).collect(),
             step: self.step,
             wind: Some([self.fill, self.arrows, self.particles]),
+            op: self.op.clone(),
         }
     }
 

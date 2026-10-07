@@ -13,7 +13,7 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, vec2};
 use std::sync::Arc;
 
 /// The tool of the mouse in the views. With no tool, a click selects the view and a drag moves it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum Tool {
     #[default]
     None,
@@ -33,14 +33,16 @@ impl Tool {
 }
 
 /// A shape that the user draws in a view, in the display coordinates of the view.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Shape {
     pub tool: Tool,
     pub pts: Vec<[f64; 2]>,
     /// The user ended the shape (double-click, the second point of a transect, the end of a drag).
     pub done: bool,
     /// The result for the data of `key`.
+    #[serde(skip)]
     pub result: Option<Res>,
+    #[serde(skip)]
     key: Option<Key>,
 }
 
@@ -51,10 +53,12 @@ type Key = (Vec<[u64; 2]>, u64, usize, Vec<u64>, usize);
 pub enum Res {
     /// Tiles load.
     Wait,
-    /// Statistics of each channel of the layer, the level of the data, and true if the pixels are a sample.
-    Stats(Vec<Stat>, usize, bool),
-    /// Distance from the first point (meters, or pixels in pixel space) and the values of each channel.
-    Profile(Vec<(f64, Vec<f64>)>, bool),
+    /// Statistics of each channel of the layer, the level of the data, true if the pixels are a sample, and
+    /// the precision of the values.
+    Stats(Vec<Stat>, usize, bool, f64),
+    /// Distance from the first point (meters, or pixels in pixel space), the values of each channel, and the
+    /// precision of the values.
+    Profile(Vec<(f64, Vec<f64>)>, bool, f64),
     /// No visible layer, or no data in the shape.
     Empty(&'static str),
 }
@@ -110,6 +114,17 @@ pub fn area_lonlat(ll: &[[f64; 2]]) -> f64 {
 /// Area of a plane polygon (shoelace).
 pub fn area_plane(p: &[[f64; 2]]) -> f64 {
     (0..p.len()).map(|i| p[i][0] * p[(i + 1) % p.len()][1] - p[(i + 1) % p.len()][0] * p[i][1]).sum::<f64>().abs() / 2.0
+}
+
+/// A value with the decimals that the precision `err` permits (the values of the tools come from tiles in
+/// 16-bit floats).
+pub fn num_p(v: f64, err: f64) -> String {
+    if !v.is_finite() || !(err > 0.0) {
+        return num(v);
+    }
+    let d = (-err.log10()).ceil().clamp(0.0, 6.0) as usize;
+    let s = format!("{v:.d$}");
+    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
 }
 
 /// A value with 4 to 6 significant digits.
@@ -189,6 +204,19 @@ impl<'a> Sampler<'a> {
         self.srcs[0].level
     }
 
+    /// The precision of the values of the tiles: the step of an 8-bit value, or of a 16-bit float at the
+    /// largest value of the layer (11 bits).
+    pub fn precision(&self) -> f64 {
+        let l = self.srcs[0].layer;
+        let (a, b) = l.texel_to_phys();
+        if l.enc.u8 {
+            return (a / 255.0).abs() as f64;
+        }
+        let ends = [l.sample.first(), l.sample.last()];
+        let big = ends.iter().flatten().map(|&&v| ((v - b) / a).abs()).fold(1.0f32, f32::max);
+        (big * a.abs()) as f64 / 2048.0
+    }
+
     /// The level-0 pixel of input `s` at display position `d`.
     fn locate(s: &Src, d: [f64; 2]) -> Option<(f64, f64)> {
         let (lw, lh) = s.layer.size();
@@ -220,19 +248,8 @@ impl<'a> Sampler<'a> {
     pub fn tiles(&self, fields: &Fields, need: &mut Vec<(Arc<Layer>, TileKey)>, r: [f64; 4]) -> usize {
         let mut n = 0;
         for s in &self.srcs {
-            // The pixel box of the rectangle: its corners and points on its edges (a warp can be a curve).
-            let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-            for k in 0..=8 {
-                let f = k as f64 / 8.0;
-                for d in [[r[0] + f * (r[2] - r[0]), r[1]], [r[0] + f * (r[2] - r[0]), r[3]], [r[0], r[1] + f * (r[3] - r[1])], [r[2], r[1] + f * (r[3] - r[1])]] {
-                    if let Some((x, y)) = s.warp.inverse(d[0], d[1]) {
-                        b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
-                    }
-                }
-            }
-            if b[0] > b[2] {
-                continue;
-            }
+            let (w, h) = s.layer.size();
+            let Some(b) = pixel_box(s.warp, r, w as f64, h as f64) else { continue };
             let lv = &s.layer.levels[s.level];
             let tx = |x: f64| ((((x - lv.ox) / lv.kx).max(0.0) as u64).min(lv.w - 1) / TILE) as u32;
             let ty = |y: f64| ((((y - lv.oy) / lv.ky).max(0.0) as u64).min(lv.h - 1) / TILE) as u32;
@@ -248,6 +265,30 @@ impl<'a> Sampler<'a> {
         }
         n
     }
+}
+
+/// The box (x0, y0, x1, y1) of the level-0 pixels of a layer of `w` x `h` pixels that show in the display
+/// rectangle `r` (x0, y0, x1, y1): the points of the edges of the rectangle that are on the layer, and the
+/// points of the edges of the layer that are in the rectangle. None: the layer is not in the rectangle.
+pub fn pixel_box(warp: &Warp, r: [f64; 4], w: f64, h: f64) -> Option<[f64; 4]> {
+    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+    let mut add = |x: f64, y: f64| b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+    let (rx, ry) = ((r[0]).min(r[2])..=(r[0]).max(r[2]), (r[1]).min(r[3])..=(r[1]).max(r[3]));
+    for k in 0..=16 {
+        let f = k as f64 / 16.0;
+        for d in [[r[0] + f * (r[2] - r[0]), r[1]], [r[0] + f * (r[2] - r[0]), r[3]], [r[0], r[1] + f * (r[3] - r[1])], [r[2], r[1] + f * (r[3] - r[1])]] {
+            if let Some((x, y)) = warp.inverse(d[0], d[1]) {
+                add(x, y);
+            }
+        }
+        for (x, y) in [(f * w, 0.0), (f * w, h), (0.0, f * h), (w, f * h)] {
+            let d = warp.at(x, y);
+            if rx.contains(&d[0]) && ry.contains(&d[1]) {
+                add(x, y);
+            }
+        }
+    }
+    (b[0] <= b[2]).then(|| [b[0].max(0.0), b[1].max(0.0), b[2].min(w), b[3].min(h)]).filter(|b| b[0] < b[2] && b[1] < b[3])
 }
 
 /// The physical value of pixel (ix, iy) of level `level` of `layer`: NaN for no data. None: the tile is not
@@ -413,8 +454,10 @@ impl App {
             if !r.contains(q) {
                 continue;
             }
-            let text = match Sampler::new(p, sel, Some(0)).map(|s| s.at(&self.fields, need, c)) {
-                Some(Sample::Is(v)) => v.iter().map(|x| num(*x)).collect::<Vec<_>>().join(" "),
+            let s = Sampler::new(p, sel, Some(0));
+            let err = s.as_ref().map_or(0.0, |s| s.precision());
+            let text = match s.map(|s| s.at(&self.fields, need, c)) {
+                Some(Sample::Is(v)) => v.iter().map(|x| num_p(*x, err)).collect::<Vec<_>>().join(" "),
                 Some(Sample::Missing) => "...".into(),
                 _ => String::new(),
             };
@@ -451,6 +494,7 @@ impl App {
         } else {
             let id = p.id;
             let n = transect_points(p, &sampler, &pts);
+            let err = sampler.precision();
             let mut out = vec![];
             let mut ok = true;
             for k in 0..n {
@@ -473,7 +517,7 @@ impl App {
                     geo &= g;
                     prof.push((m, v.clone()));
                 }
-                Res::Profile(prof, geo)
+                Res::Profile(prof, geo, err)
             }
         };
         if let Some(sh) = &mut self.panes[i].shape {
@@ -603,23 +647,13 @@ fn transect_points(p: &Pane, s: &Sampler, pts: &[[f64; 2]]) -> usize {
 fn region_stats(s: &Sampler, fields: &Fields, poly: &[[f64; 2]]) -> Res {
     let src = &s.srcs[0];
     let lv = &src.layer.levels[src.level];
-    // The pixel box of the polygon, at the level of the sampler.
-    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    for (k, a) in poly.iter().enumerate() {
-        let c = poly[(k + 1) % poly.len()];
-        for j in 0..=16 {
-            let f = j as f64 / 16.0;
-            if let Some((x, y)) = src.warp.inverse(a[0] + f * (c[0] - a[0]), a[1] + f * (c[1] - a[1])) {
-                b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
-            }
-        }
-    }
+    // The pixel box of the polygon.
+    let r = poly.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, c| [b[0].min(c[0]), b[1].min(c[1]), b[2].max(c[0]), b[3].max(c[1])]);
+    let (lw, lh) = src.layer.size();
+    let Some(mut b) = pixel_box(src.warp, r, lw as f64, lh as f64) else { return Res::Empty("The region is not on the layer.") };
     // A layer that repeats in longitude: all its columns.
     if src.wrap {
-        (b[0], b[2]) = (0.0, src.layer.size().0 as f64);
-    }
-    if b[0] > b[2] {
-        return Res::Empty("The region is not on the layer.");
+        (b[0], b[2]) = (0.0, lw as f64);
     }
     let (i0, i1) = ((((b[0] - lv.ox) / lv.kx).floor().max(0.0) as u64).min(lv.w), (((b[2] - lv.ox) / lv.kx).ceil().max(0.0) as u64).min(lv.w));
     let (j0, j1) = ((((b[1] - lv.oy) / lv.ky).floor().max(0.0) as u64).min(lv.h), (((b[3] - lv.oy) / lv.ky).ceil().max(0.0) as u64).min(lv.h));
@@ -644,7 +678,7 @@ fn region_stats(s: &Sampler, fields: &Fields, poly: &[[f64; 2]]) -> Res {
     if st.iter().all(|s| s.n == 0) {
         return Res::Empty("No data in the region.");
     }
-    Res::Stats(st, src.level, stride > 1)
+    Res::Stats(st, src.level, stride > 1, s.precision())
 }
 
 /// Lines at the edges of the pixels of the selected layer when a pixel is larger than 8 screen points, and
@@ -658,17 +692,8 @@ fn pixel_grid(p: &Pane, fields: &Fields, need: &mut Vec<(Arc<Layer>, TileKey)>, 
     if size < 8.0 || p.v.globe {
         return;
     }
-    let view = p.v.rect();
-    let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
-    for d in [[view[0], view[1]], [view[2], view[1]], [view[0], view[3]], [view[2], view[3]], [(view[0] + view[2]) / 2.0, view[1]], [(view[0] + view[2]) / 2.0, view[3]], [view[0], (view[1] + view[3]) / 2.0], [view[2], (view[1] + view[3]) / 2.0]] {
-        if let Some((x, y)) = src.warp.inverse(d[0], d[1]) {
-            b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
-        }
-    }
     let (w, h) = src.layer.size();
-    if b[0] > b[2] {
-        return;
-    }
+    let Some(b) = pixel_box(src.warp, p.v.rect(), w as f64, h as f64) else { return };
     let (x0, x1) = ((b[0].floor() - 1.0).max(0.0) as u64, ((b[2].ceil() + 1.0) as u64).min(w));
     let (y0, y1) = ((b[1].floor() - 1.0).max(0.0) as u64, ((b[3].ceil() + 1.0) as u64).min(h));
     if (x1 - x0) * (y1 - y0) > 40_000 {
@@ -694,7 +719,7 @@ fn pixel_grid(p: &Pane, fields: &Fields, need: &mut Vec<(Arc<Layer>, TileKey)>, 
                 continue;
             }
             let text = match s.at(fields, need, c) {
-                Sample::Is(v) => v.iter().map(|v| num(*v)).collect::<Vec<_>>().join("\n"),
+                Sample::Is(v) => v.iter().map(|v| num_p(*v, s.precision())).collect::<Vec<_>>().join("\n"),
                 Sample::Missing => "...".into(),
                 Sample::Out => continue,
             };
@@ -737,7 +762,7 @@ pub fn results_ui(app: &mut App, ui: &mut egui::Ui, id: u32) {
             });
         }
         (_, Some(Res::Empty(why))) => drop(ui.weak(t(why))),
-        (_, Some(Res::Stats(st, level, sample))) => {
+        (_, Some(Res::Stats(st, level, sample, err))) => {
             let (a, geo) = app.poly_area(id, &sh.pts);
             ui.label(format!("{}: {}", t("Area"), surface(a, geo)));
             egui::Grid::new("region stats").striped(true).show(ui, |ui| {
@@ -749,7 +774,7 @@ pub fn results_ui(app: &mut App, ui: &mut egui::Ui, id: u32) {
                     ui.label(names.get(k).cloned().unwrap_or_default());
                     ui.monospace(s.n.to_string());
                     for v in [s.mean, s.std, s.min, s.max] {
-                        ui.monospace(num(v));
+                        ui.monospace(num_p(v, *err));
                     }
                     ui.end_row();
                 }
@@ -761,12 +786,12 @@ pub fn results_ui(app: &mut App, ui: &mut egui::Ui, id: u32) {
             }
             ui.small(note);
         }
-        (_, Some(Res::Profile(prof, geo))) => chart(ui, prof, *geo, &names),
+        (_, Some(Res::Profile(prof, geo, err))) => chart(ui, prof, *geo, &names, *err),
     }
 }
 
 /// A line chart of a transect: the values of each channel against the distance.
-fn chart(ui: &mut egui::Ui, prof: &[(f64, Vec<f64>)], geo: bool, names: &[String]) {
+fn chart(ui: &mut egui::Ui, prof: &[(f64, Vec<f64>)], geo: bool, names: &[String], err: f64) {
     let n = prof.first().map_or(0, |p| p.1.len());
     let all = || prof.iter().flat_map(|p| p.1.iter().copied()).filter(|v| v.is_finite());
     let (lo, hi) = (all().fold(f64::INFINITY, f64::min), all().fold(f64::NEG_INFINITY, f64::max));
@@ -796,14 +821,14 @@ fn chart(ui: &mut egui::Ui, prof: &[(f64, Vec<f64>)], geo: bool, names: &[String
         pt.add(egui::Shape::line(run, Stroke::new(1.5, colors[k])));
     }
     let small = FontId::proportional(11.0);
-    pt.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, num(hi), small.clone(), vis.text_color());
-    pt.text(rect.left_bottom() + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, num(lo), small.clone(), vis.text_color());
+    pt.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, num_p(hi, err), small.clone(), vis.text_color());
+    pt.text(rect.left_bottom() + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, num_p(lo, err), small.clone(), vis.text_color());
     pt.text(rect.right_bottom() + vec2(-4.0, -2.0), Align2::RIGHT_BOTTOM, length(dmax, geo), small, vis.text_color());
     if let Some(h) = resp.hover_pos() {
         let d = ((h.x - plot.left()) / plot.width()).clamp(0.0, 1.0) as f64 * dmax;
         let k = prof.partition_point(|p| p.0 < d).min(prof.len() - 1);
         pt.line_segment([egui::pos2(x(prof[k].0), plot.top()), egui::pos2(x(prof[k].0), plot.bottom())], Stroke::new(1.0, vis.weak_text_color()));
-        let vals: Vec<String> = prof[k].1.iter().enumerate().map(|(c, v)| format!("{} {}", names.get(c).map_or("", |s| s.as_str()), num(*v))).collect();
+        let vals: Vec<String> = prof[k].1.iter().enumerate().map(|(c, v)| format!("{} {}", names.get(c).map_or("", |s| s.as_str()), num_p(*v, err))).collect();
         resp.on_hover_text_at_pointer(format!("{}\n{}", length(prof[k].0, geo), vals.join("\n")));
     }
 }
@@ -854,7 +879,7 @@ mod tests {
                 Some(r) => break r,
             }
         };
-        let Res::Stats(st, 0, false) = res else { panic!("not statistics") };
+        let Res::Stats(st, 0, false, _) = res else { panic!("not statistics") };
         let s = st[0];
         assert_eq!(s.n, 5384);
         assert!((s.mean - 287.2256).abs() < 0.05 && (s.min - 270.977).abs() < 0.05 && (s.max - 300.554).abs() < 0.05, "{s:?}");

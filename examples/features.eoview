@@ -1,0 +1,808 @@
+{
+ "version": 1,
+ "dock": {
+  "focused_surface": null,
+  "surfaces": [
+   {
+    "Main": {
+     "collapsed": false,
+     "collapsed_leaf_count": 0,
+     "focused_node": 2,
+     "nodes": [
+      {
+       "Horizontal": {
+        "collapsed_leaf_count": 0,
+        "fraction": 0.5,
+        "fully_collapsed": false,
+        "rect": {
+         "max": {
+          "x": 0,
+          "y": 0
+         },
+         "min": {
+          "x": 0,
+          "y": 0
+         }
+        }
+       }
+      },
+      {
+       "Leaf": {
+        "active": 0,
+        "collapsed": false,
+        "rect": {
+         "max": {
+          "x": 0,
+          "y": 0
+         },
+         "min": {
+          "x": 0,
+          "y": 0
+         }
+        },
+        "scroll": 0.0,
+        "tab_bar_hidden": false,
+        "tabs": [
+         1
+        ],
+        "viewport": {
+         "max": {
+          "x": 0,
+          "y": 0
+         },
+         "min": {
+          "x": 0,
+          "y": 0
+         }
+        }
+       }
+      },
+      {
+       "Leaf": {
+        "active": 0,
+        "collapsed": false,
+        "rect": {
+         "max": {
+          "x": 0,
+          "y": 0
+         },
+         "min": {
+          "x": 0,
+          "y": 0
+         }
+        },
+        "scroll": 0.0,
+        "tab_bar_hidden": false,
+        "tabs": [
+         2
+        ],
+        "viewport": {
+         "max": {
+          "x": 0,
+          "y": 0
+         },
+         "min": {
+          "x": 0,
+          "y": 0
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "active": 2,
+ "link_px": false,
+ "panes": [
+  {
+   "id": 1,
+   "space": 4326,
+   "center": [
+    10.0,
+    50.0
+   ],
+   "scale": 26.0,
+   "link": 1,
+   "cmp": "Swipe",
+   "swipe": 0.5,
+   "vertical": true,
+   "blend": 0.5,
+   "flicker_hz": 2.0,
+   "diff": 0,
+   "dlo": -1.0,
+   "dhi": 1.0,
+   "dcmap": "RdBu",
+   "dinvert": false,
+   "layers": [
+    {
+     "path": "lst_europe/lst_20230701.nc",
+     "kind": "Band",
+     "band": "lst",
+     "rgb": [
+      "",
+      "",
+      ""
+     ],
+     "expr": "",
+     "st": [
+      {
+       "lo": 285.0,
+       "hi": 325.0,
+       "gamma": 1.0,
+       "db": false
+      },
+      {
+       "lo": 0.0,
+       "hi": 1.0,
+       "gamma": 1.0,
+       "db": false
+      },
+      {
+       "lo": 0.0,
+       "hi": 1.0,
+       "gamma": 1.0,
+       "db": false
+      }
+     ],
+     "clip": 2.0,
+     "cmap": "Inferno",
+     "stops": [],
+     "invert": false,
+     "opacity": 1.0,
+     "visible": true,
+     "series": [
+      [
+       "lst_europe/lst_20230701.nc",
+       1688169600.0
+      ],
+      [
+       "lst_europe/lst_20230702.nc",
+       1688256000.0
+      ],
+      [
+       "lst_europe/lst_20230703.nc",
+       1688342400.0
+      ],
+      [
+       "lst_europe/lst_20230704.nc",
+       1688428800.0
+      ],
+      [
+       "lst_europe/lst_20230705.nc",
+       1688515200.0
+      ],
+      [
+       "lst_europe/lst_20230706.nc",
+       1688601600.0
+      ],
+      [
+       "lst_europe/lst_20230707.nc",
+       1688688000.0
+      ],
+      [
+       "lst_europe/lst_20230708.nc",
+       1688774400.0
+      ],
+      [
+       "lst_europe/lst_20230709.nc",
+       1688860800.0
+      ],
+      [
+       "lst_europe/lst_20230710.nc",
+       1688947200.0
+      ],
+      [
+       "lst_europe/lst_20230711.nc",
+       1689033600.0
+      ],
+      [
+       "lst_europe/lst_20230712.nc",
+       1689120000.0
+      ],
+      [
+       "lst_europe/lst_20230713.nc",
+       1689206400.0
+      ],
+      [
+       "lst_europe/lst_20230714.nc",
+       1689292800.0
+      ],
+      [
+       "lst_europe/lst_20230715.nc",
+       1689379200.0
+      ],
+      [
+       "lst_europe/lst_20230716.nc",
+       1689465600.0
+      ],
+      [
+       "lst_europe/lst_20230717.nc",
+       1689552000.0
+      ],
+      [
+       "lst_europe/lst_20230718.nc",
+       1689638400.0
+      ],
+      [
+       "lst_europe/lst_20230719.nc",
+       1689724800.0
+      ],
+      [
+       "lst_europe/lst_20230720.nc",
+       1689811200.0
+      ],
+      [
+       "lst_europe/lst_20230721.nc",
+       1689897600.0
+      ],
+      [
+       "lst_europe/lst_20230722.nc",
+       1689984000.0
+      ],
+      [
+       "lst_europe/lst_20230723.nc",
+       1690070400.0
+      ],
+      [
+       "lst_europe/lst_20230724.nc",
+       1690156800.0
+      ],
+      [
+       "lst_europe/lst_20230725.nc",
+       1690243200.0
+      ],
+      [
+       "lst_europe/lst_20230726.nc",
+       1690329600.0
+      ],
+      [
+       "lst_europe/lst_20230727.nc",
+       1690416000.0
+      ],
+      [
+       "lst_europe/lst_20230728.nc",
+       1690502400.0
+      ],
+      [
+       "lst_europe/lst_20230729.nc",
+       1690588800.0
+      ],
+      [
+       "lst_europe/lst_20230730.nc",
+       1690675200.0
+      ]
+     ],
+     "step": 15,
+     "wind": [
+      true,
+      false,
+      true
+     ]
+    },
+    {
+     "path": "lst mean, July 2023",
+     "kind": "Band",
+     "band": "lst_mean",
+     "rgb": [
+      "",
+      "",
+      ""
+     ],
+     "expr": "",
+     "st": [
+      {
+       "lo": 285.0,
+       "hi": 325.0,
+       "gamma": 1.0,
+       "db": false
+      },
+      {
+       "lo": 0.0,
+       "hi": 1.0,
+       "gamma": 1.0,
+       "db": false
+      },
+      {
+       "lo": 0.0,
+       "hi": 1.0,
+       "gamma": 1.0,
+       "db": false
+      }
+     ],
+     "clip": 2.0,
+     "cmap": "Inferno",
+     "stops": [],
+     "invert": false,
+     "opacity": 1.0,
+     "visible": true,
+     "series": [],
+     "step": 0,
+     "wind": [
+      true,
+      false,
+      true
+     ],
+     "op": {
+      "how": "Mean",
+      "source": {
+       "path": "lst_europe/lst_20230701.nc",
+       "kind": "Band",
+       "band": "lst",
+       "rgb": [
+        "",
+        "",
+        ""
+       ],
+       "expr": "",
+       "st": [
+        {
+         "lo": 285.0,
+         "hi": 325.0,
+         "gamma": 1.0,
+         "db": false
+        },
+        {
+         "lo": 0.0,
+         "hi": 1.0,
+         "gamma": 1.0,
+         "db": false
+        },
+        {
+         "lo": 0.0,
+         "hi": 1.0,
+         "gamma": 1.0,
+         "db": false
+        }
+       ],
+       "clip": 2.0,
+       "cmap": "Inferno",
+       "stops": [],
+       "invert": false,
+       "opacity": 1.0,
+       "visible": true,
+       "series": [
+        [
+         "lst_europe/lst_20230701.nc",
+         1688169600.0
+        ],
+        [
+         "lst_europe/lst_20230702.nc",
+         1688256000.0
+        ],
+        [
+         "lst_europe/lst_20230703.nc",
+         1688342400.0
+        ],
+        [
+         "lst_europe/lst_20230704.nc",
+         1688428800.0
+        ],
+        [
+         "lst_europe/lst_20230705.nc",
+         1688515200.0
+        ],
+        [
+         "lst_europe/lst_20230706.nc",
+         1688601600.0
+        ],
+        [
+         "lst_europe/lst_20230707.nc",
+         1688688000.0
+        ],
+        [
+         "lst_europe/lst_20230708.nc",
+         1688774400.0
+        ],
+        [
+         "lst_europe/lst_20230709.nc",
+         1688860800.0
+        ],
+        [
+         "lst_europe/lst_20230710.nc",
+         1688947200.0
+        ],
+        [
+         "lst_europe/lst_20230711.nc",
+         1689033600.0
+        ],
+        [
+         "lst_europe/lst_20230712.nc",
+         1689120000.0
+        ],
+        [
+         "lst_europe/lst_20230713.nc",
+         1689206400.0
+        ],
+        [
+         "lst_europe/lst_20230714.nc",
+         1689292800.0
+        ],
+        [
+         "lst_europe/lst_20230715.nc",
+         1689379200.0
+        ],
+        [
+         "lst_europe/lst_20230716.nc",
+         1689465600.0
+        ],
+        [
+         "lst_europe/lst_20230717.nc",
+         1689552000.0
+        ],
+        [
+         "lst_europe/lst_20230718.nc",
+         1689638400.0
+        ],
+        [
+         "lst_europe/lst_20230719.nc",
+         1689724800.0
+        ],
+        [
+         "lst_europe/lst_20230720.nc",
+         1689811200.0
+        ],
+        [
+         "lst_europe/lst_20230721.nc",
+         1689897600.0
+        ],
+        [
+         "lst_europe/lst_20230722.nc",
+         1689984000.0
+        ],
+        [
+         "lst_europe/lst_20230723.nc",
+         1690070400.0
+        ],
+        [
+         "lst_europe/lst_20230724.nc",
+         1690156800.0
+        ],
+        [
+         "lst_europe/lst_20230725.nc",
+         1690243200.0
+        ],
+        [
+         "lst_europe/lst_20230726.nc",
+         1690329600.0
+        ],
+        [
+         "lst_europe/lst_20230727.nc",
+         1690416000.0
+        ],
+        [
+         "lst_europe/lst_20230728.nc",
+         1690502400.0
+        ],
+        [
+         "lst_europe/lst_20230729.nc",
+         1690588800.0
+        ],
+        [
+         "lst_europe/lst_20230730.nc",
+         1690675200.0
+        ]
+       ],
+       "step": 15,
+       "wind": [
+        true,
+        false,
+        true
+       ]
+      },
+      "first": 0,
+      "last": 29
+     }
+    }
+   ],
+   "globe": false,
+   "smooth": false,
+   "overlays": {
+    "coasts": true,
+    "borders": true,
+    "names": false
+   },
+   "pixel_grid": false,
+   "coord_grid": true,
+   "shape": {
+    "tool": "Region",
+    "pts": [
+     [
+      -2.0,
+      51.0
+     ],
+     [
+      8.0,
+      51.0
+     ],
+     [
+      8.0,
+      43.0
+     ],
+     [
+      -2.0,
+      43.0
+     ]
+    ],
+    "done": true
+   }
+  },
+  {
+   "id": 2,
+   "space": 4326,
+   "center": [
+    10.0,
+    50.0
+   ],
+   "scale": 26.0,
+   "link": 1,
+   "cmp": "Off",
+   "swipe": 0.5,
+   "vertical": true,
+   "blend": 0.5,
+   "flicker_hz": 2.0,
+   "diff": 0,
+   "dlo": -1.0,
+   "dhi": 1.0,
+   "dcmap": "RdBu",
+   "dinvert": false,
+   "layers": [
+    {
+     "path": "lst days with data, July 2023",
+     "kind": "Band",
+     "band": "lst_number_of_values",
+     "rgb": [
+      "",
+      "",
+      ""
+     ],
+     "expr": "",
+     "st": [
+      {
+       "lo": 0.0,
+       "hi": 30.0,
+       "gamma": 1.0,
+       "db": false
+      },
+      {
+       "lo": 0.0,
+       "hi": 1.0,
+       "gamma": 1.0,
+       "db": false
+      },
+      {
+       "lo": 0.0,
+       "hi": 1.0,
+       "gamma": 1.0,
+       "db": false
+      }
+     ],
+     "clip": 2.0,
+     "cmap": "Viridis",
+     "stops": [],
+     "invert": false,
+     "opacity": 1.0,
+     "visible": true,
+     "series": [],
+     "step": 0,
+     "wind": [
+      true,
+      false,
+      true
+     ],
+     "op": {
+      "how": "Number of values",
+      "source": {
+       "path": "lst_europe/lst_20230701.nc",
+       "kind": "Band",
+       "band": "lst",
+       "rgb": [
+        "",
+        "",
+        ""
+       ],
+       "expr": "",
+       "st": [
+        {
+         "lo": 285.0,
+         "hi": 325.0,
+         "gamma": 1.0,
+         "db": false
+        },
+        {
+         "lo": 0.0,
+         "hi": 1.0,
+         "gamma": 1.0,
+         "db": false
+        },
+        {
+         "lo": 0.0,
+         "hi": 1.0,
+         "gamma": 1.0,
+         "db": false
+        }
+       ],
+       "clip": 2.0,
+       "cmap": "Inferno",
+       "stops": [],
+       "invert": false,
+       "opacity": 1.0,
+       "visible": true,
+       "series": [
+        [
+         "lst_europe/lst_20230701.nc",
+         1688169600.0
+        ],
+        [
+         "lst_europe/lst_20230702.nc",
+         1688256000.0
+        ],
+        [
+         "lst_europe/lst_20230703.nc",
+         1688342400.0
+        ],
+        [
+         "lst_europe/lst_20230704.nc",
+         1688428800.0
+        ],
+        [
+         "lst_europe/lst_20230705.nc",
+         1688515200.0
+        ],
+        [
+         "lst_europe/lst_20230706.nc",
+         1688601600.0
+        ],
+        [
+         "lst_europe/lst_20230707.nc",
+         1688688000.0
+        ],
+        [
+         "lst_europe/lst_20230708.nc",
+         1688774400.0
+        ],
+        [
+         "lst_europe/lst_20230709.nc",
+         1688860800.0
+        ],
+        [
+         "lst_europe/lst_20230710.nc",
+         1688947200.0
+        ],
+        [
+         "lst_europe/lst_20230711.nc",
+         1689033600.0
+        ],
+        [
+         "lst_europe/lst_20230712.nc",
+         1689120000.0
+        ],
+        [
+         "lst_europe/lst_20230713.nc",
+         1689206400.0
+        ],
+        [
+         "lst_europe/lst_20230714.nc",
+         1689292800.0
+        ],
+        [
+         "lst_europe/lst_20230715.nc",
+         1689379200.0
+        ],
+        [
+         "lst_europe/lst_20230716.nc",
+         1689465600.0
+        ],
+        [
+         "lst_europe/lst_20230717.nc",
+         1689552000.0
+        ],
+        [
+         "lst_europe/lst_20230718.nc",
+         1689638400.0
+        ],
+        [
+         "lst_europe/lst_20230719.nc",
+         1689724800.0
+        ],
+        [
+         "lst_europe/lst_20230720.nc",
+         1689811200.0
+        ],
+        [
+         "lst_europe/lst_20230721.nc",
+         1689897600.0
+        ],
+        [
+         "lst_europe/lst_20230722.nc",
+         1689984000.0
+        ],
+        [
+         "lst_europe/lst_20230723.nc",
+         1690070400.0
+        ],
+        [
+         "lst_europe/lst_20230724.nc",
+         1690156800.0
+        ],
+        [
+         "lst_europe/lst_20230725.nc",
+         1690243200.0
+        ],
+        [
+         "lst_europe/lst_20230726.nc",
+         1690329600.0
+        ],
+        [
+         "lst_europe/lst_20230727.nc",
+         1690416000.0
+        ],
+        [
+         "lst_europe/lst_20230728.nc",
+         1690502400.0
+        ],
+        [
+         "lst_europe/lst_20230729.nc",
+         1690588800.0
+        ],
+        [
+         "lst_europe/lst_20230730.nc",
+         1690675200.0
+        ]
+       ],
+       "step": 15,
+       "wind": [
+        true,
+        false,
+        true
+       ]
+      },
+      "first": 0,
+      "last": 29
+     }
+    }
+   ],
+   "globe": false,
+   "smooth": false,
+   "overlays": {
+    "coasts": true,
+    "borders": true,
+    "names": false
+   },
+   "pixel_grid": false,
+   "coord_grid": false,
+   "shape": {
+    "tool": "Transect",
+    "pts": [
+     [
+      -8.0,
+      38.0
+     ],
+     [
+      24.0,
+      60.0
+     ]
+    ],
+    "done": true
+   }
+  }
+ ],
+ "pins": [
+  {
+   "Geo": {
+    "lon": 2.35,
+    "lat": 48.86,
+    "m": 1000.0
+   }
+  },
+  {
+   "Geo": {
+    "lon": -3.7,
+    "lat": 40.42,
+    "m": 1000.0
+   }
+  }
+ ],
+ "python": "\"\"\"Script of the example project features.eoview (the Python panel of eoview, F7).\n\nThe mean of 30 days of land surface temperature still has some gaps where clouds were there each day. The\nscript fills them with the mean of the valid pixels around them, converts kelvin to degrees Celsius, and\nmakes a chart: the mean temperature of each latitude.\n\"\"\"\nimport eoview as ev\nimport matplotlib.pyplot as plt\nimport numpy as np\n\n# The aggregate layer of the left view, at the full resolution.\nname = next(l[\"name\"] for l in ev.layers() if \"mean\" in l[\"name\"])\nmean = ev.layer(name, extent=\"all\", level=0)\na = np.asarray(mean, dtype=np.float64)\nprint(name, a.shape, \"gaps:\", int(np.isnan(a).sum()))\n\n\ndef box(x, k):\n    \"\"\"Sum of each (2k+1) x (2k+1) window.\"\"\"\n    c = np.pad(np.pad(x, k).cumsum(0).cumsum(1), ((1, 0), (1, 0)))\n    n = 2 * k + 1\n    return c[n:, n:] - c[:-n, n:] - c[n:, :-n] + c[:-n, :-n]\n\n\nfilled = a.copy()\nfor _ in range(3):\n    gaps = np.isnan(filled)\n    valid = (~gaps).astype(np.float64)\n    near = box(np.where(gaps, 0.0, filled), 3) / np.maximum(box(valid, 3), 1)\n    # Fill only the gaps with enough valid pixels around them: the sea stays empty.\n    filled[gaps & (box(valid, 3) >= 12)] = near[gaps & (box(valid, 3) >= 12)]\nprint(\"gaps after the fill:\", int(np.isnan(filled).sum()))\n\nev.output(filled - 273.15, name=\"lst mean filled\", units=\"\u00b0C\")\n\n# A chart that eoview does not have: the mean temperature of each latitude, with its spread.\nlat = mean[\"y\"].values if hasattr(mean, \"coords\") and \"y\" in mean.coords else np.arange(a.shape[0])\nc = filled - 273.15\nfig, ax = plt.subplots(figsize=(6, 3.2))\nax.fill_between(lat, np.nanpercentile(c, 10, axis=1), np.nanpercentile(c, 90, axis=1), alpha=0.3, label=\"10 to 90 %\")\nax.plot(lat, np.nanmean(c, axis=1), label=\"mean\")\nax.set_xlabel(\"Latitude (degrees)\")\nax.set_ylabel(\"LST, July 2023 (\u00b0C)\")\nax.legend()\nax.grid(alpha=0.3)\nev.plot(fig, name=\"Mean temperature by latitude\")\n"
+}

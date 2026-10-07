@@ -279,6 +279,18 @@ impl Georef {
         }
     }
 
+    /// The georeferencing of a window of the image: pixel (i, j) of the window is at level-0 position
+    /// (c0 + i * kx, r0 + j * ky). `Arrays` must be a grid first (the engine reads the arrays).
+    pub fn window(&self, c0: f64, r0: f64, kx: f64, ky: f64) -> Georef {
+        match self {
+            Georef::Affine { gt, crs } => Georef::Affine { gt: [gt[0] + c0 * gt[1] + r0 * gt[2], gt[1] * kx, gt[2] * ky, gt[3] + c0 * gt[4] + r0 * gt[5], gt[4] * kx, gt[5] * ky], crs: crs.clone() },
+            Georef::Grid { cols, rows, lon, lat } => {
+                Georef::Grid { cols: cols.iter().map(|c| (c - c0) / kx).collect(), rows: rows.iter().map(|r| (r - r0) / ky).collect(), lon: lon.clone(), lat: lat.clone() }
+            }
+            g => g.clone(),
+        }
+    }
+
     pub fn crs(&self) -> Option<Crs> {
         match self {
             Georef::None => None,

@@ -1,0 +1,13 @@
+[project]
+name = "eoview"
+version = "0.1.0"
+description = "Connect a Python script or a Jupyter notebook to the eoview viewer"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+full = ["xarray", "matplotlib"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
