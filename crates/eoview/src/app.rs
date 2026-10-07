@@ -485,6 +485,8 @@ pub struct App {
     pub pins: Vec<Cam>,
     /// The start of the drag of a rectangle (region tool), in display coordinates.
     pub drag_from: Option<[f64; 2]>,
+    /// The aggregate over time of the side panel: the aggregate, and the first and last steps (None: all).
+    pub agg: (eo_cache::Agg, Option<(usize, usize)>),
 }
 
 impl App {
@@ -550,6 +552,7 @@ impl App {
             tool: Default::default(),
             pins: vec![],
             drag_from: None,
+            agg: (eo_cache::Agg::Mean, None),
         }
     }
 
@@ -1187,6 +1190,35 @@ impl App {
         }
     }
 
+    /// Make a new layer in view `id`: the aggregate `how` of the time steps `range` (first, last) of the
+    /// selected band of the selected layer. The steps open in the engine if they are not open.
+    pub fn aggregate(&mut self, id: u32, how: eo_cache::Agg, range: (usize, usize)) {
+        use eo_cache::StepIn;
+        let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
+        if l.steps.len() < 2 {
+            return self.error = Some(t("The layer has no time steps.").into());
+        }
+        if l.kind != crate::layer::Kind::Band {
+            return self.error = Some(t("An aggregate over time uses one band: show one band of the layer.").into());
+        }
+        let Some(c) = l.chans.get(l.band) else { return };
+        let (var, choice) = (c.var, c.choice);
+        let Some(first) = l.cache.iter().find(|(k, _)| (k.1, k.2) == (var, choice)).map(|x| x.1.clone()) else {
+            return self.error = Some(t("The band is not open yet.").into());
+        };
+        let (a, b) = (range.0.min(l.steps.len() - 1), range.1.min(l.steps.len() - 1));
+        let steps: Vec<StepIn> = (a.min(b)..=a.max(b))
+            .map(|s| match (&l.steps[s], l.cache.get(&(s, var, choice))) {
+                (_, Some(x)) => StepIn::Layer(x.clone()),
+                (st, None) if st.path.is_empty() => StepIn::Time(l.time_of(s, var)),
+                (st, None) => StepIn::Path(st.path.clone()),
+            })
+            .collect();
+        let path = format!("{} {} {} - {}", l.chan_label(l.band), t(how.name()).to_lowercase(), l.step_label(a.min(b)), l.step_label(a.max(b)));
+        let req = self.engine.aggregate(first, steps, how);
+        self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None });
+    }
+
     /// Number of products that open now, time steps included.
     pub fn opens_pending(&self) -> usize {
         self.opens.len() + self.step_opens.len()
@@ -1351,7 +1383,8 @@ impl App {
                 dhi: p.dhi,
                 dcmap: crate::layer::CMAPS[p.dcmap].0.into(),
                 dinvert: p.dinvert,
-                layers: p.layers.iter().map(MapLayer::save).collect(),
+                // ponytail: a computed layer is not in the file (DESIGN.md 3.7: save its operation).
+                layers: p.layers.iter().filter(|l| l.any().is_none_or(|x| x.op.is_none())).map(MapLayer::save).collect(),
                 globe: p.v.globe,
                 smooth: p.smooth,
                 overlays: p.overlays,

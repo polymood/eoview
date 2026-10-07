@@ -91,6 +91,8 @@ pub enum Cmd {
     Escape,
     /// Remove the pinned points.
     ClearPins,
+    /// A new layer: the aggregate over time of the selected layer, on the steps of the side panel.
+    Aggregate(eo_cache::Agg),
 }
 
 #[derive(Default)]
@@ -195,6 +197,9 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     }
     for (tl, n, k) in Tool::ALL {
         v.push((tf("Tool: {}", &[t(n)]), k, Cmd::Tool(tl)));
+    }
+    for (a, n) in eo_cache::Agg::ALL {
+        v.push((tf("Aggregate over time: {}", &[t(n)]), "", Cmd::Aggregate(a)));
     }
     for (i, (n, _)) in CMAPS.iter().enumerate() {
         v.push((tf("Color map: {}", &[n]), "", Cmd::Cmap(i)));
@@ -1060,6 +1065,11 @@ impl App {
                 self.drag_from = None;
             }
             Cmd::ClearPins => self.pins.clear(),
+            Cmd::Aggregate(a) => {
+                self.agg.0 = a;
+                let range = self.agg.1.unwrap_or((0, usize::MAX));
+                self.aggregate(id, a, range);
+            }
             Cmd::Escape => {
                 if self.tool != Tool::None || self.panes.iter().any(|p| p.shape.is_some()) {
                     self.tool = Tool::None;
@@ -1365,6 +1375,14 @@ impl App {
                     });
                     entry(ui, cmds, id, t("Next color map"), "C", Cmd::NextCmap);
                     entry(ui, cmds, id, t("Invert color map"), "I", Cmd::Invert);
+                    ui.separator();
+                    ui.add_enabled_ui(timed, |ui| {
+                        ui.menu_button(t("Aggregate over time"), |ui| {
+                            for (a, n) in eo_cache::Agg::ALL {
+                                entry(ui, cmds, id, t(n), "", Cmd::Aggregate(a));
+                            }
+                        });
+                    });
                 });
             });
             ui.menu_button(t("Compare"), |ui| {
@@ -1782,6 +1800,36 @@ impl App {
             self.compile(id, sel);
         }
 
+        if let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)).filter(|l| l.steps.len() > 1) {
+            let n = l.steps.len();
+            let labels: Vec<String> = (0..n).map(|s| l.step_label(s)).collect();
+            ui.separator();
+            egui::CollapsingHeader::new(t("Aggregate over time")).default_open(false).show(ui, |ui| {
+                let (how, range) = &mut self.agg;
+                let (mut a, mut b) = range.unwrap_or((0, n - 1));
+                (a, b) = (a.min(n - 1), b.min(n - 1));
+                egui::ComboBox::from_id_salt("agg").selected_text(t(how.name())).show_ui(ui, |ui| {
+                    for (x, name) in eo_cache::Agg::ALL {
+                        ui.selectable_value(how, x, t(name));
+                    }
+                });
+                egui::Grid::new("agg range").num_columns(3).show(ui, |ui| {
+                    for (k, v) in [(t("First step"), &mut a), (t("Last step"), &mut b)] {
+                        ui.label(k);
+                        let mut s = *v + 1;
+                        ui.add(egui::DragValue::new(&mut s).range(1..=n));
+                        *v = s - 1;
+                        ui.small(&labels[*v]);
+                        ui.end_row();
+                    }
+                });
+                *range = Some((a, b)).filter(|r| *r != (0, n - 1));
+                ui.small(tf("{} steps. The steps must be on the same grid.", &[&(a.abs_diff(b) + 1).to_string()]));
+                if ui.button(t("Make the layer")).on_hover_text(t("A new layer of this view. The tiles of the view read the steps: the result shows step by step.")).clicked() {
+                    cmds.push((Cmd::Aggregate(*how), id));
+                }
+            });
+        }
         ui.separator();
         egui::CollapsingHeader::new(t("Tools")).default_open(true).show(ui, |ui| crate::tools::results_ui(self, ui, id));
         egui::CollapsingHeader::new(t("Inspector")).default_open(true).show(ui, |ui| match self.hovered {

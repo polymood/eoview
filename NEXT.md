@@ -19,6 +19,12 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
   of eoview (the interface uses the font of egui).
 - `DESIGN.md` step 2 (tools of a view): pixel grid with values, coordinate grid, measure (length, area),
   transect with a chart, region statistics (rectangle or polygon), pinned points in all views.
+- `DESIGN.md` step 3 (operations core), first version: computed layers in the engine (`eo_cache::Op`),
+  with the aggregate over time (mean, median, minimum, maximum, standard deviation, count) of a cube or
+  of a list of products. To do: the operations in the layer list (on/off, parameters, remove), the
+  operations in the workspace file (3.7), an option "exact at level 0" for the view (3.5), export of a
+  result as GeoTIFF or NetCDF (3.6), mask and arithmetic between products, progress of the steps in the
+  view.
 
 ## In work
 

@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
 use tokio::task::AbortHandle;
 
+mod ops;
+pub use ops::{Agg, Op, StepIn};
+
 /// Width and height of a display tile.
 pub const TILE: u64 = 512;
 /// Chunks in one read and decode job of a generated overview tile.
@@ -76,6 +79,8 @@ pub struct Layer {
     /// The same sample, not sorted, with NaN for no data. Two layers with the same grid have their
     /// values at the same pixels: band math can use pairs of values.
     pub sample_at: Vec<f32>,
+    /// A computed layer: the operation that makes its tiles (see `ops`). None: a layer of a file.
+    pub op: Option<Arc<Op>>,
 }
 
 impl Layer {
@@ -252,6 +257,8 @@ struct Inner {
     ids: Mutex<HashMap<(u64, usize, usize, u64), u64>>,
     next: AtomicU64,
     max_running: usize,
+    /// Tiles of computed layers that run at the same time: each one reads the tiles of many inputs.
+    ops: tokio::sync::Semaphore,
     tx: mpsc::Sender<Event>,
     wake: Box<dyn Fn() + Send + Sync>,
 }
@@ -337,6 +344,7 @@ impl Engine {
             counts: Default::default(),
             rt: rt.handle().clone(),
             max_running: 2 * threads + 16,
+            ops: tokio::sync::Semaphore::new(4),
             pool,
             jobs: Default::default(),
             limit: ram,
@@ -415,7 +423,11 @@ impl Engine {
     pub fn probe(&self, l: Arc<Layer>, x: u64, y: u64) {
         let i = self.inner.clone();
         self.rt.spawn(async move {
-            match i.probe_at(&l, x, y).await {
+            let r = match &l.op {
+                Some(op) => i.probe_op(&l, op, x, y).await,
+                None => i.probe_at(&l, x, y).await,
+            };
+            match r {
                 Ok(values) => i.send(Event::Probe { layer: l.id, x, y, values }),
                 Err(e) => i.send(Event::Error(e.0)),
             }
@@ -566,6 +578,7 @@ impl Inner {
             enc: Enc { u8: false, k: 1.0, off: 0.0 },
             sample: vec![],
             sample_at: vec![],
+            op: None,
         };
         l.ds.sources.iter().for_each(|s| s.sparse(true));
         let raw = self.rt.block_on(self.sample(&l));
@@ -851,6 +864,11 @@ impl Inner {
         }
         let (w, h) = (TILE.min(lv.w - x0), TILE.min(lv.h - y0));
         let send = |px, done| self.send(Event::Tile { key, w: w as u32, h: h as u32, px, done });
+        if let Some(op) = &l.op {
+            let px = self.op_tile(l, op, key, prio, &send).await?;
+            send(px, true);
+            return Ok(());
+        }
         match lv.src {
             LevelSrc::File(lvl) => {
                 let a = &l.var().levels[lvl];
@@ -920,7 +938,8 @@ impl Inner {
                 let px = match px {
                     Some(px) => px,
                     None => {
-                        let px = self.generate(l, base, f, (x0, y0, w, h), prio, &send).await?;
+                        let (sum, cnt) = self.generate(l, base, f, (x0, y0, w, h), prio, &send).await?;
+                        let px = Arc::new(mean(l, &sum, &cnt));
                         if let Some(d) = disk {
                             let (k, p) = (l.disk_key(key), px.clone());
                             self.rt.spawn_blocking(move || d.put(&k, p.bytes()));
@@ -935,7 +954,8 @@ impl Inner {
         Ok(())
     }
 
-    /// Make an overview tile: the `f` x `f` mean of display level `base`. Send partial tiles while the chunks arrive.
+    /// Make an overview tile: the `f` x `f` mean of display level `base`, as the sums and the numbers of the
+    /// valid values of each pixel. Send partial tiles while the chunks arrive.
     /// `t` is the tile rectangle (x, y, width, height) at the overview level.
     async fn generate(
         self: &Arc<Self>,
@@ -945,7 +965,7 @@ impl Inner {
         t: (u64, u64, u64, u64),
         prio: u32,
         send: &impl Fn(Arc<Pixels>, bool),
-    ) -> Result<Arc<Pixels>> {
+    ) -> Result<(Vec<f64>, Vec<u32>)> {
         let (x0, y0, w, h) = t;
         let LevelSrc::File(lvl) = l.levels[base].src else { unreachable!("base of an overview is a file level") };
         let a = &l.var().levels[lvl];
@@ -1015,7 +1035,7 @@ impl Inner {
                 last = Instant::now();
             }
         }
-        Ok(Arc::new(mean(l, &sum, &cnt)))
+        Ok((sum, cnt))
     }
 
     async fn probe_at(&self, l: &Layer, x: u64, y: u64) -> Result<Vec<Option<f64>>> {
