@@ -7,6 +7,7 @@
 //! The render draws a copy of the view (a temporary view that is not in the dock) into an offscreen
 //! target, with its own egui context.
 
+use crate::lang::{t, tf};
 use crate::app::{App, Dialog};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -76,6 +77,9 @@ fn quiet(c: &mut Command) -> &mut Command {
     std::os::windows::process::CommandExt::creation_flags(c, 0x0800_0000);
     c.stdin(Stdio::null())
 }
+
+/// The background of the frames of a render: the same for all themes of the interface.
+const FRAME_CLEAR: wgpu::Color = wgpu::Color { r: 0.06, g: 0.06, b: 0.07, a: 1.0 };
 
 /// The `ffmpeg` program: the path of the preferences, then the directory of the executable, then the
 /// search path of the system. None: no `ffmpeg` that runs.
@@ -237,20 +241,20 @@ impl App {
     /// Start a render of view `src`. The render draws a copy of the view: the view stays as it is.
     pub fn start_render(&mut self, src: u32, set: Settings) -> Result<(), String> {
         self.cancel_render();
-        let Some(win) = &self.win else { return Err("the GPU did not start".into()) };
+        let Some(win) = &self.win else { return Err(t("the GPU did not start").into()) };
         let p = self.pane(src).ok_or("no view")?;
         if p.layers.is_empty() {
-            return Err("the view has no layer".into());
+            return Err(t("the view has no layer").into());
         }
         let steps = set.steps(p.timed().map_or(1, |l| l.steps.len()));
         if steps.is_empty() {
-            return Err("no time step in the range".into());
+            return Err(t("no time step in the range").into());
         }
         // The video encoders need even sizes.
         let (w, h) = ((set.width & !1).max(16), (set.height & !1).max(16));
         let (device, format) = (win.gpu.device.clone(), win.gpu_format());
         if w.max(h) > device.limits().max_texture_dimension_2d {
-            return Err(format!("the GPU cannot draw frames of {w} x {h} pixels"));
+            return Err(tf("the GPU cannot draw frames of {} x {} pixels", &[&w.to_string(), &h.to_string()]));
         }
         let target = target(&device, format, w, h);
         let bgra = target.bgra;
@@ -286,7 +290,7 @@ impl App {
     pub fn cancel_render(&mut self) {
         if self.job.is_some() {
             let n = self.job.as_ref().map_or(0, |j| j.done);
-            self.end_render(Some(format!("Stopped after {n} frame(s)")));
+            self.end_render(Some(tf("Stopped after {} frame(s)", &[&n.to_string()])));
         }
     }
 
@@ -294,7 +298,7 @@ impl App {
     fn end_render(&mut self, msg: Option<String>) {
         let Some(job) = self.job.take() else { return };
         let (n, secs) = (job.done, job.t0.elapsed().as_secs_f64());
-        let mut text = msg.unwrap_or_else(|| format!("{n} frame(s) in {secs:.1} s: {}", job.set.out));
+        let mut text = msg.unwrap_or_else(|| tf("{} frame(s) in {} s: {}", &[&n.to_string(), &format!("{secs:.1}"), &job.set.out]));
         match job.sink {
             Sink::Video(mut child) => {
                 // The end of the input tells ffmpeg to complete the file.
@@ -316,8 +320,8 @@ impl App {
                     Err(e) => text = format!("ffmpeg: {e}"),
                 }
             }
-            Sink::Images(dir, Some(_)) => text = format!("{text}\nThe frames are in {}: the next render continues after them.", dir.display()),
-            Sink::Images(dir, None) if job.set.keep && n < job.frames() => text = format!("{text}\nThe frames are in {}: the next render continues after them.", dir.display()),
+            Sink::Images(dir, Some(_)) => text = format!("{text}\n{}", tf("The frames are in {}: the next render continues after them.", &[&dir.display().to_string()])),
+            Sink::Images(dir, None) if job.set.keep && n < job.frames() => text = format!("{text}\n{}", tf("The frames are in {}: the next render continues after them.", &[&dir.display().to_string()])),
             Sink::Images(_, None) => {}
         }
         if let Some(note) = job.note {
@@ -395,7 +399,7 @@ impl App {
         };
         let out = ctx.run_ui(raw, |ui| self.export_ui(ui, pane, [w, h], stamp, &legend));
         let Some(job) = &mut self.job else { return };
-        crate::draw_egui(&device, &queue, &mut job.egui, &job.target.view, &ctx, out, [w, h]);
+        crate::draw_egui(&device, &queue, &mut job.egui, &job.target.view, &ctx, out, [w, h], FRAME_CLEAR);
     }
 
     /// Bring the pixels of the offscreen target back from the GPU, and write them to the output.
@@ -452,7 +456,7 @@ impl App {
         let legend = self.render_set.legend.clone();
         let out = ctx.run_ui(raw, |ui| self.export_ui(ui, id, [w, h], stamp, &legend));
         let Some(pv) = &mut self.preview else { return };
-        crate::draw_egui(&device, &queue, &mut pv.egui, &pv.target.view, &ctx, out, [w, h]);
+        crate::draw_egui(&device, &queue, &mut pv.egui, &pv.target.view, &ctx, out, [w, h], FRAME_CLEAR);
         // Without a camera in the settings (the start, or "Fit"): the camera of the view after its fit.
         if view.is_none()
             && let Some(p) = self.pane(id).filter(|p| !p.v.fit && p.has_warp() && p.v.scale > 0.0)
@@ -546,18 +550,18 @@ impl App {
         self.job_texture();
         let progress = self.job.as_ref().map(|j| (j.done, j.frames(), j.t0.elapsed().as_secs_f32(), j.preview, j.set.width as f32 / j.set.height as f32));
         let (mut open, mut start, mut stop, mut browse) = (true, false, false, false);
-        egui::Window::new("Render").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new(t("Render")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.set_width(440.0);
             let set = &mut self.render_set;
             ui.add_enabled_ui(progress.is_none(), |ui| {
                 egui::Grid::new("render").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-                    ui.label("View");
+                    ui.label(t("View"));
                     ui.label(&title);
                     ui.end_row();
 
-                    ui.label("Size");
+                    ui.label(t("Size"));
                     ui.horizontal(|ui| {
-                        let cur = SIZES.iter().find(|x| (x.1, x.2) == (set.width, set.height)).map_or("Custom", |x| x.0);
+                        let cur = SIZES.iter().find(|x| (x.1, x.2) == (set.width, set.height)).map_or(t("Custom"), |x| x.0);
                         egui::ComboBox::from_id_salt("render size").selected_text(cur).show_ui(ui, |ui| {
                             for (name, w, h) in SIZES {
                                 if ui.selectable_label((set.width, set.height) == (*w, *h), *name).clicked() {
@@ -571,12 +575,12 @@ impl App {
                     });
                     ui.end_row();
 
-                    ui.label("Rate");
-                    ui.add(egui::DragValue::new(&mut set.fps).range(1.0..=120.0).speed(0.2).suffix(" frames/s"));
+                    ui.label(t("Rate"));
+                    ui.add(egui::DragValue::new(&mut set.fps).range(1.0..=120.0).speed(0.2).suffix(t(" frames/s")));
                     ui.end_row();
 
                     // The interface counts the steps from 1.
-                    ui.label("First step");
+                    ui.label(t("First step"));
                     ui.horizontal(|ui| {
                         let mut v = first + 1;
                         if ui.add(egui::DragValue::new(&mut v).range(1..=n)).changed() {
@@ -585,7 +589,7 @@ impl App {
                         ui.weak(&first_label);
                     });
                     ui.end_row();
-                    ui.label("Last step");
+                    ui.label(t("Last step"));
                     ui.horizontal(|ui| {
                         let mut v = last + 1;
                         if ui.add(egui::DragValue::new(&mut v).range(1..=n)).changed() {
@@ -594,53 +598,53 @@ impl App {
                         ui.weak(&last_label);
                     });
                     ui.end_row();
-                    ui.label("Interval");
-                    ui.add(egui::DragValue::new(&mut set.stride).range(1..=n.max(1)).suffix(" step(s)"));
+                    ui.label(t("Interval"));
+                    ui.add(egui::DragValue::new(&mut set.stride).range(1..=n.max(1)).suffix(t(" step(s)")));
                     ui.end_row();
-                    ui.label("Frames for a step");
+                    ui.label(t("Frames for a step"));
                     ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut set.sub).range(1..=120)).on_hover_text("More than 1: the frames between two steps are a blend of the two steps, for a smooth change");
+                        ui.add(egui::DragValue::new(&mut set.sub).range(1..=120)).on_hover_text(t("More than 1: the frames between two steps are a blend of the two steps, for a smooth change"));
                         let frames = frames(set.steps(n).len(), set.sub);
-                        ui.weak(format!("{frames} frames, {:.1} s of video", frames as f32 / set.fps.max(0.01)));
+                        ui.weak(tf("{} frames, {} s of video", &[&frames.to_string(), &format!("{:.1}", frames as f32 / set.fps.max(0.01))]));
                     });
                     ui.end_row();
 
-                    ui.label("Frame");
+                    ui.label(t("Frame"));
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut set.fit, false, "The view as it is now");
-                        ui.radio_value(&mut set.fit, true, "All the data");
+                        ui.radio_value(&mut set.fit, false, t("The view as it is now"));
+                        ui.radio_value(&mut set.fit, true, t("All the data"));
                     });
                     ui.end_row();
 
-                    ui.label("Time");
-                    ui.checkbox(&mut set.stamp, "Write the time of the step on the frames");
+                    ui.label(t("Time"));
+                    ui.checkbox(&mut set.stamp, t("Write the time of the step on the frames"));
                     ui.end_row();
 
-                    ui.label("Output");
+                    ui.label(t("Output"));
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut set.out).desired_width(280.0)).on_hover_text("A video file (mp4, mov, mkv, webm, gif), or a directory for PNG files");
-                        browse = ui.button("Browse...").clicked();
+                        ui.add(egui::TextEdit::singleline(&mut set.out).desired_width(280.0)).on_hover_text(t("A video file (mp4, mov, mkv, webm, gif), or a directory for PNG files"));
+                        browse = ui.button(t("Browse...")).clicked();
                     });
                     ui.end_row();
                 });
             });
             if no_ffmpeg {
-                ui.colored_label(egui::Color32::from_rgb(225, 165, 40), "ffmpeg was not found: the frames will be PNG files. Set the path of ffmpeg in the preferences.");
+                ui.colored_label(ui.visuals().warn_fg_color, t("ffmpeg was not found: the frames will be PNG files. Set the path of ffmpeg in the preferences."));
             }
             ui.separator();
             match progress {
                 Some((done, frames, secs, preview, aspect)) => {
                     let rate = done as f32 / secs.max(1e-3);
-                    let left = if rate > 0.0 { format!("{:.0} s left", (frames - done) as f32 / rate) } else { "waits for data".into() };
-                    ui.add(egui::ProgressBar::new(done as f32 / frames.max(1) as f32).text(format!("Frame {done} of {frames}   {rate:.1} frames/s   {left}")));
+                    let left = if rate > 0.0 { tf("{} s left", &[&format!("{:.0}", (frames - done) as f32 / rate)]) } else { t("waits for data").into() };
+                    ui.add(egui::ProgressBar::new(done as f32 / frames.max(1) as f32).text(format!("{}   {rate:.1} {}   {left}", tf("Frame {} of {}", &[&done.to_string(), &frames.to_string()]), t("frames/s"))));
                     if let Some(id) = preview {
                         let w = ui.available_width();
                         ui.image(egui::load::SizedTexture::new(id, egui::vec2(w, w / aspect)));
                     }
-                    stop = ui.button("Stop").clicked();
+                    stop = ui.button(t("Stop")).clicked();
                 }
                 None => {
-                    start = ui.add_enabled(n >= 1 && !title.is_empty(), egui::Button::new("Render")).clicked();
+                    start = ui.add_enabled(n >= 1 && !title.is_empty(), egui::Button::new(t("Render"))).clicked();
                     if let Some(m) = &self.render_msg {
                         ui.label(m);
                     }

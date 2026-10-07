@@ -6,6 +6,7 @@
 //! (Ctrl+K) finds all commands by name.
 use crate::app::{App, Cmp, Dialog, Pane, WORKSPACE_EXT, What};
 use crate::icons::{self, Icon};
+use crate::lang::{t, tf};
 use crate::layer::{self, BINS, CMAPS, Kind, MapLayer, PRESETS, Stretch};
 use eo_render::{Compare, CompositeUniforms, View2d};
 use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, vec2};
@@ -21,8 +22,8 @@ pub const SPACES: &[(Option<u32>, &str)] = &[
     (None, "Pixels"),
 ];
 
+/// Errors on a view (on the data, with a dark background: the same color for all themes).
 const RED: Color32 = Color32::from_rgb(255, 110, 110);
-const ACCENT: Color32 = Color32::from_rgb(90, 170, 255);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
@@ -106,91 +107,113 @@ fn mb(b: usize) -> String {
     format!("{:.0} MB", b as f64 / (1 << 20) as f64)
 }
 
-/// The command with this name in the command palette.
+/// The command with this name in the command palette (the English name, or the name in the language of
+/// the interface).
 pub fn command(app: &App, name: &str) -> Option<Cmd> {
-    commands(app, app.active).into_iter().find(|c| c.0 == name).map(|c| c.2)
+    let cur = crate::lang::code();
+    crate::lang::set("en");
+    let en = commands(app, app.active);
+    crate::lang::set(cur);
+    en.into_iter().chain(commands(app, app.active)).find(|c| c.0 == name).map(|c| c.2)
 }
 
 /// Commands of the palette: name, key, command. Some depend on the selected layer of view `id`.
 fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     let mut v: Vec<(String, &'static str, Cmd)> = [
-        ("Open files...", "Ctrl+O", Cmd::Open(false, What::Files)),
-        ("Open folder (SAFE, SEN3, Zarr)...", "Ctrl+Alt+O", Cmd::Open(false, What::Dirs)),
-        ("Open URL...", "Ctrl+L", Cmd::Open(false, What::Url)),
-        ("Add layer: files...", "Ctrl+Shift+O", Cmd::Open(true, What::Files)),
-        ("Add layer: folder (SAFE, SEN3, Zarr)...", "", Cmd::Open(true, What::Dirs)),
-        ("Add layer: URL...", "", Cmd::Open(true, What::Url)),
-        ("Save workspace...", "Ctrl+S", Cmd::Save),
-        ("Open workspace...", "", Cmd::Load),
-        ("New view", "Ctrl+N", Cmd::NewView),
-        ("Duplicate view", "Ctrl+D", Cmd::Duplicate),
-        ("Close view", "Ctrl+W", Cmd::CloseView),
-        ("Detach view to a window, or attach it", "Ctrl+Shift+D", Cmd::Detach),
-        ("Full screen: on or off", "F11", Cmd::Fullscreen),
-        ("Layout: 1 view", "Alt+1", Cmd::Layout(1)),
-        ("Layout: 2 views", "Alt+2", Cmd::Layout(2)),
-        ("Layout: 2 x 2 views", "Alt+3", Cmd::Layout(4)),
-        ("Layout: 3 x 3 views", "Alt+4", Cmd::Layout(9)),
-        ("Fit", "F", Cmd::Fit),
-        ("Zoom 1:1", "1", Cmd::OneToOne),
-        ("Automatic stretch", "A", Cmd::Auto),
-        ("Next color map", "C", Cmd::NextCmap),
-        ("Invert color map", "I", Cmd::Invert),
-        ("Show or hide side panel", "H", Cmd::Panel),
-        ("Next band", "]", Cmd::Band(1)),
-        ("Previous band", "[", Cmd::Band(-1)),
-        ("Link or unlink view", "L", Cmd::Link),
-        ("Link mode: geographic or pixel", "Shift+L", Cmd::LinkMode),
-        ("Swipe line: vertical or horizontal", "V", Cmd::SwipeOrient),
-        ("Open files as a time series...", "", Cmd::Open(false, What::Series)),
-        ("Time: next step", ".", Cmd::Step(1)),
-        ("Time: previous step", ",", Cmd::Step(-1)),
-        ("Time: play or pause", "Space", Cmd::Play),
-        ("Zoom in", "+", Cmd::Zoom(1.5)),
-        ("Zoom out", "-", Cmd::Zoom(1.0 / 1.5)),
-        ("Copy view extent (west, south, east, north)", "Ctrl+Shift+C", Cmd::CopyExtent),
-        ("3D globe: on or off", "G", Cmd::Globe),
-        ("Smooth pixels: on or off", "", Cmd::Smooth),
-        ("Coasts: on or off", "", Cmd::Overlay(0)),
-        ("Country borders: on or off", "", Cmd::Overlay(1)),
-        ("Country names: on or off", "", Cmd::Overlay(2)),
-        ("Preferences...", "Ctrl+,", Cmd::Prefs),
-        ("Animate workspace: on or off", "F6", Cmd::Animate),
-        ("Render video or frames...", "Ctrl+R", Cmd::Render),
-        ("Render: start with the settings of the render window", "", Cmd::RenderStart),
-        ("Full resolution at all zoom levels: on or off", "", Cmd::FullRes),
-        ("Keys...", "F1", Cmd::Help),
-        ("Quit", "Ctrl+Q", Cmd::Quit),
+        (t("Open files..."), "Ctrl+O", Cmd::Open(false, What::Files)),
+        (t("Open folder (SAFE, SEN3, Zarr)..."), "Ctrl+Alt+O", Cmd::Open(false, What::Dirs)),
+        (t("Open URL..."), "Ctrl+L", Cmd::Open(false, What::Url)),
+        (t("Add layer: files..."), "Ctrl+Shift+O", Cmd::Open(true, What::Files)),
+        (t("Add layer: folder (SAFE, SEN3, Zarr)..."), "", Cmd::Open(true, What::Dirs)),
+        (t("Add layer: URL..."), "", Cmd::Open(true, What::Url)),
+        (t("Save workspace..."), "Ctrl+S", Cmd::Save),
+        (t("Open workspace..."), "", Cmd::Load),
+        (t("New view"), "Ctrl+N", Cmd::NewView),
+        (t("Duplicate view"), "Ctrl+D", Cmd::Duplicate),
+        (t("Close view"), "Ctrl+W", Cmd::CloseView),
+        (t("Detach view to a window, or attach it"), "Ctrl+Shift+D", Cmd::Detach),
+        (t("Full screen: on or off"), "F11", Cmd::Fullscreen),
+        (t("Layout: 1 view"), "Alt+1", Cmd::Layout(1)),
+        (t("Layout: 2 views"), "Alt+2", Cmd::Layout(2)),
+        (t("Layout: 2 x 2 views"), "Alt+3", Cmd::Layout(4)),
+        (t("Layout: 3 x 3 views"), "Alt+4", Cmd::Layout(9)),
+        (t("Fit"), "F", Cmd::Fit),
+        (t("Zoom 1:1"), "1", Cmd::OneToOne),
+        (t("Automatic stretch"), "A", Cmd::Auto),
+        (t("Next color map"), "C", Cmd::NextCmap),
+        (t("Invert color map"), "I", Cmd::Invert),
+        (t("Show or hide side panel"), "H", Cmd::Panel),
+        (t("Next band"), "]", Cmd::Band(1)),
+        (t("Previous band"), "[", Cmd::Band(-1)),
+        (t("Link or unlink view"), "L", Cmd::Link),
+        (t("Link mode: geographic or pixel"), "Shift+L", Cmd::LinkMode),
+        (t("Swipe line: vertical or horizontal"), "V", Cmd::SwipeOrient),
+        (t("Open files as a time series..."), "", Cmd::Open(false, What::Series)),
+        (t("Time: next step"), ".", Cmd::Step(1)),
+        (t("Time: previous step"), ",", Cmd::Step(-1)),
+        (t("Time: play or pause"), "Space", Cmd::Play),
+        (t("Zoom in"), "+", Cmd::Zoom(1.5)),
+        (t("Zoom out"), "-", Cmd::Zoom(1.0 / 1.5)),
+        (t("Copy view extent (west, south, east, north)"), "Ctrl+Shift+C", Cmd::CopyExtent),
+        (t("3D globe: on or off"), "G", Cmd::Globe),
+        (t("Smooth pixels: on or off"), "", Cmd::Smooth),
+        (t("Coasts: on or off"), "", Cmd::Overlay(0)),
+        (t("Country borders: on or off"), "", Cmd::Overlay(1)),
+        (t("Country names: on or off"), "", Cmd::Overlay(2)),
+        (t("Preferences..."), "Ctrl+,", Cmd::Prefs),
+        (t("Animate workspace: on or off"), "F6", Cmd::Animate),
+        (t("Render video or frames..."), "Ctrl+R", Cmd::Render),
+        (t("Render: start with the settings of the render window"), "", Cmd::RenderStart),
+        (t("Full resolution at all zoom levels: on or off"), "", Cmd::FullRes),
+        (t("Keys..."), "F1", Cmd::Help),
+        (t("Quit"), "Ctrl+Q", Cmd::Quit),
     ]
     .into_iter()
     .map(|(n, k, c)| (n.to_string(), k, c))
     .collect();
     for (i, k) in OPEN_KINDS.iter().enumerate() {
-        v.push((format!("Open {}...", k.0), "", Cmd::Open(false, What::Kind(i))));
+        v.push((tf("Open {}...", &[t(k.0)]), "", Cmd::Open(false, What::Kind(i))));
     }
     for r in &app.recent {
-        v.push((format!("Open recent: {r}"), "", Cmd::Open(false, What::Path(r.clone()))));
+        v.push((tf("Open recent: {}", &[r]), "", Cmd::Open(false, What::Path(r.clone()))));
     }
     for (c, n, k) in Cmp::ALL {
-        v.push((format!("Compare: {n}"), k, Cmd::Compare(c)));
+        v.push((tf("Compare: {}", &[t(n)]), k, Cmd::Compare(c)));
     }
     for (i, (n, _)) in CMAPS.iter().enumerate() {
-        v.push((format!("Color map: {n}"), "", Cmd::Cmap(i)));
+        v.push((tf("Color map: {}", &[n]), "", Cmd::Cmap(i)));
     }
     for s in SPACES {
-        v.push((format!("Display CRS: {}", s.1), "", Cmd::Space(s.0)));
+        v.push((tf("Display CRS: {}", &[t(s.1)]), "", Cmd::Space(s.0)));
     }
     if let Some(l) = app.pane(id).and_then(|p| p.layers.get(p.sel)) {
         for (i, p) in PRESETS.iter().enumerate() {
             if l.preset_ok(p) {
-                v.push((format!("Preset: {}", p.0), "", Cmd::Preset(i)));
+                v.push((tf("Preset: {}", &[t(p.0)]), "", Cmd::Preset(i)));
             }
         }
         for c in 0..l.chans.len() {
-            v.push((format!("Band: {} ({})", l.chans[c].id, l.chan_label(c)), "", Cmd::SetBand(c)));
+            v.push((tf("Band: {} ({})", &[&l.chans[c].id, &l.chan_label(c)]), "", Cmd::SetBand(c)));
         }
     }
     v
+}
+
+/// The keys of the commands, and of the mouse.
+pub fn keys_grid(app: &App, ui: &mut egui::Ui) {
+    let list = commands(app, app.active);
+    egui::Grid::new("keys").striped(true).show(ui, |ui| {
+        for (name, key, _) in list.iter().filter(|c| !c.1.is_empty()) {
+            ui.monospace(*key);
+            ui.label(name);
+            ui.end_row();
+        }
+        for (key, name) in [(t("Drag"), t("Pan")), (t("Mouse wheel, pinch"), t("Zoom at the cursor")), (t("Double-click"), t("Fit")), (t("Drop files"), t("Open in the view under the mouse")), ("Shift + drop", t("Add as layers"))] {
+            ui.monospace(t(key));
+            ui.label(t(name));
+            ui.end_row();
+        }
+    });
 }
 
 /// The dock pass: one tab for each view.
@@ -209,7 +232,7 @@ impl TabViewer for Tabs<'_> {
         let t = p.map_or(String::new(), |p| p.title());
         match p.map_or(0, |p| p.link) {
             0 => t.into(),
-            g => format!("{t}  [link {g}]").into(),
+            g => format!("{t}  [{}]", tf("link {}", &[&g.to_string()])).into(),
         }
     }
 
@@ -260,17 +283,17 @@ fn open_menu(ui: &mut egui::Ui, add: bool, id: u32, recent: &[String], cmds: &mu
             ui.close();
         }
     };
-    item(ui, "Files...", if add { "Ctrl+Shift+O" } else { "Ctrl+O" }, What::Files);
-    item(ui, "Folder (SAFE, SEN3, Zarr)...", if add { "" } else { "Ctrl+Alt+O" }, What::Dirs);
+    item(ui, t("Files..."), if add { "Ctrl+Shift+O" } else { "Ctrl+O" }, What::Files);
+    item(ui, t("Folder (SAFE, SEN3, Zarr)..."), if add { "" } else { "Ctrl+Alt+O" }, What::Dirs);
     item(ui, "URL...", if add { "" } else { "Ctrl+L" }, What::Url);
-    item(ui, "Files as a time series...", "", What::Series);
+    item(ui, t("Files as a time series..."), "", What::Series);
     ui.separator();
     for (i, k) in OPEN_KINDS.iter().enumerate() {
-        item(ui, &format!("{}...", k.0), "", What::Kind(i));
+        item(ui, &format!("{}...", t(k.0)), "", What::Kind(i));
     }
     if !recent.is_empty() {
         ui.separator();
-        ui.menu_button("Recent", |ui| {
+        ui.menu_button(t("Recent"), |ui| {
             for r in recent {
                 let name = r.trim_end_matches('/').rsplit('/').next().unwrap_or(r);
                 if ui.button(name).on_hover_text(r).clicked() {
@@ -300,8 +323,8 @@ fn check(ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>, id: u32, on: bool, name:
 
 /// `out`: the view is detached (it has its own window).
 fn view_menu(ui: &mut egui::Ui, id: u32, out: bool, recent: &[String], cmds: &mut Vec<(Cmd, u32)>) {
-    ui.menu_button("Open", |ui| open_menu(ui, false, id, recent, cmds));
-    ui.menu_button("Add layer", |ui| open_menu(ui, true, id, recent, cmds));
+    ui.menu_button(t("Open"), |ui| open_menu(ui, false, id, recent, cmds));
+    ui.menu_button(t("Add layer"), |ui| open_menu(ui, true, id, recent, cmds));
     ui.separator();
     let mut item = |ui: &mut egui::Ui, name: &str, key: &str, c: Cmd| {
         if ui.add(egui::Button::new(name).shortcut_text(key)).clicked() {
@@ -309,27 +332,27 @@ fn view_menu(ui: &mut egui::Ui, id: u32, out: bool, recent: &[String], cmds: &mu
             ui.close();
         }
     };
-    item(ui, "Fit", "F", Cmd::Fit);
-    item(ui, "Zoom 1:1", "1", Cmd::OneToOne);
-    item(ui, "Automatic stretch", "A", Cmd::Auto);
-    ui.menu_button("Compare", |ui| {
+    item(ui, t("Fit"), "F", Cmd::Fit);
+    item(ui, t("Zoom 1:1"), "1", Cmd::OneToOne);
+    item(ui, t("Automatic stretch"), "A", Cmd::Auto);
+    ui.menu_button(t("Compare"), |ui| {
         for (c, n, k) in Cmp::ALL {
-            item(ui, n, k, Cmd::Compare(c));
+            item(ui, t(n), k, Cmd::Compare(c));
         }
     });
-    ui.menu_button("Display CRS", |ui| {
+    ui.menu_button(t("Display CRS"), |ui| {
         for s in SPACES {
-            item(ui, s.1, "", Cmd::Space(s.0));
+            item(ui, t(s.1), "", Cmd::Space(s.0));
         }
     });
-    item(ui, "Link or unlink", "L", Cmd::Link);
+    item(ui, t("Link or unlink"), "L", Cmd::Link);
     ui.separator();
-    item(ui, "New view", "Ctrl+N", Cmd::NewView);
-    item(ui, "Duplicate view", "Ctrl+D", Cmd::Duplicate);
-    item(ui, "Close view", "Ctrl+W", Cmd::CloseView);
+    item(ui, t("New view"), "Ctrl+N", Cmd::NewView);
+    item(ui, t("Duplicate view"), "Ctrl+D", Cmd::Duplicate);
+    item(ui, t("Close view"), "Ctrl+W", Cmd::CloseView);
     ui.separator();
-    item(ui, if out { "Attach to the main window" } else { "Detach to a window" }, "Ctrl+Shift+D", Cmd::Detach);
-    item(ui, "Full screen", "F11", Cmd::Fullscreen);
+    item(ui, if out { t("Attach to the main window") } else { t("Detach to a window") }, "Ctrl+Shift+D", Cmd::Detach);
+    item(ui, t("Full screen"), "F11", Cmd::Fullscreen);
 }
 
 /// Input of one view: pan, zoom, swipe line, cursor. The drawing comes after the link sync (`paint`).
@@ -361,17 +384,17 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     if p.layers.is_empty() {
         let c = rect.center();
         if app.opening(id) {
-            ui.painter().text(c, Align2::CENTER_CENTER, "Opening...", FontId::proportional(18.0), Color32::GRAY);
+            ui.painter().text(c, Align2::CENTER_CENTER, t("Opening..."), FontId::proportional(18.0), ui.visuals().weak_text_color());
         } else {
-            ui.painter().text(c - vec2(0.0, 24.0), Align2::CENTER_CENTER, "Drop files here", FontId::proportional(18.0), Color32::GRAY);
-            let b = ui.put(Rect::from_center_size(c + vec2(0.0, 12.0), vec2(120.0, 26.0)), egui::Button::new("Open...  Ctrl+O"));
+            ui.painter().text(c - vec2(0.0, 24.0), Align2::CENTER_CENTER, t("Drop files here"), FontId::proportional(18.0), ui.visuals().weak_text_color());
+            let b = ui.put(Rect::from_center_size(c + vec2(0.0, 12.0), vec2(120.0, 26.0)), egui::Button::new(t("Open...  Ctrl+O")));
             if b.clicked() {
                 cmds.push((Cmd::Open(false, What::Files), id));
             }
         }
     }
     if active && app.panes.len() > 1 {
-        ui.painter().rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, ACCENT.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, ui.visuals().hyperlink_color.gamma_multiply(0.6)), egui::StrokeKind::Inside);
     }
     let p = app.pane_mut(id).unwrap();
     // Swipe line: drag it when the pointer is near it.
@@ -426,9 +449,9 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     }
     // Link badge: one click links or unlinks the view.
     if !p.layers.is_empty() {
-        let (txt, tip) = if p.link > 0 { (format!("link {}", p.link), "Linked: this view pans and zooms with the other linked views. Click to unlink (L)") } else { ("unlinked".into(), "Click to link this view (L)") };
+        let (txt, tip) = if p.link > 0 { (tf("link {}", &[&p.link.to_string()]), t("Linked: this view pans and zooms with the other linked views. Click to unlink (L)")) } else { (t("unlinked").to_string(), t("Click to link this view (L)")) };
         let r = Rect::from_min_size(rect.right_top() + vec2(-74.0, 6.0), vec2(68.0, 20.0));
-        let b = egui::Button::new(egui::RichText::new(txt).small()).fill(if p.link > 0 { ACCENT.gamma_multiply(0.35) } else { Color32::from_black_alpha(140) });
+        let b = egui::Button::new(egui::RichText::new(txt).small()).fill(if p.link > 0 { ui.visuals().hyperlink_color.gamma_multiply(0.35) } else { Color32::from_black_alpha(140) });
         if ui.put(r, b).on_hover_text(tip).clicked() {
             cmds.push((Cmd::Link, id));
         }
@@ -445,39 +468,40 @@ fn timeline(app: &mut App, ui: &mut egui::Ui, id: u32, bar: Rect, cmds: &mut Vec
     // can have a million steps): the cell shows the first of its steps.
     let cells = n.min(bar.width().max(1.0) as usize).max(1);
     let states: Vec<u8> = (0..cells).map(|c| p.buffer(l, c * n / cells)).collect();
-    let text = format!("{} / {n}   {}{}", step + 1, l.step_label(step), if l.shown != step { "   loading" } else { "" });
+    let text = format!("{} / {n}   {}{}", step + 1, l.step_label(step), if l.shown != step { format!("   {}", t("loading")) } else { String::new() });
     let play = p.play;
-    ui.painter().rect_filled(bar, 0.0, Color32::from_gray(30));
+    let vis = ui.visuals().clone();
+    ui.painter().rect_filled(bar, 0.0, vis.extreme_bg_color);
     let mut x = bar.left() + 4.0;
     let mut slot = |w: f32| {
         let r = Rect::from_min_size(egui::pos2(x, bar.top() + 3.0), vec2(w, bar.height() - 6.0));
         x += w + 4.0;
         r
     };
-    if icons::put(ui, slot(24.0), Icon::StepBack, false).on_hover_text("Step back (,)").clicked() {
+    if icons::put(ui, slot(24.0), Icon::StepBack, false).on_hover_text(t("Step back (,)")).clicked() {
         cmds.push((Cmd::Step(-1), id));
     }
-    if icons::put(ui, slot(28.0), if play { Icon::Pause } else { Icon::Play }, play).on_hover_text("Play or pause (Space). The playback waits for a step that is not ready: it does not skip steps").clicked() {
+    if icons::put(ui, slot(28.0), if play { Icon::Pause } else { Icon::Play }, play).on_hover_text(t("Play or pause (Space). The playback waits for a step that is not ready: it does not skip steps")).clicked() {
         cmds.push((Cmd::Play, id));
     }
-    if icons::put(ui, slot(24.0), Icon::StepForward, false).on_hover_text("Step forward (.)").clicked() {
+    if icons::put(ui, slot(24.0), Icon::StepForward, false).on_hover_text(t("Step forward (.)")).clicked() {
         cmds.push((Cmd::Step(1), id));
     }
-    ui.put(slot(64.0), egui::DragValue::new(&mut p.fps).range(0.2..=30.0).speed(0.1).suffix(" /s")).on_hover_text("Playback rate: steps for each second");
-    let g = ui.painter().layout_no_wrap(text, FontId::proportional(12.0), Color32::WHITE);
+    ui.put(slot(64.0), egui::DragValue::new(&mut p.fps).range(0.2..=30.0).speed(0.1).suffix(" /s")).on_hover_text(t("Playback rate: steps for each second"));
+    let g = ui.painter().layout_no_wrap(text, FontId::proportional(12.0), vis.text_color());
     let track = Rect::from_min_max(egui::pos2(slot(0.0).left() + 4.0, bar.top() + 7.0), egui::pos2(bar.right() - g.size().x - 16.0, bar.bottom() - 7.0));
-    ui.painter().galley(egui::pos2(track.right() + 8.0, bar.center().y - g.size().y / 2.0), g, Color32::WHITE);
+    ui.painter().galley(egui::pos2(track.right() + 8.0, bar.center().y - g.size().y / 2.0), g, vis.text_color());
     if track.width() < 20.0 {
         return;
     }
     let (w, sw) = (track.width() / cells as f32, track.width() / n as f32);
     for (s, st) in states.iter().enumerate() {
-        let c = [Color32::from_gray(60), Color32::from_gray(115), Color32::from_rgb(225, 165, 40), Color32::from_rgb(80, 190, 110)][*st as usize];
+        let c = [vis.extreme_bg_color.lerp_to_gamma(vis.text_color(), 0.18), vis.extreme_bg_color.lerp_to_gamma(vis.text_color(), 0.45), vis.warn_fg_color, Color32::from_rgb(80, 190, 110)][*st as usize];
         let r = Rect::from_min_size(egui::pos2(track.left() + s as f32 * w, track.top()), vec2((w - 1.0).max(1.0), track.height()));
         ui.painter().rect_filled(r, 1.0, c);
     }
     let cur = Rect::from_min_size(egui::pos2(track.left() + step as f32 * sw, track.top()), vec2(sw.max(2.0), track.height()));
-    ui.painter().rect_stroke(cur.expand(2.0), 1.0, Stroke::new(2.0, Color32::WHITE), egui::StrokeKind::Outside);
+    ui.painter().rect_stroke(cur.expand(2.0), 1.0, Stroke::new(2.0, vis.strong_text_color()), egui::StrokeKind::Outside);
     let resp = ui.interact(track.expand2(vec2(2.0, 7.0)), ui.id().with(("timeline", id)), Sense::click_and_drag());
     let at = |q: Pos2| (((q.x - track.left()) / sw).max(0.0) as usize).min(n - 1);
     if let Some(q) = resp.interact_pointer_pos().filter(|_| resp.clicked() || resp.dragged())
@@ -486,9 +510,9 @@ fn timeline(app: &mut App, ui: &mut egui::Ui, id: u32, bar: Rect, cmds: &mut Vec
         cmds.push((Cmd::SetStep(at(q)), id));
     }
     if let Some(s) = resp.hover_pos().map(at) {
-        let state = ["not open", "open", "tiles load", "ready"][states[s * cells / n] as usize];
+        let state = t(["not open", "open", "tiles load", "ready"][states[s * cells / n] as usize]);
         let label = app.pane(id).and_then(|p| p.timed()).map_or(String::new(), |l| l.step_label(s));
-        resp.on_hover_text_at_pointer(format!("{} / {n}   {label}\n{state}\nGreen: ready for this view. Amber: tiles load. Gray: open. Dark: not open.", s + 1));
+        resp.on_hover_text_at_pointer(format!("{} / {n}   {label}\n{state}\n{}", s + 1, t("Green: ready for this view. Amber: tiles load. Gray: open. Dark: not open.")));
     }
 }
 
@@ -496,7 +520,7 @@ fn timeline(app: &mut App, ui: &mut egui::Ui, id: u32, bar: Rect, cmds: &mut Vec
 fn histogram(ui: &mut egui::Ui, h: &(Vec<u32>, f32, f32), st: &mut Stretch, color: Color32) -> (bool, bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click_and_drag());
     let pt = ui.painter_at(rect);
-    pt.rect_filled(rect, 2.0, Color32::from_gray(24));
+    pt.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
     let (bins, lo, hi) = (&h.0, h.1, h.2);
     let max = bins.iter().copied().max().unwrap_or(1).max(1) as f32;
     let x = |v: f32| rect.left() + ((v - lo) / (hi - lo)).clamp(0.0, 1.0) * rect.width();
@@ -537,7 +561,7 @@ fn histogram(ui: &mut egui::Ui, h: &(Vec<u32>, f32, f32), st: &mut Stretch, colo
         }
         changed = true;
     }
-    let resp = resp.on_hover_text("Drag the limits, or drag between them to move both. Double-click: automatic stretch (A)");
+    let resp = resp.on_hover_text(t("Drag the limits, or drag between them to move both. Double-click: automatic stretch (A)"));
     (changed, resp.double_clicked())
 }
 
@@ -557,8 +581,8 @@ enum Pick {
 fn contents_ui(ui: &mut egui::Ui, l: &mut MapLayer) -> Option<Pick> {
     let mut pick = None;
     ui.horizontal(|ui| {
-        ui.strong("Product");
-        ui.add(egui::TextEdit::singleline(&mut l.filter).hint_text(format!("Filter {} variables", l.chans.len())).desired_width(f32::INFINITY));
+        ui.strong(t("Product"));
+        ui.add(egui::TextEdit::singleline(&mut l.filter).hint_text(tf("Filter {} variables", &[&l.chans.len().to_string()])).desired_width(f32::INFINITY));
     });
     let l = &*l;
     egui::ScrollArea::vertical().id_salt(("contents", l.uid)).max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -586,7 +610,7 @@ fn group_ui(ui: &mut egui::Ui, l: &MapLayer, g: &layer::Group, path: &str, pick:
         egui::CollapsingHeader::new(format!("{}  ({})", sub.name, sub.count())).id_salt((l.uid, &p)).default_open(open).show(ui, |ui| {
             if let Some(c) = sub.color {
                 let on = l.kind == Kind::Rgb && (0..3).all(|k| l.rgb[k].trim() == l.chans[c[k]].id);
-                if ui.selectable_label(on, "Color image").on_hover_text("Show the red, green and blue bands as they are").clicked() {
+                if ui.selectable_label(on, t("Color image")).on_hover_text(t("Show the red, green and blue bands as they are")).clicked() {
                     *pick = Some(Pick::Color(c));
                 }
             }
@@ -603,7 +627,7 @@ fn leaf_ui(ui: &mut egui::Ui, l: &MapLayer, c: usize, label: &str, pick: &mut Op
     ui.horizontal(|ui| {
         // The name shows the variable as data, with the color map: not all variables are colors.
         let on = l.kind == Kind::Band && l.band == c;
-        let tip = format!("{}\nShow as one band with the color map. Name in expressions: {id}", l.chan_label(c));
+        let tip = format!("{}\n{}", l.chan_label(c), tf("Show as one band with the color map. Name in expressions: {}", &[id]));
         if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
             *pick = Some(Pick::Chan(c));
         }
@@ -612,21 +636,21 @@ fn leaf_ui(ui: &mut egui::Ui, l: &MapLayer, c: usize, label: &str, pick: &mut Op
             Kind::Rgb => {
                 for k in [2, 1, 0] {
                     let b = egui::Button::selectable(l.rgb[k].trim() == id, ["R", "G", "B"][k]).small();
-                    if ui.add(b).on_hover_text(format!("Use as the {} channel of the RGB composite", ["red", "green", "blue"][k])).clicked() {
+                    if ui.add(b).on_hover_text(tf("Use as the {} channel of the RGB composite", &[t(["red", "green", "blue"][k])])).clicked() {
                         *pick = Some(Pick::Rgb(k, c));
                     }
                 }
             }
             Kind::Expr => {
                 let b = egui::Button::selectable(l.used.contains(&c), "+").small();
-                if ui.add(b).on_hover_text(format!("Add {id} to the expression")).clicked() {
+                if ui.add(b).on_hover_text(tf("Add {} to the expression", &[id])).clicked() {
                     *pick = Some(Pick::Insert(c));
                 }
             }
             Kind::Wind => {
                 for k in [1, 0] {
                     let b = egui::Button::selectable(l.rgb[k].trim() == id, ["U", "V"][k]).small();
-                    if ui.add(b).on_hover_text(format!("Use as the component to the {} of the wind", ["east", "north"][k])).clicked() {
+                    if ui.add(b).on_hover_text(tf("Use as the component to the {} of the wind", &[t(["east", "north"][k])])).clicked() {
                         *pick = Some(Pick::Rgb(k, c));
                     }
                 }
@@ -645,7 +669,7 @@ fn swatches(ui: &mut egui::Ui, cur: usize, invert: bool) -> Option<usize> {
             let (r, resp) = ui.allocate_exact_size(vec2(44.0, 14.0), Sense::click());
             gradient(ui, r, &c.iter().map(|&c| layer::hex(c)).collect::<Vec<_>>(), invert);
             if i == cur {
-                ui.painter().rect_stroke(r.expand(1.5), 2.0, Stroke::new(2.0, ACCENT), egui::StrokeKind::Outside);
+                ui.painter().rect_stroke(r.expand(1.5), 2.0, Stroke::new(2.0, ui.visuals().hyperlink_color), egui::StrokeKind::Outside);
             }
             if resp.on_hover_text(*n).clicked() {
                 out = Some(i);
@@ -725,7 +749,7 @@ impl App {
         }
         if hovering {
             let r = ctx.content_rect();
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, "Drop: open in the view under the mouse\nShift + drop: add as layers", FontId::proportional(20.0), Color32::WHITE);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, t("Drop: open in the view under the mouse\nShift + drop: add as layers"), FontId::proportional(20.0), Color32::WHITE);
         }
 
         if !ctx.egui_wants_keyboard_input() {
@@ -780,7 +804,7 @@ impl App {
         // The legend of the frame: the color map of the top data layer, with its limits and its unit.
         let legend = p.layers.iter().rev().find(|l| l.visible && l.kind != Kind::Rgb && !l.inputs.is_empty()).filter(|_| stamp).map(|l| {
             let unit = l.inputs[0].var().units.clone();
-            let name = if l.kind == Kind::Wind { "Wind speed".to_string() } else { l.comp_name() };
+            let name = if l.kind == Kind::Wind { t("Wind speed").to_string() } else { l.comp_name() };
             (l.stops.clone(), l.invert, l.st[0].lo, l.st[0].hi, if unit.is_empty() { name } else { format!("{name} ({unit})") })
         });
         let legend = legend.map(|(s, i, lo, hi, name)| (s, i, lo, hi, if legend_text.is_empty() { name } else { legend_text.to_string() }));
@@ -962,7 +986,7 @@ impl App {
             Cmd::Duplicate => self.duplicate(id),
             Cmd::CloseView => self.close(id),
             Cmd::Detach => self.detach(id),
-            Cmd::Prefs => self.prefs_open ^= true,
+            Cmd::Prefs => self.prefs_open = if self.prefs_open.is_some() { None } else { Some(Default::default()) },
             Cmd::Render => self.render_open ^= true,
             Cmd::Animate => self.set_animate(!self.animate),
             Cmd::RenderStart => self.render_start(id),
@@ -1112,7 +1136,7 @@ impl App {
         let mut go = false;
         let r = egui::Modal::new(egui::Id::new("url")).show(ctx, |ui| {
             ui.set_width(560.0);
-            ui.label(if *add { "Add a layer from a URL" } else { "Open a URL" });
+            ui.label(if *add { t("Add a layer from a URL") } else { t("Open a URL") });
             let te = ui.add(egui::TextEdit::singleline(text).hint_text("https://... or s3://bucket/key (COG, JPEG 2000, NetCDF, .zarr store)").desired_width(f32::INFINITY));
             te.request_focus();
             go = ui.input(|i| i.key_pressed(Key::Enter));
@@ -1138,7 +1162,7 @@ impl App {
         let mut run = None;
         let r = egui::Modal::new(egui::Id::new("palette")).show(ctx, |ui| {
             ui.set_width(460.0);
-            let te = ui.add(egui::TextEdit::singleline(&mut pal.q).hint_text("Type a command, a band, a preset or a color map").desired_width(f32::INFINITY));
+            let te = ui.add(egui::TextEdit::singleline(&mut pal.q).hint_text(t("Type a command, a band, a preset or a color map")).desired_width(f32::INFINITY));
             te.request_focus();
             if te.changed() {
                 pal.sel = 0;
@@ -1179,18 +1203,18 @@ impl App {
         let (cmap, has_layer) = (sel.map_or(0, |l| l.cmap), sel.is_some());
         let (panel, link_px) = (self.panel, self.link_px);
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                entry(ui, cmds, id, "Open files...", "Ctrl+O", Cmd::Open(false, What::Files));
-                entry(ui, cmds, id, "Open folder (SAFE, SEN3, Zarr)...", "Ctrl+Alt+O", Cmd::Open(false, What::Dirs));
-                entry(ui, cmds, id, "Open URL...", "Ctrl+L", Cmd::Open(false, What::Url));
-                entry(ui, cmds, id, "Open files as a time series...", "", Cmd::Open(false, What::Series));
-                ui.menu_button("Open product", |ui| {
+            ui.menu_button(t("File"), |ui| {
+                entry(ui, cmds, id, t("Open files..."), "Ctrl+O", Cmd::Open(false, What::Files));
+                entry(ui, cmds, id, t("Open folder (SAFE, SEN3, Zarr)..."), "Ctrl+Alt+O", Cmd::Open(false, What::Dirs));
+                entry(ui, cmds, id, t("Open URL..."), "Ctrl+L", Cmd::Open(false, What::Url));
+                entry(ui, cmds, id, t("Open files as a time series..."), "", Cmd::Open(false, What::Series));
+                ui.menu_button(t("Open product"), |ui| {
                     for (i, k) in OPEN_KINDS.iter().enumerate() {
-                        entry(ui, cmds, id, &format!("{}...", k.0), "", Cmd::Open(false, What::Kind(i)));
+                        entry(ui, cmds, id, &format!("{}...", t(k.0)), "", Cmd::Open(false, What::Kind(i)));
                     }
                 });
                 ui.add_enabled_ui(!self.recent.is_empty(), |ui| {
-                    ui.menu_button("Open recent", |ui| {
+                    ui.menu_button(t("Open recent"), |ui| {
                         for r in &self.recent {
                             let name = r.trim_end_matches('/').rsplit('/').next().unwrap_or(r);
                             if ui.button(name).on_hover_text(r).clicked() {
@@ -1201,95 +1225,95 @@ impl App {
                     });
                 });
                 ui.separator();
-                ui.menu_button("Add layer", |ui| open_menu(ui, true, id, &self.recent, cmds));
+                ui.menu_button(t("Add layer"), |ui| open_menu(ui, true, id, &self.recent, cmds));
                 ui.separator();
-                entry(ui, cmds, id, "Save workspace...", "Ctrl+S", Cmd::Save);
-                entry(ui, cmds, id, "Render video or frames...", "Ctrl+R", Cmd::Render);
-                entry(ui, cmds, id, "Open workspace...", "", Cmd::Load);
+                entry(ui, cmds, id, t("Save workspace..."), "Ctrl+S", Cmd::Save);
+                entry(ui, cmds, id, t("Render video or frames..."), "Ctrl+R", Cmd::Render);
+                entry(ui, cmds, id, t("Open workspace..."), "", Cmd::Load);
                 ui.separator();
-                entry(ui, cmds, id, "Quit", "Ctrl+Q", Cmd::Quit);
+                entry(ui, cmds, id, t("Quit"), "Ctrl+Q", Cmd::Quit);
             });
-            ui.menu_button("Edit", |ui| {
-                entry(ui, cmds, id, "Copy view extent", "Ctrl+Shift+C", Cmd::CopyExtent);
+            ui.menu_button(t("Edit"), |ui| {
+                entry(ui, cmds, id, t("Copy view extent"), "Ctrl+Shift+C", Cmd::CopyExtent);
                 ui.separator();
-                entry(ui, cmds, id, "Command palette...", "Ctrl+K", Cmd::Palette);
+                entry(ui, cmds, id, t("Command palette..."), "Ctrl+K", Cmd::Palette);
                 ui.separator();
-                entry(ui, cmds, id, "Preferences...", "Ctrl+,", Cmd::Prefs);
+                entry(ui, cmds, id, t("Preferences..."), "Ctrl+,", Cmd::Prefs);
             });
-            ui.menu_button("View", |ui| {
-                entry(ui, cmds, id, "Fit", "F", Cmd::Fit);
-                entry(ui, cmds, id, "Zoom 1:1", "1", Cmd::OneToOne);
-                entry(ui, cmds, id, "Zoom in", "+", Cmd::Zoom(1.5));
-                entry(ui, cmds, id, "Zoom out", "-", Cmd::Zoom(1.0 / 1.5));
-                check(ui, cmds, id, globe, "3D globe", "G", Cmd::Globe);
-                ui.menu_button("Display CRS", |ui| {
+            ui.menu_button(t("View"), |ui| {
+                entry(ui, cmds, id, t("Fit"), "F", Cmd::Fit);
+                entry(ui, cmds, id, t("Zoom 1:1"), "1", Cmd::OneToOne);
+                entry(ui, cmds, id, t("Zoom in"), "+", Cmd::Zoom(1.5));
+                entry(ui, cmds, id, t("Zoom out"), "-", Cmd::Zoom(1.0 / 1.5));
+                check(ui, cmds, id, globe, t("3D globe"), "G", Cmd::Globe);
+                ui.menu_button(t("Display CRS"), |ui| {
                     if let Some(e) = own.filter(|_| SPACES.iter().all(|x| x.0 != own)) {
-                        check(ui, cmds, id, space == own, &format!("Layer CRS (EPSG:{e})"), "", Cmd::Space(own));
+                        check(ui, cmds, id, space == own, &tf("Layer CRS (EPSG:{})", &[&e.to_string()]), "", Cmd::Space(own));
                     }
                     for s in SPACES {
-                        check(ui, cmds, id, space == s.0, s.1, "", Cmd::Space(s.0));
+                        check(ui, cmds, id, space == s.0, t(s.1), "", Cmd::Space(s.0));
                     }
                 });
                 ui.separator();
-                check(ui, cmds, id, panel, "Side panel", "H", Cmd::Panel);
+                check(ui, cmds, id, panel, t("Side panel"), "H", Cmd::Panel);
                 ui.separator();
-                entry(ui, cmds, id, "New view", "Ctrl+N", Cmd::NewView);
-                entry(ui, cmds, id, "Duplicate view", "Ctrl+D", Cmd::Duplicate);
-                entry(ui, cmds, id, "Close view", "Ctrl+W", Cmd::CloseView);
-                entry(ui, cmds, id, "Detach to a window", "Ctrl+Shift+D", Cmd::Detach);
-                entry(ui, cmds, id, "Full screen", "F11", Cmd::Fullscreen);
-                ui.menu_button("Layout", |ui| {
+                entry(ui, cmds, id, t("New view"), "Ctrl+N", Cmd::NewView);
+                entry(ui, cmds, id, t("Duplicate view"), "Ctrl+D", Cmd::Duplicate);
+                entry(ui, cmds, id, t("Close view"), "Ctrl+W", Cmd::CloseView);
+                entry(ui, cmds, id, t("Detach to a window"), "Ctrl+Shift+D", Cmd::Detach);
+                entry(ui, cmds, id, t("Full screen"), "F11", Cmd::Fullscreen);
+                ui.menu_button(t("Layout"), |ui| {
                     for (n, name, k) in [(1, "1 view", "Alt+1"), (2, "2 views", "Alt+2"), (4, "2 x 2 views", "Alt+3"), (9, "3 x 3 views", "Alt+4")] {
-                        entry(ui, cmds, id, name, k, Cmd::Layout(n));
+                        entry(ui, cmds, id, t(name), k, Cmd::Layout(n));
                     }
                 });
                 ui.separator();
-                check(ui, cmds, id, link > 0, "Link this view", "L", Cmd::Link);
-                check(ui, cmds, id, !link_px, "Link mode: geographic", if link_px { "Shift+L" } else { "" }, Cmd::LinkMode);
-                check(ui, cmds, id, link_px, "Link mode: pixel", if link_px { "" } else { "Shift+L" }, Cmd::LinkMode);
+                check(ui, cmds, id, link > 0, t("Link this view"), "L", Cmd::Link);
+                check(ui, cmds, id, !link_px, t("Link mode: geographic"), if link_px { "Shift+L" } else { "" }, Cmd::LinkMode);
+                check(ui, cmds, id, link_px, t("Link mode: pixel"), if link_px { "" } else { "Shift+L" }, Cmd::LinkMode);
             });
-            ui.menu_button("Layer", |ui| {
+            ui.menu_button(t("Layer"), |ui| {
                 ui.add_enabled_ui(has_layer, |ui| {
-                    entry(ui, cmds, id, "Next band", "]", Cmd::Band(1));
-                    entry(ui, cmds, id, "Previous band", "[", Cmd::Band(-1));
+                    entry(ui, cmds, id, t("Next band"), "]", Cmd::Band(1));
+                    entry(ui, cmds, id, t("Previous band"), "[", Cmd::Band(-1));
                     ui.add_enabled_ui(!presets.is_empty(), |ui| {
-                        ui.menu_button("Preset", |ui| {
+                        ui.menu_button(t("Preset"), |ui| {
                             for &i in &presets {
-                                entry(ui, cmds, id, PRESETS[i].0, "", Cmd::Preset(i));
+                                entry(ui, cmds, id, t(PRESETS[i].0), "", Cmd::Preset(i));
                             }
                         });
                     });
                     ui.separator();
-                    entry(ui, cmds, id, "Automatic stretch", "A", Cmd::Auto);
-                    ui.menu_button("Color map", |ui| {
+                    entry(ui, cmds, id, t("Automatic stretch"), "A", Cmd::Auto);
+                    ui.menu_button(t("Color map"), |ui| {
                         for (i, (n, _)) in CMAPS.iter().enumerate() {
                             check(ui, cmds, id, i == cmap, n, "", Cmd::Cmap(i));
                         }
                     });
-                    entry(ui, cmds, id, "Next color map", "C", Cmd::NextCmap);
-                    entry(ui, cmds, id, "Invert color map", "I", Cmd::Invert);
+                    entry(ui, cmds, id, t("Next color map"), "C", Cmd::NextCmap);
+                    entry(ui, cmds, id, t("Invert color map"), "I", Cmd::Invert);
                 });
             });
-            ui.menu_button("Compare", |ui| {
+            ui.menu_button(t("Compare"), |ui| {
                 for (c, n, k) in Cmp::ALL {
-                    check(ui, cmds, id, cmp == c, n, k, Cmd::Compare(c));
+                    check(ui, cmds, id, cmp == c, t(n), k, Cmd::Compare(c));
                 }
                 ui.separator();
-                entry(ui, cmds, id, "Swipe line: vertical or horizontal", "V", Cmd::SwipeOrient);
+                entry(ui, cmds, id, t("Swipe line: vertical or horizontal"), "V", Cmd::SwipeOrient);
             });
-            ui.menu_button("Time", |ui| {
+            ui.menu_button(t("Time"), |ui| {
                 ui.add_enabled_ui(timed, |ui| {
-                    check(ui, cmds, id, play, "Play", "Space", Cmd::Play);
-                    entry(ui, cmds, id, "Next step", ".", Cmd::Step(1));
-                    entry(ui, cmds, id, "Previous step", ",", Cmd::Step(-1));
-                    entry(ui, cmds, id, "First step", "", Cmd::SetStep(0));
-                    entry(ui, cmds, id, "Last step", "", Cmd::SetStep(usize::MAX));
+                    check(ui, cmds, id, play, t("Play"), "Space", Cmd::Play);
+                    entry(ui, cmds, id, t("Next step"), ".", Cmd::Step(1));
+                    entry(ui, cmds, id, t("Previous step"), ",", Cmd::Step(-1));
+                    entry(ui, cmds, id, t("First step"), "", Cmd::SetStep(0));
+                    entry(ui, cmds, id, t("Last step"), "", Cmd::SetStep(usize::MAX));
                 });
                 ui.separator();
-                entry(ui, cmds, id, "Open files as a time series...", "", Cmd::Open(false, What::Series));
+                entry(ui, cmds, id, t("Open files as a time series..."), "", Cmd::Open(false, What::Series));
             });
-            ui.menu_button("Help", |ui| {
-                entry(ui, cmds, id, "Keys...", "F1", Cmd::Help);
+            ui.menu_button(t("Help"), |ui| {
+                entry(ui, cmds, id, t("Keys..."), "F1", Cmd::Help);
                 ui.separator();
                 ui.label(format!("{} {}", crate::APP, env!("CARGO_PKG_VERSION")));
                 if let Some(w) = &self.win {
@@ -1298,7 +1322,7 @@ impl App {
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let on = self.animate;
-                if ui.selectable_label(on, "Animate").on_hover_text("The animate workspace: make the scene of an animation, with a preview, and render it (F6)").clicked() != ui.selectable_label(!on, "View").on_hover_text("The view workspace").clicked() {
+                if ui.selectable_label(on, t("Animate")).on_hover_text(t("The animate workspace: make the scene of an animation, with a preview, and render it (F6)")).clicked() != ui.selectable_label(!on, t("View")).on_hover_text(t("The view workspace")).clicked() {
                     cmds.push((Cmd::Animate, id));
                 }
             });
@@ -1306,54 +1330,13 @@ impl App {
     }
 
     /// Window with the keys of the commands.
-    /// Preferences window. A change goes to the preferences file immediately.
-    fn prefs_ui(&mut self, ctx: &egui::Context) {
-        if !self.prefs_open {
-            return;
-        }
-        let (mut open, mut changed) = (true, false);
-        egui::Window::new("Preferences").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.set_max_width(380.0);
-            changed |= ui.checkbox(&mut self.prefs.full_res, "Full resolution at all zoom levels").changed();
-            ui.label(
-                egui::RichText::new(
-                    "The views use the finest level of the data, not the level of the zoom. If the GPU memory does not have room for the tiles of a view, the view uses the finest level that has room (EOVIEW_GPU_MB sets the GPU memory).",
-                )
-                .small()
-                .weak(),
-            );
-            ui.add_space(8.0);
-            ui.label("Path of ffmpeg (for the renders)");
-            changed |= ui.add(egui::TextEdit::singleline(&mut self.prefs.ffmpeg).hint_text("Empty: next to eoview, then the search path").desired_width(360.0)).changed();
-        });
-        if changed {
-            self.ffmpeg_found = None;
-            self.save_prefs();
-        }
-        self.prefs_open = open;
-    }
-
     fn help_ui(&mut self, ctx: &egui::Context) {
         if !self.help {
             return;
         }
-        let list = commands(self, self.active);
         let mut open = true;
-        egui::Window::new("Keys").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-                egui::Grid::new("keys").striped(true).show(ui, |ui| {
-                    for (name, key, _) in list.iter().filter(|c| !c.1.is_empty()) {
-                        ui.monospace(*key);
-                        ui.label(name);
-                        ui.end_row();
-                    }
-                    for (key, name) in [("Drag", "Pan"), ("Mouse wheel, pinch", "Zoom at the cursor"), ("Double-click", "Fit"), ("Drop files", "Open in the view under the mouse"), ("Shift + drop", "Add as layers")] {
-                        ui.monospace(key);
-                        ui.label(name);
-                        ui.end_row();
-                    }
-                });
-            });
+        egui::Window::new(t("Keys")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| keys_grid(self, ui));
         });
         self.help = open;
     }
@@ -1363,15 +1346,15 @@ impl App {
         ui.horizontal(|ui| {
             // Split buttons: the button opens files of all formats, the arrow has the product types.
             for (add, icon, name, tip) in [
-                (false, Icon::Open, "Open", "Open files in the active view (Ctrl+O). Drop files or directories on a view to open them there"),
-                (true, Icon::AddLayer, "Layer", "Add files as layers of the active view (Ctrl+Shift+O, or Shift + drop)"),
+                (false, Icon::Open, t("Open"), t("Open files in the active view (Ctrl+O). Drop files or directories on a view to open them there")),
+                (true, Icon::AddLayer, t("Layer"), t("Add files as layers of the active view (Ctrl+Shift+O, or Shift + drop)")),
             ] {
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.x = 1.0;
                     if icons::button(ui, icon, name, false).on_hover_text(tip).clicked() {
                         cmds.push((Cmd::Open(add, What::Files), id));
                     }
-                    let arrow = icons::button(ui, Icon::Down, "", false).on_hover_text("Product types (SAFE, SEN3, Zarr, GeoTIFF, ...), folders, URL, time series, recent products");
+                    let arrow = icons::button(ui, Icon::Down, "", false).on_hover_text(t("Product types (SAFE, SEN3, Zarr, GeoTIFF, ...), folders, URL, time series, recent products"));
                     egui::Popup::menu(&arrow).show(|ui| open_menu(ui, add, id, &self.recent, cmds));
                 });
             }
@@ -1380,46 +1363,46 @@ impl App {
                     cmds.push((c, id));
                 }
             };
-            b(ui, Icon::Save, "Save", "Save the workspace: layout, views, layers, settings (Ctrl+S)", Cmd::Save);
+            b(ui, Icon::Save, t("Save"), t("Save the workspace: layout, views, layers, settings (Ctrl+S)"), Cmd::Save);
             ui.separator();
-            b(ui, Icon::Fit, "Fit", "Show all data of the view (F, or double-click)", Cmd::Fit);
-            b(ui, Icon::ZoomIn, "", "Zoom in (+, or the mouse wheel)", Cmd::Zoom(1.5));
-            b(ui, Icon::ZoomOut, "", "Zoom out (-)", Cmd::Zoom(1.0 / 1.5));
+            b(ui, Icon::Fit, t("Fit"), t("Show all data of the view (F, or double-click)"), Cmd::Fit);
+            b(ui, Icon::ZoomIn, "", t("Zoom in (+, or the mouse wheel)"), Cmd::Zoom(1.5));
+            b(ui, Icon::ZoomOut, "", t("Zoom out (-)"), Cmd::Zoom(1.0 / 1.5));
             ui.separator();
             for (n, c, r, name, k) in [(1, 1, 1, "1 view", "Alt+1"), (2, 2, 1, "2 views", "Alt+2"), (4, 2, 2, "2 x 2 views", "Alt+3"), (9, 3, 3, "3 x 3 views", "Alt+4")] {
-                b(ui, Icon::Grid(c, r), "", &format!("Layout: {name} ({k})"), Cmd::Layout(n));
+                b(ui, Icon::Grid(c, r), "", &format!("{} ({k})", tf("Layout: {}", &[t(name)])), Cmd::Layout(n));
             }
-            if ui.button("1:1").on_hover_text("One data pixel for each screen pixel (1)").clicked() {
+            if ui.button("1:1").on_hover_text(t("One data pixel for each screen pixel (1)")).clicked() {
                 cmds.push((Cmd::OneToOne, id));
             }
             ui.separator();
             let Some(p) = self.pane(id) else { return };
             let (link, cmp, space, globe) = (p.link, p.cmp, p.v.space, p.v.globe);
-            if icons::button(ui, Icon::Link, "Link", link > 0).on_hover_text("Link the active view: it pans and zooms with the other linked views (L)").clicked() {
+            if icons::button(ui, Icon::Link, t("Link"), link > 0).on_hover_text(t("Link the active view: it pans and zooms with the other linked views (L)")).clicked() {
                 cmds.push((Cmd::Link, id));
             }
-            if icons::button(ui, Icon::Globe, "Globe", globe).on_hover_text("Show the active view on a 3D globe, or as a 2D map (G)").clicked() {
+            if icons::button(ui, Icon::Globe, t("Globe"), globe).on_hover_text(t("Show the active view on a 3D globe, or as a 2D map (G)")).clicked() {
                 cmds.push((Cmd::Globe, id));
             }
             ui.separator();
             let mut px = self.link_px;
-            ui.selectable_value(&mut px, false, "Geo").on_hover_text("Link by center latitude, longitude and ground resolution: views in different CRSs stay aligned (Shift+L)");
-            ui.selectable_value(&mut px, true, "Pixel").on_hover_text("Link by pixel region: for products on the same grid (Shift+L)");
+            ui.selectable_value(&mut px, false, t("Geo")).on_hover_text(t("Link by center latitude, longitude and ground resolution: views in different CRSs stay aligned (Shift+L)"));
+            ui.selectable_value(&mut px, true, t("Pixel")).on_hover_text(t("Link by pixel region: for products on the same grid (Shift+L)"));
             self.link_px = px;
             ui.separator();
             let r = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover()).0;
             icons::draw(ui.painter(), Icon::Compare, r, ui.visuals().text_color());
-            ui.label("Compare");
+            ui.label(t("Compare"));
             for (c, n, k) in Cmp::ALL {
-                if ui.selectable_label(cmp == c, n).on_hover_text(format!("{n} of the two lowest layers of the active view ({k})")).clicked() {
+                if ui.selectable_label(cmp == c, t(n)).on_hover_text(format!("{} ({k})", tf("{} of the two lowest layers of the active view", &[t(n)]))).clicked() {
                     cmds.push((Cmd::Compare(c), id));
                 }
             }
             ui.separator();
             let own = self.pane(id).and_then(|p| p.layers.first()).and_then(|l| l.default_space());
             let label = |s: Option<u32>| match SPACES.iter().find(|x| x.0 == s) {
-                Some(x) => x.1.to_string(),
-                None => format!("Layer CRS (EPSG:{})", s.unwrap_or(0)),
+                Some(x) => t(x.1).to_string(),
+                None => tf("Layer CRS (EPSG:{})", &[&s.unwrap_or(0).to_string()]),
             };
             let mut sp = space;
             egui::ComboBox::from_id_salt("crs").selected_text(label(sp)).width(210.0).show_ui(ui, |ui| {
@@ -1427,14 +1410,14 @@ impl App {
                     ui.selectable_value(&mut sp, own, label(own));
                 }
                 for s in SPACES {
-                    ui.selectable_value(&mut sp, s.0, s.1);
+                    ui.selectable_value(&mut sp, s.0, t(s.1));
                 }
             });
             if sp != space {
                 cmds.push((Cmd::Space(sp), id));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(ui, Icon::Search, "Commands  Ctrl+K", false).on_hover_text("Find any command, band, preset or color map by name").clicked() {
+                if icons::button(ui, Icon::Search, t("Commands  Ctrl+K"), false).on_hover_text(t("Find any command, band, preset or color map by name")).clicked() {
                     cmds.push((Cmd::Palette, id));
                 }
             });
@@ -1444,10 +1427,10 @@ impl App {
     pub fn status(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if let Some(e) = self.error.clone() {
-                if ui.small_button("x").on_hover_text("Close the message").clicked() {
+                if ui.small_button("x").on_hover_text(t("Close the message")).clicked() {
                     self.error = None;
                 }
-                ui.colored_label(RED, e);
+                ui.colored_label(ui.visuals().error_fg_color, e);
                 ui.separator();
             }
             if let Some(id) = self.hovered
@@ -1473,7 +1456,7 @@ impl App {
                 ui.monospace(format!("RAM {} / {}   GPU {} / {}", mb(st.raw + st.dec + st.probe + st.work), mb(st.limit), mb(alloc), mb(self.gpu_budget)));
                 if st.running + st.wanted > 0 {
                     ui.separator();
-                    ui.monospace(format!("loading {} tiles", st.running + st.wanted));
+                    ui.monospace(tf("loading {} tiles", &[&(st.running + st.wanted).to_string()]));
                     ui.spinner();
                 }
             });
@@ -1484,16 +1467,16 @@ impl App {
         let id = self.active;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.strong("Layers");
+            ui.strong(t("Layers"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("+ Add").on_hover_text("Add layers to this view (Ctrl+Shift+O, or Shift + drop)").clicked() {
+                if ui.button("+ Add").on_hover_text(t("Add layers to this view (Ctrl+Shift+O, or Shift + drop)")).clicked() {
                     cmds.push((Cmd::Open(true, What::Files), id));
                 }
             });
         });
         let Some(p) = self.pane_mut(id) else { return };
         if p.layers.is_empty() {
-            ui.label("No layer. Open a product (Ctrl+O) or drop files on the view.");
+            ui.label(t("No layer. Open a product (Ctrl+O) or drop files on the view."));
             return;
         }
         // The list shows the top layer first.
@@ -1508,18 +1491,18 @@ impl App {
             };
             ui.horizontal(|ui| {
                 let l = &mut p.layers[k];
-                rebuild |= ui.checkbox(&mut l.visible, "").on_hover_text("Show or hide").changed();
+                rebuild |= ui.checkbox(&mut l.visible, "").on_hover_text(t("Show or hide")).changed();
                 let name = format!("{tag}{}", l.label(200));
                 // The buttons from the right, then the name in the rest of the row (a fixed sum of widths
                 // can be more than the row: the panel then grows at each frame).
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::small(ui, Icon::Close).on_hover_text("Remove").clicked() {
+                    if icons::small(ui, Icon::Close).on_hover_text(t("Remove")).clicked() {
                         action = Some((k, 0));
                     }
-                    if ui.add_enabled_ui(k > 0, |ui| icons::small(ui, Icon::Down)).inner.on_hover_text("Move down").clicked() {
+                    if ui.add_enabled_ui(k > 0, |ui| icons::small(ui, Icon::Down)).inner.on_hover_text(t("Move down")).clicked() {
                         action = Some((k, -1));
                     }
-                    if ui.add_enabled_ui(k + 1 < n, |ui| icons::small(ui, Icon::Up)).inner.on_hover_text("Move up").clicked() {
+                    if ui.add_enabled_ui(k + 1 < n, |ui| icons::small(ui, Icon::Up)).inner.on_hover_text(t("Move up")).clicked() {
                         action = Some((k, 1));
                     }
                     let w = ui.available_width();
@@ -1544,7 +1527,7 @@ impl App {
             None => {}
         }
         if let Some(e) = &p.err {
-            ui.colored_label(RED, e);
+            ui.colored_label(ui.visuals().error_fg_color, e);
         }
         if rebuild {
             self.rebuild(id);
@@ -1560,7 +1543,7 @@ impl App {
         ui.separator();
         ui.horizontal(|ui| {
             ui.strong(l.comp_name());
-            ui.add(egui::Slider::new(&mut l.opacity, 0.0..=1.0).show_value(false)).on_hover_text("Opacity");
+            ui.add(egui::Slider::new(&mut l.opacity, 0.0..=1.0).show_value(false)).on_hover_text(t("Opacity"));
         });
         if let Some(d) = l.any().map(|a| a.ds.product.desc.clone()) {
             ui.small(d);
@@ -1568,10 +1551,10 @@ impl App {
         let mut changed = false;
         ui.horizontal(|ui| {
             let k = l.kind;
-            ui.selectable_value(&mut l.kind, Kind::Band, "Band");
+            ui.selectable_value(&mut l.kind, Kind::Band, t("Band"));
             ui.selectable_value(&mut l.kind, Kind::Rgb, "RGB");
-            ui.selectable_value(&mut l.kind, Kind::Expr, "Band math");
-            ui.selectable_value(&mut l.kind, Kind::Wind, "Wind").on_hover_text("A vector field: the speed with the color map, and arrows. It uses the components to the east (U) and to the north (V)");
+            ui.selectable_value(&mut l.kind, Kind::Expr, t("Band math"));
+            ui.selectable_value(&mut l.kind, Kind::Wind, t("Wind")).on_hover_text(t("A vector field: the speed with the color map, and arrows. It uses the components to the east (U) and to the north (V)"));
             if k != l.kind {
                 // The wind mode starts with the components that the product has.
                 if l.kind == Kind::Wind && let Some([u, v]) = layer::wind_pair(&l.names()) {
@@ -1602,28 +1585,28 @@ impl App {
             Kind::Wind => {
                 for (k, lbl) in ["U", "V"].iter().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.label(*lbl).on_hover_text(["The component to the east", "The component to the north"][k]);
+                        ui.label(*lbl).on_hover_text([t("The component to the east"), t("The component to the north")][k]);
                         let r = ui.add(egui::TextEdit::singleline(&mut l.rgb[k]).desired_width(f32::INFINITY));
                         changed |= r.lost_focus();
                     });
                 }
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut l.particles, "Particles").on_hover_text("Points that follow the wind, with a trail");
-                    ui.checkbox(&mut l.arrows, "Arrows");
-                    ui.checkbox(&mut l.fill, "Speed colors").on_hover_text("The speed with the color map. Without it, the layers below show, and the particles have the color of the speed");
+                    ui.checkbox(&mut l.particles, t("Particles")).on_hover_text(t("Points that follow the wind, with a trail"));
+                    ui.checkbox(&mut l.arrows, t("Arrows"));
+                    ui.checkbox(&mut l.fill, t("Speed colors")).on_hover_text(t("The speed with the color map. Without it, the layers below show, and the particles have the color of the speed"));
                 });
             }
         }
         ui.horizontal_wrapped(|ui| {
             for p in PRESETS {
-                if l.preset_ok(p) && ui.small_button(p.0).clicked() {
+                if l.preset_ok(p) && ui.small_button(t(p.0)).clicked() {
                     l.set_preset(p);
                     changed = true;
                 }
             }
         });
         if let Some(e) = &l.err {
-            ui.colored_label(RED, e);
+            ui.colored_label(ui.visuals().error_fg_color, e);
         }
         // Product tree: a click on a name shows the variable as data. The buttons of a row set a channel
         // (RGB mode) or add the name to the expression (band math mode).
@@ -1652,7 +1635,7 @@ impl App {
 
         ui.separator();
         let n = if l.kind == Kind::Rgb { 3 } else { 1 };
-        let colors = if n == 3 { [Color32::from_rgb(230, 80, 80), Color32::from_rgb(90, 200, 90), Color32::from_rgb(90, 140, 255)] } else { [Color32::from_gray(200); 3] };
+        let colors = if n == 3 { [Color32::from_rgb(230, 80, 80), Color32::from_rgb(90, 200, 90), Color32::from_rgb(90, 140, 255)] } else { [ui.visuals().text_color(); 3] };
         let mut again = false;
         for k in 0..n {
             if let Some(h) = l.hist.get(k).cloned() {
@@ -1662,17 +1645,17 @@ impl App {
             ui.horizontal(|ui| {
                 let st = &mut l.st[k];
                 let speed = ((st.hi - st.lo).abs() / 300.0).max(1e-6) as f64;
-                ui.add(egui::DragValue::new(&mut st.lo).speed(speed).max_decimals(4)).on_hover_text("Minimum");
-                ui.add(egui::DragValue::new(&mut st.hi).speed(speed).max_decimals(4)).on_hover_text("Maximum");
-                ui.add(egui::DragValue::new(&mut st.gamma).speed(0.01).range(0.1..=5.0).prefix("gamma ")).on_hover_text("Gamma");
+                ui.add(egui::DragValue::new(&mut st.lo).speed(speed).max_decimals(4)).on_hover_text(t("Minimum"));
+                ui.add(egui::DragValue::new(&mut st.hi).speed(speed).max_decimals(4)).on_hover_text(t("Maximum"));
+                ui.add(egui::DragValue::new(&mut st.gamma).speed(0.01).range(0.1..=5.0).prefix("gamma ")).on_hover_text(t("Gamma"));
                 again |= ui.checkbox(&mut st.db, "dB").changed();
             });
         }
         ui.horizontal(|ui| {
-            ui.label("Clip %");
+            ui.label(t("Clip %"));
             again |= ui.add(egui::Slider::new(&mut l.clip, 0.0..=10.0)).changed();
-            again |= ui.button("Auto").on_hover_text("Automatic stretch (A)").clicked();
-            if l.is_color() && ui.button("As is").on_hover_text("No stretch: the colors of the file").clicked() {
+            again |= ui.button(t("Auto")).on_hover_text(t("Automatic stretch (A)")).clicked();
+            if l.is_color() && ui.button(t("As is")).on_hover_text(t("No stretch: the colors of the file")).clicked() {
                 l.as_is();
             }
         });
@@ -1685,16 +1668,16 @@ impl App {
                 l.set_cmap(i);
             }
             ui.horizontal(|ui| {
-                ui.checkbox(&mut l.invert, "Invert (I)");
-                ui.menu_button("Edit colors", |ui| {
+                ui.checkbox(&mut l.invert, t("Invert (I)"));
+                ui.menu_button(t("Edit colors"), |ui| {
                     ui.horizontal_wrapped(|ui| {
                         for s in l.stops.iter_mut() {
                             ui.color_edit_button_srgb(s);
                         }
-                        if ui.small_button("+").on_hover_text("Add a color").clicked() {
+                        if ui.small_button("+").on_hover_text(t("Add a color")).clicked() {
                             l.stops.push(*l.stops.last().unwrap());
                         }
-                        if l.stops.len() > 2 && ui.small_button("-").on_hover_text("Remove the last color").clicked() {
+                        if l.stops.len() > 2 && ui.small_button("-").on_hover_text(t("Remove the last color")).clicked() {
                             l.stops.pop();
                         }
                     });
@@ -1706,14 +1689,14 @@ impl App {
         }
 
         ui.separator();
-        egui::CollapsingHeader::new("Inspector").default_open(true).show(ui, |ui| match self.hovered {
+        egui::CollapsingHeader::new(t("Inspector")).default_open(true).show(ui, |ui| match self.hovered {
             Some(h) => {
                 let t = self.inspect(h).0;
                 ui.monospace(t);
             }
-            None => drop(ui.label("Move the cursor over a view.")),
+            None => drop(ui.label(t("Move the cursor over a view."))),
         });
-        egui::CollapsingHeader::new("Memory").default_open(false).show(ui, |ui| {
+        egui::CollapsingHeader::new(t("Memory")).default_open(false).show(ui, |ui| {
             let st = self.engine.stats();
             let (alloc, used) = self.win.as_ref().map_or((0, 0), |w| w.gpu.usage());
             let tiles = self.win.as_ref().map_or(0, |w| w.gpu.resident());
@@ -1743,7 +1726,7 @@ impl App {
     /// for the status bar.
     pub fn inspect(&mut self, id: u32) -> (String, Option<String>) {
         let Some(p) = self.pane(id) else { return (String::new(), None) };
-        let Some(c) = p.v.cursor else { return ("Move the cursor over the view.".into(), None) };
+        let Some(c) = p.v.cursor else { return (t("Move the cursor over the view.").into(), None) };
         let mut s = String::new();
         let mut top = None;
         let mut req = vec![];
@@ -1757,7 +1740,7 @@ impl App {
                 let name = l.used.get(j).map_or("?", |&c| l.chans[c].id.as_str());
                 let Some((w, _)) = self.warps.get(&(inp.id, p.v.space)) else { continue };
                 let Some((x, y)) = w.inverse(c[0], c[1]) else {
-                    s += &format!("  {name}: outside\n");
+                    s += &format!("  {name}: {}\n", t("outside"));
                     vals.push(f64::NAN);
                     continue;
                 };
@@ -1776,7 +1759,7 @@ impl App {
                     }
                     Some(None) => {
                         vals.push(f64::NAN);
-                        format!("{name} [{x}, {y}]: no data")
+                        format!("{name} [{x}, {y}]: {}", t("no data"))
                     }
                     None => {
                         vals.push(f64::NAN);
@@ -1792,7 +1775,7 @@ impl App {
                     && let Some(pr) = probe
                 {
                     for (b, val) in v.bands.iter().zip(&pr.2) {
-                        s += &format!("    {b}: {}\n", val.map_or("no data".into(), |v| format!("{v}{unit}")));
+                        s += &format!("    {b}: {}\n", val.map_or(t("no data").into(), |v| format!("{v}{unit}")));
                     }
                 }
                 if let Some(f) = v.fill {
@@ -2006,7 +1989,7 @@ fn graticule(v: &crate::view::View, pt: &egui::Painter, r: Rect) {
 
 fn compare_ui(ui: &mut egui::Ui, p: &mut Pane) {
     if p.specs.len() < 2 {
-        ui.colored_label(RED, "Compare needs two visible layers: add a layer (Ctrl+Shift+O, or Shift + drop).");
+        ui.colored_label(ui.visuals().error_fg_color, t("Compare needs two visible layers: add a layer (Ctrl+Shift+O, or Shift + drop)."));
         return;
     }
     let name = |k: usize| p.spec_layer.get(k).map_or(String::new(), |&i| p.layers[i].label(36));
@@ -2014,19 +1997,19 @@ fn compare_ui(ui: &mut egui::Ui, p: &mut Pane) {
     match p.cmp {
         Cmp::Swipe => {
             ui.horizontal(|ui| {
-                ui.add(egui::Slider::new(&mut p.swipe, 0.0..=1.0).show_value(false)).on_hover_text("Line position. You can also drag the line in the view");
-                ui.checkbox(&mut p.vertical, "Vertical (V)");
+                ui.add(egui::Slider::new(&mut p.swipe, 0.0..=1.0).show_value(false)).on_hover_text(t("Line position. You can also drag the line in the view"));
+                ui.checkbox(&mut p.vertical, t("Vertical (V)"));
             });
         }
         Cmp::Blend => {
             ui.horizontal(|ui| {
-                ui.label("B opacity");
+                ui.label(t("B opacity"));
                 ui.add(egui::Slider::new(&mut p.blend, 0.0..=1.0));
             });
         }
         Cmp::Flicker => {
             ui.horizontal(|ui| {
-                ui.label("Rate");
+                ui.label(t("Rate"));
                 ui.add(egui::Slider::new(&mut p.flicker_hz, 0.5..=10.0).suffix(" /s").logarithmic(true));
             });
         }
@@ -2042,12 +2025,12 @@ fn compare_ui(ui: &mut egui::Ui, p: &mut Pane) {
             });
             ui.horizontal(|ui| {
                 let speed = ((p.dhi - p.dlo).abs() / 300.0).max(1e-6) as f64;
-                ui.add(egui::DragValue::new(&mut p.dlo).speed(speed).max_decimals(4)).on_hover_text("Minimum");
-                ui.add(egui::DragValue::new(&mut p.dhi).speed(speed).max_decimals(4)).on_hover_text("Maximum");
-                if ui.button("Auto").clicked() {
+                ui.add(egui::DragValue::new(&mut p.dlo).speed(speed).max_decimals(4)).on_hover_text(t("Minimum"));
+                ui.add(egui::DragValue::new(&mut p.dhi).speed(speed).max_decimals(4)).on_hover_text(t("Maximum"));
+                if ui.button(t("Auto")).clicked() {
                     p.diff_range();
                 }
-                ui.checkbox(&mut p.dinvert, "Invert");
+                ui.checkbox(&mut p.dinvert, t("Invert"));
             });
             if let Some(i) = swatches(ui, p.dcmap, p.dinvert) {
                 p.dcmap = i;
@@ -2090,10 +2073,10 @@ fn overlays(p: &Pane, pt: &egui::Painter, ppp: f32, mpp: Option<f64>, cross: Opt
                 label(b, if p.vertical { Align2::LEFT_TOP } else { Align2::LEFT_TOP }, &format!("B  {}", name(1)), Color32::WHITE);
             }
             Cmp::Flicker => {
-                let s = if p.v.inputs.is_empty() { String::new() } else { format!("Flicker  A {}  /  B {}", name(0), name(1)) };
+                let s = if p.v.inputs.is_empty() { String::new() } else { format!("{}  A {}  /  B {}", t("Flicker"), name(0), name(1)) };
                 label(r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &s, Color32::WHITE);
             }
-            Cmp::Blend => label(r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &format!("Blend  B {} at {:.0} %", name(1), p.blend * 100.0), Color32::WHITE),
+            Cmp::Blend => label(r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &format!("{}  B {}  {:.0} %", t("Blend"), name(1), p.blend * 100.0), Color32::WHITE),
             Cmp::Difference => {
                 let op = ["A - B", "A / B", "10 log10(A / B)"][p.diff as usize % 3];
                 label(r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &format!("{op}   A {}   B {}", name(0), name(1)), Color32::WHITE);
@@ -2151,11 +2134,11 @@ pub fn dialogs(app: &mut App) {
         Dialog::Open { pane, add, what } => {
             let d = rfd::FileDialog::new();
             let f = match what {
-                What::Kind(k) if OPEN_KINDS[k].1 => d.set_title(format!("Open {}: select the product directories", OPEN_KINDS[k].0)).pick_folders(),
-                What::Kind(k) => d.set_title(format!("Open {}", OPEN_KINDS[k].0)).add_filter(OPEN_KINDS[k].0, OPEN_KINDS[k].2).add_filter("All files", &["*"]).pick_files(),
-                What::Dirs => d.set_title("Open product directories (SAFE, SEN3, Zarr)").pick_folders(),
-                What::Series => d.set_title("Open files as the time steps of one layer").add_filter("EO data", ALL_EXT).add_filter("All files", &["*"]).pick_files(),
-                _ => d.add_filter("EO data and workspaces", ALL_EXT).add_filter("All files", &["*"]).pick_files(),
+                What::Kind(k) if OPEN_KINDS[k].1 => d.set_title(tf("Open {}: select the product directories", &[t(OPEN_KINDS[k].0)])).pick_folders(),
+                What::Kind(k) => d.set_title(tf("Open {}", &[t(OPEN_KINDS[k].0)])).add_filter(t(OPEN_KINDS[k].0), OPEN_KINDS[k].2).add_filter(t("All files"), &["*"]).pick_files(),
+                What::Dirs => d.set_title(t("Open product directories (SAFE, SEN3, Zarr)")).pick_folders(),
+                What::Series => d.set_title(t("Open files as the time steps of one layer")).add_filter(t("EO data"), ALL_EXT).add_filter(t("All files"), &["*"]).pick_files(),
+                _ => d.add_filter(t("EO data and workspaces"), ALL_EXT).add_filter(t("All files"), &["*"]).pick_files(),
             };
             if let Some(v) = f {
                 let v = v.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
@@ -2163,20 +2146,20 @@ pub fn dialogs(app: &mut App) {
             }
         }
         Dialog::Save => {
-            if let Some(p) = rfd::FileDialog::new().add_filter("eoview workspace", &ws).set_file_name(format!("workspace.{WORKSPACE_EXT}")).save_file() {
+            if let Some(p) = rfd::FileDialog::new().add_filter(t("eoview workspace"), &ws).set_file_name(format!("workspace.{WORKSPACE_EXT}")).save_file() {
                 if let Err(e) = app.save_workspace(&p.to_string_lossy()) {
                     app.error = Some(e);
                 }
             }
         }
         Dialog::RenderOut => {
-            let d = rfd::FileDialog::new().set_title("Output of the render").add_filter("Video", crate::render::VIDEO_EXT).set_file_name("eoview.mp4");
+            let d = rfd::FileDialog::new().set_title(t("Output of the render")).add_filter(t("Video"), crate::render::VIDEO_EXT).set_file_name("eoview.mp4");
             if let Some(p) = d.save_file() {
                 app.render_set.out = p.to_string_lossy().into_owned();
             }
         }
         Dialog::Load => {
-            if let Some(p) = rfd::FileDialog::new().add_filter("eoview workspace", &ws).pick_file() {
+            if let Some(p) = rfd::FileDialog::new().add_filter(t("eoview workspace"), &ws).pick_file() {
                 app.load_workspace(&p.to_string_lossy());
             }
         }

@@ -3,10 +3,13 @@ mod animate;
 mod app;
 mod bench;
 mod icons;
+mod lang;
 mod layer;
 mod outlines;
+mod prefs;
 mod render;
 mod splash;
+mod theme;
 mod ui;
 mod view;
 mod wind;
@@ -72,7 +75,8 @@ pub struct Detached {
 
 /// Draw the output of an egui pass to `view` (`size` pixels): the textures, the buffers, one render pass
 /// that clears the target, and the submit.
-pub fn draw_egui(device: &wgpu::Device, queue: &wgpu::Queue, egui: &mut egui_wgpu::Renderer, view: &wgpu::TextureView, ctx: &egui::Context, mut out: egui::FullOutput, size: [u32; 2]) {
+/// `clear`: the color of the target before the interface.
+pub fn draw_egui(device: &wgpu::Device, queue: &wgpu::Queue, egui: &mut egui_wgpu::Renderer, view: &wgpu::TextureView, ctx: &egui::Context, mut out: egui::FullOutput, size: [u32; 2], clear: wgpu::Color) {
     let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
     for (id, delta) in &out.textures_delta.set {
         delta.iter().for_each(|x| egui.update_texture(device, queue, *id, x));
@@ -91,7 +95,7 @@ pub fn draw_egui(device: &wgpu::Device, queue: &wgpu::Queue, egui: &mut egui_wgp
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.06, b: 0.07, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -207,6 +211,7 @@ impl App {
                 _ => return,
             }
         };
+        let clear = self.themes.iter().find(|t| t.name == self.prefs.theme).unwrap_or(&self.themes[0]).clear();
         let sd = egui_wgpu::ScreenDescriptor { size_in_pixels: w.size(), pixels_per_point: out.pixels_per_point };
         let mut enc = device.create_command_encoder(&Default::default());
         let cmds = w.egui.update_buffers(&device, &queue, &mut enc, &prims, &sd);
@@ -226,7 +231,7 @@ impl App {
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.06, g: 0.06, b: 0.07, a: 1.0 }),
+                            load: wgpu::LoadOp::Clear(clear),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -618,7 +623,10 @@ impl App {
                 continue;
             }
             match self.win.as_ref().and_then(|w| open_detached(el, w, id)) {
-                Some(d) => self.wins.push(d),
+                Some(d) => {
+                    self.theme().apply(&d.ctx);
+                    self.wins.push(d);
+                }
                 // No window: the view goes back to the dock.
                 None => self.detach(id),
             }
@@ -654,7 +662,9 @@ impl App {
             }
             _ => return,
         };
-        draw_egui(&device, &queue, &mut d.egui, &frame.texture.create_view(&Default::default()), &ctx, out, size);
+        let clear = self.theme().clear();
+        let d = &mut self.wins[k];
+        draw_egui(&device, &queue, &mut d.egui, &frame.texture.create_view(&Default::default()), &ctx, out, size, clear);
         d.window.pre_present_notify();
         queue.present(frame);
         d.wake = None;
@@ -671,6 +681,11 @@ impl App {
         self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some(), self.splash.is_none() && self.cli_render.is_none() && self.shot.is_none(), self.shot.is_some()));
         if self.bench.is_none() {
             self.load_recent();
+            // The messages of `--render` are in English.
+            if self.cli_render.is_some() {
+                self.prefs.lang.clear();
+            }
+            self.apply_prefs();
             let mut files: Vec<String> = self.cli_files.take().unwrap_or_else(|| std::env::args().skip(1).collect());
             // --globe: the first view is a globe view.
             if let Some(i) = files.iter().position(|f| f == "--globe") {
@@ -735,10 +750,15 @@ fn env_mb(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.parse::<usize>().ok().map(|m| m << 20)
 }
 
+/// A budget in bytes: the environment variable `name` (MB), else the preference (MB, 0: not set), else `default`.
+fn budget(name: &str, pref: usize, default: usize) -> usize {
+    env_mb(name).or((pref > 0).then_some(pref << 20)).unwrap_or(default)
+}
+
 /// Give the engine the disk cache for remote data: `eoview/remote` in the cache directory of the user, 10 GB.
-/// EOVIEW_DISK_MB sets the budget. 0: no disk cache.
-fn disk_cache(e: &Engine) {
-    let cap = env_mb("EOVIEW_DISK_MB").unwrap_or(10 << 30) as u64;
+/// EOVIEW_DISK_MB or the preferences set the budget and the directory. EOVIEW_DISK_MB=0: no disk cache.
+fn disk_cache(e: &Engine, prefs: &prefs::Prefs) {
+    let cap = budget("EOVIEW_DISK_MB", prefs.disk_mb, 10 << 30) as u64;
     let var = |n: &str| std::env::var_os(n).map(std::path::PathBuf::from);
     let dir = if cfg!(windows) {
         var("LOCALAPPDATA")
@@ -747,8 +767,9 @@ fn disk_cache(e: &Engine) {
     } else {
         var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|h| h.join(".cache")))
     };
+    let dir = if prefs.cache_dir.is_empty() { dir.map(|d| d.join(APP).join("remote")) } else { Some(prefs.cache_dir.clone().into()) };
     if let Some(d) = dir.filter(|_| cap > 0)
-        && let Err(err) = e.disk_cache(d.join(APP).join("remote"), cap)
+        && let Err(err) = e.disk_cache(d, cap)
     {
         eprintln!("no disk cache: {err}");
     }
@@ -757,7 +778,7 @@ fn disk_cache(e: &Engine) {
 /// `eoview --info <path>`: write the structure of a product to stdout.
 fn info(path: &str) {
     let (e, rx) = Engine::new(1 << 30, || {});
-    disk_cache(&e);
+    disk_cache(&e, &prefs::Prefs::load());
     let t = Instant::now();
     e.open(path.into());
     let l = loop {
@@ -898,15 +919,19 @@ fn main() {
     }
     let el = builder.build().unwrap();
     let proxy = el.create_proxy();
-    let ram = env_mb("EOVIEW_RAM_MB").unwrap_or(eo_cache::system_ram() / 4);
-    let (engine, events) = Engine::new(ram, move || drop(proxy.send_event(Ev::Wake)));
     let args: Vec<String> = std::env::args().collect();
-    let bench = (args.get(1).map(String::as_str) == Some("--bench")).then(|| bench::Bench::new(t0, &args[2..]));
+    let is_bench = args.get(1).map(String::as_str) == Some("--bench");
+    // A benchmark does not use the preferences of the user.
+    let prefs = if is_bench { prefs::Prefs::default() } else { prefs::Prefs::load() };
+    let ram = budget("EOVIEW_RAM_MB", prefs.ram_mb, eo_cache::system_ram() / 4);
+    let (engine, events) = Engine::new(ram, move || drop(proxy.send_event(Ev::Wake)));
+    let bench = is_bench.then(|| bench::Bench::new(t0, &args[2..]));
     // A benchmark measures the remote reads: no disk cache.
     if bench.is_none() {
-        disk_cache(&engine);
+        disk_cache(&engine, &prefs);
     }
-    let mut app = App::new(engine, events, env_mb("EOVIEW_GPU_MB").unwrap_or(1 << 30), bench);
+    let mut app = App::new(engine, events, budget("EOVIEW_GPU_MB", prefs.gpu_mb, 1 << 30), bench);
+    app.prefs = prefs;
     // eoview --shot FILE.png [--do "command name"]... [products]
     if args.get(1).map(String::as_str) == Some("--shot") && args.len() > 2 {
         let (mut cmds, mut files, mut it) = (std::collections::VecDeque::new(), vec![], args[3..].iter());

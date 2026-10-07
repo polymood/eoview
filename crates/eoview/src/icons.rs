@@ -24,6 +24,14 @@ pub enum Icon {
     /// One time step back or forward: a triangle and a bar.
     StepBack,
     StepForward,
+    /// Sections of the preferences.
+    Gear,
+    Palette,
+    Gauge,
+    Cloud,
+    Film,
+    Keyboard,
+    Info,
 }
 
 /// Draw `icon` in the square `r`.
@@ -124,6 +132,63 @@ pub fn draw(p: &Painter, icon: Icon, r: Rect, c: Color32) {
             fill(vec![pos2(rt - 0.3 * w, m.y), pos2(l + 0.1 * w, b - 0.15 * w), pos2(l + 0.1 * w, t + 0.15 * w)]);
             p.rect_filled(Rect::from_min_max(pos2(rt - 0.24 * w, t + 0.15 * w), pos2(rt - 0.08 * w, b - 0.15 * w)), 0.0, c);
         }
+        Icon::Gear => {
+            // A wheel with eight teeth.
+            for k in 0..8 {
+                let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                let d = vec2(a.cos(), a.sin());
+                line(m + d * 0.3 * w, m + d * 0.5 * w);
+            }
+            p.circle_stroke(m, 0.3 * w, s);
+            p.circle_stroke(m, 0.1 * w, s);
+        }
+        Icon::Palette => {
+            // Three color swatches.
+            for (k, dy) in [0.0, 0.36, 0.72].into_iter().enumerate() {
+                let rr = Rect::from_min_size(pos2(l + 0.12 * k as f32 * w, t + dy * w), vec2(0.62 * w, 0.26 * w));
+                if k == 1 {
+                    p.rect_filled(rr, 1.0, c);
+                } else {
+                    p.rect_stroke(rr, 1.0, s, StrokeKind::Inside);
+                }
+            }
+        }
+        Icon::Gauge => {
+            // A half circle with a needle.
+            let q = pos2(m.x, b - 0.2 * w);
+            let pts: Vec<Pos2> = (0..=12).map(|i| std::f32::consts::PI * (1.0 + i as f32 / 12.0)).map(|a| q + vec2(a.cos(), a.sin()) * 0.5 * w).collect();
+            p.add(egui::Shape::line(pts, s));
+            line(q, q + vec2(0.28 * w, -0.3 * w));
+            p.circle_filled(q, 0.08 * w, c);
+        }
+        Icon::Cloud => {
+            p.circle_stroke(pos2(l + 0.32 * w, b - 0.32 * w), 0.2 * w, s);
+            p.circle_stroke(pos2(l + 0.56 * w, t + 0.42 * w), 0.26 * w, s);
+            p.circle_stroke(pos2(rt - 0.18 * w, b - 0.3 * w), 0.18 * w, s);
+            line(pos2(l + 0.3 * w, b - 0.12 * w), pos2(rt - 0.18 * w, b - 0.12 * w));
+        }
+        Icon::Film => {
+            let f = r.shrink2(vec2(0.0, 0.12 * w));
+            p.rect_stroke(f, 1.0, s, StrokeKind::Inside);
+            for x in [f.left() + 0.18 * w, f.right() - 0.18 * w] {
+                line(pos2(x, f.top()), pos2(x, f.bottom()));
+            }
+        }
+        Icon::Keyboard => {
+            let f = r.shrink2(vec2(0.0, 0.18 * w));
+            p.rect_stroke(f, 1.0, s, StrokeKind::Inside);
+            for (y, n) in [(0.33, 4), (0.62, 4)] {
+                for i in 0..n {
+                    p.rect_filled(Rect::from_center_size(pos2(f.left() + (i as f32 + 0.5) * f.width() / n as f32, f.top() + y * f.height()), vec2(0.1 * w, 0.08 * w)), 0.0, c);
+                }
+            }
+            line(pos2(f.left() + 0.28 * w, f.bottom() - 0.14 * w), pos2(f.right() - 0.28 * w, f.bottom() - 0.14 * w));
+        }
+        Icon::Info => {
+            p.circle_stroke(m, 0.5 * w, s);
+            line(pos2(m.x, m.y - 0.05 * w), pos2(m.x, b - 0.22 * w));
+            p.circle_filled(pos2(m.x, t + 0.26 * w), 0.07 * w, c);
+        }
         Icon::Pause => {
             for x in [l + 0.22 * w, rt - 0.42 * w] {
                 p.rect_filled(Rect::from_min_max(pos2(x, t + 0.15 * w), pos2(x + 0.2 * w, b - 0.15 * w)), 0.0, c);
@@ -156,6 +221,13 @@ pub fn button(ui: &mut Ui, icon: Icon, text: &str, selected: bool) -> Response {
     let tw = if text.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(text.to_string(), egui::TextStyle::Button.resolve(ui.style()), Color32::WHITE).size().x + 5.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(size + tw + 2.0 * pad + 2.0, ui.spacing().interact_size.y), Sense::click());
     paint(ui, rect, &resp, icon, text, selected, size);
+    resp
+}
+
+/// A button with an icon and a text on the full width of the layout: an entry of a list.
+pub fn row(ui: &mut Ui, icon: Icon, text: &str, selected: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ui.spacing().interact_size.y + 4.0), Sense::click());
+    paint(ui, rect, &resp, icon, text, selected, 14.0);
     resp
 }
 

@@ -1,0 +1,14 @@
+{
+  "name": "Dark",
+  "dark": true,
+  "background": [27, 27, 30],
+  "field": [12, 12, 14],
+  "text": [200, 200, 205],
+  "border": [60, 60, 66],
+  "accent": [90, 170, 255],
+  "warning": [225, 165, 40],
+  "error": [255, 110, 110],
+  "radius": 3,
+  "spacing": 6,
+  "font": 13
+}

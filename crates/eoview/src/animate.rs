@@ -5,6 +5,7 @@
 //! The preview draws the scene with the code of the frames (`App::preview_frame`), at 1/2, 1/4, 1/8 or
 //! 1/16 of their size. A smaller preview reads coarser levels of the data: it is fast with large data.
 
+use crate::lang::{t, tf};
 use crate::app::{App, Dialog};
 use crate::render::{SIZES, frames};
 use crate::ui::Cmd;
@@ -55,7 +56,7 @@ impl App {
     /// its width, a double-click shows all the data.
     fn viewport(&mut self, ui: &mut egui::Ui, scene: u32) {
         let area = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(area, 0.0, Color32::from_gray(14));
+        ui.painter().rect_filled(area, 0.0, ui.visuals().extreme_bg_color);
         let (fw, fh) = (self.render_set.width.max(16) as f32, self.render_set.height.max(16) as f32);
         let room = area.shrink(16.0);
         let k = (room.width() / fw).min(room.height() / fh).max(0.01);
@@ -63,15 +64,15 @@ impl App {
         let resp = ui.allocate_rect(frame, Sense::click_and_drag());
         // The last frame of a render that runs, else the preview.
         let (tex, text) = match (self.job_texture(), &self.preview) {
-            (Some(t), _) => (Some(t), "Render".to_string()),
-            (None, Some(p)) => (Some(p.tex), format!("Preview 1/{}: {} x {} pixels", self.render_set.proxy, p.w, p.h)),
+            (Some(x), _) => (Some(x), t("Render").to_string()),
+            (None, Some(p)) => (Some(p.tex), tf("Preview 1/{}: {} x {} pixels", &[&self.render_set.proxy.to_string(), &p.w.to_string(), &p.h.to_string()])),
             _ => (None, String::new()),
         };
         if let Some(t) = tex {
             ui.painter().image(t, frame, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
         }
         ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, Color32::from_gray(110)), StrokeKind::Outside);
-        ui.painter().text(frame.left_bottom() + vec2(0.0, 4.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(12.0), Color32::GRAY);
+        ui.painter().text(frame.left_bottom() + vec2(0.0, 4.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(12.0), ui.visuals().weak_text_color());
         if self.job.is_some() {
             return;
         }
@@ -109,7 +110,7 @@ impl App {
     /// Timeline of the animation: play the preview, and the step of the preview in the steps of the render.
     fn animation_time(&mut self, ui: &mut egui::Ui, scene: u32) {
         let Some((n, step, label)) = self.pane(scene).and_then(|p| p.timed()).map(|l| (l.steps.len(), l.step, l.step_label(l.step))) else {
-            ui.weak("The scene has no layer with time steps: the animation has one frame.");
+            ui.weak(t("The scene has no layer with time steps: the animation has one frame."));
             return;
         };
         let (first, stride) = (self.render_set.first.min(n - 1), self.render_set.stride.max(1));
@@ -117,10 +118,10 @@ impl App {
         let now = ui.input(|i| i.time);
         let mut go = None;
         ui.horizontal(|ui| {
-            if ui.selectable_label(self.anim_play.is_some(), if self.anim_play.is_some() { "Pause" } else { "Play" }).on_hover_text("Play the time steps of the animation in the preview").clicked() {
+            if ui.selectable_label(self.anim_play.is_some(), if self.anim_play.is_some() { t("Pause") } else { t("Play") }).on_hover_text(t("Play the time steps of the animation in the preview")).clicked() {
                 self.anim_play = if self.anim_play.is_some() { None } else { Some(now) };
             }
-            ui.monospace(format!("{label}   step {} of {n}", step + 1));
+            ui.monospace(format!("{label}   {}", tf("step {} of {}", &[&(step + 1).to_string(), &n.to_string()])));
             let mut cur = step.clamp(first, last);
             ui.spacing_mut().slider_width = (ui.available_width() - 12.0).max(60.0);
             if ui.add(egui::Slider::new(&mut cur, first..=last).show_value(false)).changed() {
@@ -167,63 +168,63 @@ impl App {
         };
         ui.add_enabled_ui(!busy, |ui| {
             let (set, dates) = (&mut self.render_set, &mut self.anim_dates);
-            section(ui, "Preview");
+            section(ui, t("Preview"));
             ui.horizontal(|ui| {
-                ui.label("Quality");
+                ui.label(t("Quality"));
                 for k in [2, 4, 8, 16] {
-                    ui.selectable_value(&mut set.proxy, k, format!("1/{k}")).on_hover_text("Size of the preview, as a part of the size of the frames. A smaller preview is faster and reads less data");
+                    ui.selectable_value(&mut set.proxy, k, format!("1/{k}")).on_hover_text(t("Size of the preview, as a part of the size of the frames. A smaller preview is faster and reads less data"));
                 }
             });
 
-            section(ui, "Camera");
+            section(ui, t("Camera"));
             ui.horizontal(|ui| {
-                if ui.selectable_label(!globe, "Map").clicked() == ui.selectable_label(globe, "Globe").clicked() {
+                if ui.selectable_label(!globe, t("Map")).clicked() == ui.selectable_label(globe, t("Globe")).clicked() {
                 } else {
                     cmds.push((Cmd::Globe, scene));
                     set.view = None;
                 }
-                fit = ui.button("Fit").on_hover_text("Show all the data (also: a double-click in the viewport)").clicked();
+                fit = ui.button(t("Fit")).on_hover_text(t("Show all the data (also: a double-click in the viewport)")).clicked();
             });
             if let Some((c, w)) = &mut set.view {
                 egui::Grid::new("camera").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                    ui.label("Center");
+                    ui.label(t("Center"));
                     let speed = *w / 400.0;
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut c[0]).speed(speed).max_decimals(4));
                         ui.add(egui::DragValue::new(&mut c[1]).speed(speed).max_decimals(4));
                     });
                     ui.end_row();
-                    ui.label("Width");
+                    ui.label(t("Width"));
                     let speed = *w / 200.0;
-                    ui.add(egui::DragValue::new(w).speed(speed).range(1e-9..=1e9).max_decimals(4)).on_hover_text("Width of the frame in the units of the display CRS (degrees for longitude and latitude)");
+                    ui.add(egui::DragValue::new(w).speed(speed).range(1e-9..=1e9).max_decimals(4)).on_hover_text(t("Width of the frame in the units of the display CRS (degrees for longitude and latitude)"));
                     ui.end_row();
                 });
             }
 
-            section(ui, "Overlays");
-            ui.checkbox(&mut overlays.coasts, "Coasts");
-            ui.checkbox(&mut overlays.borders, "Country borders");
-            ui.checkbox(&mut overlays.names, "Country names");
-            ui.checkbox(&mut set.stamp, "Time and legend");
+            section(ui, t("Overlays"));
+            ui.checkbox(&mut overlays.coasts, t("Coasts"));
+            ui.checkbox(&mut overlays.borders, t("Country borders"));
+            ui.checkbox(&mut overlays.names, t("Country names"));
+            ui.checkbox(&mut set.stamp, t("Time and legend"));
             ui.horizontal(|ui| {
-                ui.label("Legend");
-                ui.add(egui::TextEdit::singleline(&mut set.legend).hint_text("The name of the layer and its unit").desired_width(190.0));
+                ui.label(t("Legend"));
+                ui.add(egui::TextEdit::singleline(&mut set.legend).hint_text(t("The name of the layer and its unit")).desired_width(190.0));
             });
-            ui.checkbox(&mut smooth, "Smooth pixels").on_hover_text("Linear between the pixels of the data, not squares: for data at a low resolution");
+            ui.checkbox(&mut smooth, t("Smooth pixels")).on_hover_text(t("Linear between the pixels of the data, not squares: for data at a low resolution"));
 
-            section(ui, "Time");
+            section(ui, t("Time"));
             egui::Grid::new("time").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 // The interface counts the steps from 1.
                 // The step as a number, or as a date: the step nearest to the date that the user types.
                 let mut date = |ui: &mut egui::Ui, k: usize, label: &str| {
                     let mut text = if dates[k].is_empty() { label.to_string() } else { dates[k].clone() };
-                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0)).on_hover_text("A date and a time, for example 2025-01-01 12:00:00. Enter: the step nearest to it");
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0)).on_hover_text(t("A date and a time, for example 2025-01-01 12:00:00. Enter: the step nearest to it"));
                     if r.lost_focus() {
                         typed = eo_core::time::parse(text.trim()).map(|t| (k, t)).or(typed);
                     }
                     dates[k] = if r.has_focus() { text } else { String::new() };
                 };
-                ui.label("First step");
+                ui.label(t("First step"));
                 ui.horizontal(|ui| {
                     let mut v = first + 1;
                     if ui.add(egui::DragValue::new(&mut v).range(1..=n)).changed() {
@@ -232,7 +233,7 @@ impl App {
                     date(ui, 0, &first_label);
                 });
                 ui.end_row();
-                ui.label("Last step");
+                ui.label(t("Last step"));
                 ui.horizontal(|ui| {
                     let mut v = last + 1;
                     if ui.add(egui::DragValue::new(&mut v).range(1..=n)).changed() {
@@ -241,18 +242,18 @@ impl App {
                     date(ui, 1, &last_label);
                 });
                 ui.end_row();
-                ui.label("Interval");
-                ui.add(egui::DragValue::new(&mut set.stride).range(1..=n.max(1)).suffix(" step(s)"));
+                ui.label(t("Interval"));
+                ui.add(egui::DragValue::new(&mut set.stride).range(1..=n.max(1)).suffix(t(" step(s)")));
                 ui.end_row();
-                ui.label("Frames for a step");
-                ui.add(egui::DragValue::new(&mut set.sub).range(1..=120)).on_hover_text("More than 1: the frames between two steps are a blend of the two steps, for a smooth change");
+                ui.label(t("Frames for a step"));
+                ui.add(egui::DragValue::new(&mut set.sub).range(1..=120)).on_hover_text(t("More than 1: the frames between two steps are a blend of the two steps, for a smooth change"));
                 ui.end_row();
             });
 
-            section(ui, "Output");
+            section(ui, t("Output"));
             egui::Grid::new("output").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.label("Size");
-                let cur = SIZES.iter().find(|x| (x.1, x.2) == (set.width, set.height)).map_or("Custom", |x| x.0);
+                ui.label(t("Size"));
+                let cur = SIZES.iter().find(|x| (x.1, x.2) == (set.width, set.height)).map_or(t("Custom"), |x| x.0);
                 egui::ComboBox::from_id_salt("anim size").selected_text(cur).show_ui(ui, |ui| {
                     for (name, w, h) in SIZES {
                         if ui.selectable_label((set.width, set.height) == (*w, *h), *name).clicked() {
@@ -268,38 +269,38 @@ impl App {
                     ui.add(egui::DragValue::new(&mut set.height).range(16..=16384));
                 });
                 ui.end_row();
-                ui.label("Rate");
-                ui.add(egui::DragValue::new(&mut set.fps).range(1.0..=120.0).speed(0.2).suffix(" frames/s"));
+                ui.label(t("Rate"));
+                ui.add(egui::DragValue::new(&mut set.fps).range(1.0..=120.0).speed(0.2).suffix(t(" frames/s")));
                 ui.end_row();
-                ui.label("File");
+                ui.label(t("File"));
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut set.out).desired_width(150.0)).on_hover_text("A video file (mp4, mov, mkv, webm, gif), or a directory for PNG files");
-                    browse = ui.button("Browse...").clicked();
+                    ui.add(egui::TextEdit::singleline(&mut set.out).desired_width(150.0)).on_hover_text(t("A video file (mp4, mov, mkv, webm, gif), or a directory for PNG files"));
+                    browse = ui.button(t("Browse...")).clicked();
                 });
                 ui.end_row();
             });
-            ui.checkbox(&mut set.keep, "Keep the frames").on_hover_text("The frames are PNG files next to the video, and the video comes at the end. A render that stopped continues after its last frame: for a long render");
+            ui.checkbox(&mut set.keep, t("Keep the frames")).on_hover_text(t("The frames are PNG files next to the video, and the video comes at the end. A render that stopped continues after its last frame: for a long render"));
             let total = frames(set.steps(n).len(), set.sub);
             ui.add_space(4.0);
-            ui.weak(format!("{total} frames, {:.1} s of video. The render reads the data of one frame at a time.", total as f32 / set.fps.max(0.01)));
+            ui.weak(tf("{} frames, {} s of video. The render reads the data of one frame at a time.", &[&total.to_string(), &format!("{:.1}", total as f32 / set.fps.max(0.01))]));
         });
         if no_ffmpeg {
-            ui.colored_label(Color32::from_rgb(225, 165, 40), "ffmpeg was not found: the frames will be PNG files. Set the path of ffmpeg in the preferences.");
+            ui.colored_label(ui.visuals().warn_fg_color, t("ffmpeg was not found: the frames will be PNG files. Set the path of ffmpeg in the preferences."));
         }
         ui.separator();
         match self.job.as_ref().map(|j| (j.done, j.frames(), j.t0.elapsed().as_secs_f32(), j.pane)) {
             Some((done, total, secs, pane)) => {
                 let rate = done as f32 / secs.max(1e-3);
-                let wait = self.frame_wait(pane).filter(|_| done == 0 || rate < 0.5).map_or(String::new(), |w| format!("Waits for {w}"));
-                let left = if rate > 0.0 { format!("{:.0} s left", (total - done) as f32 / rate) } else { String::new() };
-                ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).text(format!("Frame {done} of {total}   {rate:.1} frames/s   {left}")));
+                let wait = self.frame_wait(pane).filter(|_| done == 0 || rate < 0.5).map_or(String::new(), |w| tf("Waits for {}", &[&w]));
+                let left = if rate > 0.0 { tf("{} s left", &[&format!("{:.0}", (total - done) as f32 / rate)]) } else { String::new() };
+                ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).text(format!("{}   {rate:.1} {}   {left}", tf("Frame {} of {}", &[&done.to_string(), &total.to_string()]), t("frames/s"))));
                 ui.weak(wait);
-                if ui.button("Stop").clicked() {
+                if ui.button(t("Stop")).clicked() {
                     self.cancel_render();
                 }
             }
             None => {
-                if ui.add_enabled(!empty, egui::Button::new("Render animation")).clicked() {
+                if ui.add_enabled(!empty, egui::Button::new(t("Render animation"))).clicked() {
                     self.anim_play = None;
                     self.render_start(scene);
                 }
