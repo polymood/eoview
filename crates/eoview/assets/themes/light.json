@@ -1,0 +1,14 @@
+{
+  "name": "Light",
+  "dark": false,
+  "background": [242, 242, 244],
+  "field": [255, 255, 255],
+  "text": [30, 30, 34],
+  "border": [190, 190, 196],
+  "accent": [0, 102, 204],
+  "warning": [170, 100, 0],
+  "error": [200, 30, 30],
+  "radius": 3,
+  "spacing": 6,
+  "font": 13
+}

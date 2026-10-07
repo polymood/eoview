@@ -1,6 +1,7 @@
 //! Application state: views (panes) and their layers, dock layout, link groups, compare modes, engine
 //! events and workspace files.
 use crate::bench::Bench;
+use crate::lang::{t, tf};
 use crate::layer::{LayerSave, MapLayer};
 use crate::view::{Ahead, Input, View};
 use crate::Win;
@@ -227,7 +228,7 @@ impl Pane {
         match self.layers.last() {
             Some(l) if self.layers.len() > 1 => format!("{} (+{})", l.label(40), self.layers.len() - 1),
             Some(l) => l.label(48),
-            None => "Empty view".into(),
+            None => t("Empty view").into(),
         }
     }
 
@@ -252,7 +253,7 @@ impl Pane {
             let all = l.inputs.iter().chain(next.iter().flatten());
             let new = all.filter(|x| !inputs.iter().any(|y| y.id == x.id)).map(|x| x.id).collect::<HashSet<_>>().len();
             if self.specs.len() == 4 || inputs.len() + new > eo_render::MAX_INPUTS {
-                self.err = Some(format!("The view shows the {} lowest layers only", self.specs.len()));
+                self.err = Some(tf("The view shows the {} lowest layers only", &[&self.specs.len().to_string()]));
                 break;
             }
             let mut slot = |x: &Arc<Layer>| match inputs.iter().position(|y| y.id == x.id) {
@@ -377,17 +378,6 @@ struct Workspace {
     render: crate::render::Settings,
 }
 
-/// Preferences of the user (`eoview/prefs.json` in the configuration directory).
-#[derive(Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Prefs {
-    /// The views use the finest level of the data, not the level of the zoom.
-    pub full_res: bool,
-    /// Path of the `ffmpeg` program for the renders. Empty: the directory of the executable, then the
-    /// search path of the system.
-    pub ffmpeg: String,
-}
-
 pub struct App {
     pub win: Option<Win>,
     pub ctx: egui::Context,
@@ -437,9 +427,11 @@ pub struct App {
     /// Tiles on the CPU for the particles of the wind layers, and the tiles that the views asked for.
     pub fields: crate::wind::Fields,
     pub field_keys: HashSet<eo_cache::TileKey>,
-    pub prefs: Prefs,
-    /// The preferences window is open.
-    pub prefs_open: bool,
+    pub prefs: crate::prefs::Prefs,
+    /// The preferences window, if it is open.
+    pub prefs_open: Option<crate::prefs::PrefsWin>,
+    /// The themes of eoview and of the user.
+    pub themes: Vec<crate::theme::Theme>,
     /// The render that runs, the settings of the next render, the result of the last render, and true if
     /// the render window is open.
     pub job: Option<crate::render::Job>,
@@ -515,8 +507,9 @@ impl App {
             splash: None,
             fields: HashMap::new(),
             field_keys: HashSet::new(),
-            prefs: Prefs::default(),
-            prefs_open: false,
+            prefs: Default::default(),
+            prefs_open: None,
+            themes: crate::theme::all(None),
             job: None,
             render_set: Default::default(),
             render_msg: None,
@@ -689,32 +682,32 @@ impl App {
 
     /// What the frame of view `id` waits for. None: the frame is ready (see `frame_ready`).
     pub fn frame_wait(&self, id: u32) -> Option<String> {
-        let Some(p) = self.pane(id) else { return Some("no view".into()) };
+        let Some(p) = self.pane(id) else { return Some(t("no view").into()) };
         let mut layers = p.layers.iter().filter(|l| l.visible).peekable();
         if layers.peek().is_none() {
-            return Some("no visible layer".into());
+            return Some(t("no visible layer").into());
         }
         for l in layers {
             if let Some(e) = &l.err {
-                return Some(format!("layer error: {e}"));
+                return Some(tf("layer error: {}", &[e]));
             }
             if l.inputs.is_empty() || (l.steps.len() > 1 && l.shown != l.step) {
-                return Some(format!("the data of step {}", l.step + 1));
+                return Some(tf("the data of step {}", &[&(l.step + 1).to_string()]));
             }
             if l.blend && l.steps.len() > 1 && l.next_inputs().is_none() {
-                return Some("the data of the next step".into());
+                return Some(t("the data of the next step").into());
             }
         }
         if p.v.inputs.is_empty() || p.v.inputs.iter().any(|i| i.warp.is_none()) {
-            return Some("the georeferencing".into());
+            return Some(t("the georeferencing").into());
         }
         if p.v.fit {
-            return Some("the camera".into());
+            return Some(t("the camera").into());
         }
         if p.field_miss {
-            return Some("the wind field".into());
+            return Some(t("the wind field").into());
         }
-        p.missing.then(|| "tiles".into())
+        p.missing.then(|| t("tiles").into())
     }
 
     fn uid(&mut self) -> u64 {
@@ -781,28 +774,14 @@ impl App {
         }
     }
 
-    /// Read the recent list of the user (not in tests and benchmarks: they do not change it).
+    /// Read the recent list of the user (not in tests and benchmarks: they do not change it), and the
+    /// themes of the user.
     pub fn load_recent(&mut self) {
-        let dir = if cfg!(windows) {
-            std::env::var_os("APPDATA").map(std::path::PathBuf::from)
-        } else {
-            std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
-        };
-        let Some(f) = dir.map(|d| d.join(crate::APP).join("recent.json")) else { return };
+        let Some(d) = crate::prefs::config_dir() else { return };
+        let f = d.join("recent.json");
         self.recent = std::fs::read_to_string(&f).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        self.prefs = std::fs::read_to_string(f.with_file_name("prefs.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         self.recent_file = Some(f);
-    }
-
-    /// Write the preferences next to the list of the recent products.
-    pub fn save_prefs(&self) {
-        let Some(f) = self.recent_file.as_ref().map(|f| f.with_file_name("prefs.json")) else { return };
-        if let Some(d) = f.parent() {
-            let _ = std::fs::create_dir_all(d);
-        }
-        if let Ok(s) = serde_json::to_string_pretty(&self.prefs) {
-            let _ = std::fs::write(f, s);
-        }
+        self.themes = crate::theme::all(Some(&d.join("themes")));
     }
 
     /// Open several products: the first in view `pane`, the others in the empty views, then in new views.

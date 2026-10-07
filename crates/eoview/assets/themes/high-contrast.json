@@ -1,0 +1,14 @@
+{
+  "name": "High contrast",
+  "dark": true,
+  "background": [0, 0, 0],
+  "field": [0, 0, 0],
+  "text": [255, 255, 255],
+  "border": [255, 255, 255],
+  "accent": [255, 214, 0],
+  "warning": [255, 170, 0],
+  "error": [255, 90, 90],
+  "radius": 0,
+  "spacing": 7,
+  "font": 15
+}

@@ -128,6 +128,22 @@ limits of the view, command palette), **View** (zoom, display CRS, side panel, v
 F1). The toolbar below it has the frequent commands as buttons. Each button shows its key in its tooltip.
 The icons are drawn by the viewer: they do not depend on the fonts of the system.
 
+### Preferences, themes and languages
+
+**Edit**, then **Preferences** (Ctrl+,) opens the preferences window. It has a list of sections (General,
+Appearance, Performance, Network, Render, Keys, About) and a search field: the search shows the settings of
+all sections that contain the text. A change is immediate, and goes to `prefs.json` in the configuration
+directory of the user (`%APPDATA%\eoview` on Windows, `~/.config/eoview` on Linux).
+
+- **Language**: English or French. The French texts are in `crates/eoview/assets/lang/fr.json`: the English
+  text is the key. A text without a translation shows in English.
+- **Theme**: dark, light or high contrast. A theme is a JSON file: colors, corner radius, spacing and font
+  size. To add a theme, put a `.json` file in the `themes` directory of the configuration directory, with
+  a new `name` (a field that is not in the file has the value of the dark theme). The themes of eoview are
+  in `crates/eoview/assets/themes/`.
+- **Memory budgets** (RAM, GPU, disk) and the **disk cache directory**: for the next start. The environment
+  variables of the table below have priority.
+
 At the start, a splash window shows first, with a progress bar: the GPU starts, then the products of the
 command line open. Then the main window shows. The splash window closes after 15 seconds at most:
 products that are slow to open continue in the main window.
@@ -293,7 +309,7 @@ letters in order (for example `ndvi`, `b8a`, `vir`), then Enter.
 
 The toolbar has the display CRS of the active view: the CRS of the layer (for a geolocation grid: the UTM zone of the image center), geographic (EPSG:4326), Web Mercator, north or south polar stereographic, or pixels. The status bar shows the latitude, the longitude, the display coordinates and the value under the cursor, the tiles that load, and the RAM and GPU use.
 
-Budgets:
+Budgets (the environment variables have priority over the preferences):
 
 | Variable | Default |
 |---|---|
