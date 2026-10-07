@@ -193,9 +193,10 @@ ev.output(fixed, name="sst corrected")   # a new layer in the view
 - An input is an `xarray.DataArray` with its coordinates (x, y, longitude and latitude, time), its unit,
   its fill value as NaN, and its georeferencing in the attributes. Without xarray in the environment of
   the user, it is a numpy array with the same information in a small object.
-- `ev.input()` gives the area of the view at the resolution of the view by default. The options select
-  all the data, the level 0, a region of the region tool, or a range of time steps. eoview refuses a size
-  that is more than the memory budget, and says so.
+- An argument of `ev.input()` and `ev.layer()` selects the data: `extent="view"` (the default: the area
+  of the view at the resolution of the view) or `extent="all"` (all the data), `level=0` (the full
+  resolution), `region=` (a region of the region tool), `steps=` (a range of time steps). eoview refuses a
+  size that is more than the memory budget, and says so.
 - `ev.output(array, ...)` makes a new layer. On the grid of the input by default. An array with an
   other grid gives its georeferencing (a transform and a CRS, or longitude and latitude arrays). An
   array with a time dimension gives a layer with time steps.
@@ -207,6 +208,11 @@ ev.output(fixed, name="sst corrected")   # a new layer in the view
   `print` shows in the panel. A crash of the script does not stop eoview.
 - eoview and the script exchange messages on a local connection: a small header (JSON) and the arrays as
   bytes. The same exchange can serve Julia later.
+- `ev.plot(fig)` shows a chart of the script (a matplotlib figure) in a chart panel of eoview. The chart
+  can be a part of a figure (section 7). Thus the user is not limited to the chart types of eoview.
+- Jupyter: `ev.connect()` connects a notebook to an eoview that runs on the same computer. The functions
+  are the same as in a script of the panel. eoview shows the outputs immediately. If no eoview runs,
+  `ev.connect()` starts one.
 - The output layer is a computed layer with a result in memory, not a file (section 3). The project file
   has the code of the script and its inputs: the script runs again when the project opens.
 
@@ -220,8 +226,9 @@ title, frame with coordinate labels, color bar with unit and ticks, scale bar, c
   also sets the font and its size in points, and the resolution of the data image.
 - Export formats: PDF and SVG (text and lines are vectors, the data is an image in the file), PNG at 300
   to 600 dots for each inch.
-- Charts: time profile of a point or a region, transect, histogram, scatter of two bands, time against
-  latitude. A chart exports as a figure, and its values export as a CSV file.
+- Charts of eoview: time profile of a point or a region, transect, histogram, scatter of two bands, time
+  against latitude. A chart exports as a figure, and its values export as a CSV file. Other charts come
+  from Python scripts (`ev.plot`, section 6).
 - The default color maps are perceptually uniform and readable with color vision deficiency.
 
 The figure workspace shows the page as it will print. The same drawing code makes the screen and the file.
@@ -266,5 +273,6 @@ The figure workspace shows the page as it will print. The same drawing code make
    (from a histogram of each pixel) better for long series?
 3. Section 3.4: the steps must be on the same grid. Is this sufficient for the first version?
 4. Answered (2026-10-07): any Python script, with a module `eoview` for the inputs and the outputs (section 6).
-5. Section 7, answered in part (2026-10-07): journal widths are presets, and any size is possible. Which
-   chart types are necessary first?
+5. Answered (2026-10-07): journal widths are presets, and any size is possible. All the chart types of
+   section 7, and custom charts from Python (`ev.plot`). `ev.input` has an argument for the extent. A
+   notebook connects to eoview with `ev.connect()`.
