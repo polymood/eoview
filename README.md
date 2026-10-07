@@ -74,6 +74,23 @@ The linked views share the time cursor: their layers go to the step nearest in t
 
 `path#name` opens a product with the variable or band `name` first.
 
+### Aggregate over time
+
+**Layer**, then **Aggregate over time**, or the part **Aggregate over time** of the side panel, makes a new
+layer from the time steps of the selected layer: the mean, the median, the minimum, the maximum, the
+standard deviation or the number of values of each pixel, on all steps or on a range of steps. A pixel
+without data in a step (NaN, the fill value) is not in the result of this pixel. Example: the mean of 30
+daily files of land surface temperature with gaps from clouds is a layer with few gaps.
+
+The new layer is a computed layer: it has no file. The tiles of the view read the steps one after the
+other at the resolution of the view, and show the result while they read (except the median). The
+inspector shows the exact value (the aggregate of the values of the files). All that works for a layer
+works for the result: stretch, color maps, compare modes, links, tools, render. The results stay in the
+memory caches, and in the disk cache for remote data.
+
+Limits of this version: one band (not band math or RGB), all steps on the same grid, a median of at most
+the steps that a quarter of the RAM budget permits, and the computed layers are not in the workspace file.
+
 Real data with time, without an account:
 
 ```
