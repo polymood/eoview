@@ -210,7 +210,7 @@ ev.output(fixed, name="sst corrected")   # a new layer in the view
 - The output layer is a computed layer with a result in memory, not a file (section 3). The project file
   has the code of the script and its inputs: the script runs again when the project opens.
 
-## 7. Figures## 7. Figures
+## 7. Figures
 
 A figure is a page with a size in millimeters. It contains a map (a view) or a chart, and these parts:
 title, frame with coordinate labels, color bar with unit and ticks, scale bar, coasts and borders, text.
