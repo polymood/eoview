@@ -13,6 +13,13 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
   S3 sources (`s3://`, AWS environment and profiles, public buckets), time dimension in the data model, in
   the engine and in the Zarr and NetCDF readers.
 
+- `DESIGN.md` step 1 (interface foundation), in part: themes as data files (dark, light, high contrast,
+  themes of the user), English and French (`assets/lang/fr.json`), a preferences window with sections and
+  a search field. Not done: the dock for all workspaces (the animate workspace has fixed panels), a font
+  of eoview (the interface uses the font of egui).
+- `DESIGN.md` step 2 (tools of a view): pixel grid with values, coordinate grid, measure (length, area),
+  transect with a chart, region statistics (rectangle or polygon), pinned points in all views.
+
 ## In work
 
 1. **Time in the application.** Layers with time steps (a time dimension, or a list of products), a
@@ -97,6 +104,11 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
   executable from WSL.
 
 ## Known limits
+
+- The values of the tools of a view (pixel grid, transect, region, pins) come from the tiles on the CPU in
+  16-bit floats: about 1/2000 of the range of the layer. The inspector is exact. The operations core
+  needs exact tiles (f32): the tools can use them then.
+- The shapes and the pinned points are not in the workspace file.
 
 - Disk cache: no check that a remote object changed. A URL with a new signature does not find its old
   entries.

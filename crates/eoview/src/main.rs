@@ -10,6 +10,7 @@ mod prefs;
 mod render;
 mod splash;
 mod theme;
+mod tools;
 mod ui;
 mod view;
 mod wind;

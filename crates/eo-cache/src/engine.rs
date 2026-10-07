@@ -398,6 +398,19 @@ impl Engine {
         self.inner.dispatch();
     }
 
+    /// As `want`, for a client that keeps its own copy of the tiles (tiles on the CPU): the tiles that are
+    /// new in its list come again, also if the engine sent them before for an other client.
+    pub fn want_copy(&self, client: u32, tiles: Vec<(Arc<Layer>, TileKey)>) {
+        let mut s = self.inner.sched.lock().unwrap();
+        let old: HashSet<TileKey> = s.lists.get(&client).map_or_else(HashSet::new, |l| l.iter().map(|t| t.1).collect());
+        for t in tiles.iter().filter(|t| !old.contains(&t.1)) {
+            s.sent.remove(&t.1);
+        }
+        s.lists.insert(client, tiles);
+        drop(s);
+        self.inner.dispatch();
+    }
+
     /// Read the values of all bands at level-0 pixel (x, y). The result comes as `Event::Probe`.
     pub fn probe(&self, l: Arc<Layer>, x: u64, y: u64) {
         let i = self.inner.clone();

@@ -50,9 +50,10 @@ pub enum Cam {
     Px { x: f64, y: f64, k: f64 },
 }
 
-const EARTH_RADIUS: f64 = 6_371_008.8;
+pub const EARTH_RADIUS: f64 = 6_371_008.8;
 
-fn haversine(a: (f64, f64), b: (f64, f64)) -> f64 {
+/// Distance on the sphere of the mean Earth radius between two longitudes and latitudes (degrees), in meters.
+pub fn haversine(a: (f64, f64), b: (f64, f64)) -> f64 {
     let (la1, la2) = (a.1.to_radians(), b.1.to_radians());
     let (dla, dlo) = (la2 - la1, (b.0 - a.0).to_radians());
     let h = (dla / 2.0).sin().powi(2) + la1.cos() * la2.cos() * (dlo / 2.0).sin().powi(2);
@@ -155,6 +156,11 @@ pub struct Pane {
     pub play: bool,
     pub fps: f32,
     pub next_step: f64,
+    /// Lines at the edges of the pixels, and lines of longitude and latitude.
+    pub pixel_grid: bool,
+    pub coord_grid: bool,
+    /// The shape of a tool (measure, transect, region) in the display coordinates of the view.
+    pub shape: Option<crate::tools::Shape>,
 }
 
 impl Pane {
@@ -196,6 +202,9 @@ impl Pane {
             play: false,
             fps: 4.0,
             next_step: 0.0,
+            pixel_grid: false,
+            coord_grid: false,
+            shape: None,
         }
     }
 
@@ -363,6 +372,10 @@ struct PaneSave {
     smooth: bool,
     #[serde(default)]
     overlays: crate::outlines::Overlays,
+    #[serde(default)]
+    pixel_grid: bool,
+    #[serde(default)]
+    coord_grid: bool,
 }
 
 /// Workspace file: layout, views, layers, settings and cameras. No data, no credentials.
@@ -467,6 +480,11 @@ pub struct App {
     pub wins: Vec<crate::Detached>,
     /// Time of the next frame of the main window, if the interface asked for one.
     pub wake: Option<std::time::Instant>,
+    /// The tool of the mouse in the views, and the pinned points (longitude and latitude, or a pixel of the data).
+    pub tool: crate::tools::Tool,
+    pub pins: Vec<Cam>,
+    /// The start of the drag of a rectangle (region tool), in display coordinates.
+    pub drag_from: Option<[f64; 2]>,
 }
 
 impl App {
@@ -529,6 +547,9 @@ impl App {
             floating: vec![],
             wins: vec![],
             wake: None,
+            tool: Default::default(),
+            pins: vec![],
+            drag_from: None,
         }
     }
 
@@ -657,7 +678,7 @@ impl App {
         let Some(src) = self.pane(id) else { return };
         let (layers, space, center, scale, link, globe) = (src.layers.clone(), src.v.space, src.v.center, src.v.scale, src.link.max(1), src.v.globe);
         let cmp = (src.cmp, src.swipe, src.vertical, src.blend, src.flicker_hz, src.diff, src.dlo, src.dhi, src.dcmap, src.dinvert);
-        let (smooth, overlays) = (src.smooth, src.overlays);
+        let (smooth, overlays, grids) = (src.smooth, src.overlays, (src.pixel_grid, src.coord_grid));
         let uids: Vec<u64> = (0..layers.len()).map(|_| self.uid()).collect();
         let p = self.pane_mut(n).unwrap();
         p.layers = layers;
@@ -665,7 +686,7 @@ impl App {
         p.sel = p.layers.len().saturating_sub(1);
         (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe) = (space, center, scale, link, globe);
         (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz, p.diff, p.dlo, p.dhi, p.dcmap, p.dinvert) = cmp;
-        (p.smooth, p.overlays) = (smooth, overlays);
+        (p.smooth, p.overlays, (p.pixel_grid, p.coord_grid)) = (smooth, overlays, grids);
         // The copy asks for the channels that were not ready in the source view: their results go to the
         // source view, not to the copy.
         for li in 0..p.layers.len() {
@@ -965,6 +986,8 @@ impl App {
         }
         p.v.space = s;
         p.v.fit = true;
+        // The points of a shape are in the display coordinates of the view.
+        p.shape = None;
         self.rebuild(id);
     }
 
@@ -982,7 +1005,7 @@ impl App {
         } else {
             p.flat_space.take().unwrap_or(p.v.space)
         };
-        (p.v.globe, p.v.space, p.v.fit) = (on, to, true);
+        (p.v.globe, p.v.space, p.v.fit, p.shape) = (on, to, true, None);
         if let Some((c, s)) = cam.and_then(|c| self.uncam(i, c)) {
             let p = &mut self.panes[i];
             (p.v.center, p.v.scale, p.v.fit) = (c, s, false);
@@ -1332,6 +1355,8 @@ impl App {
                 globe: p.v.globe,
                 smooth: p.smooth,
                 overlays: p.overlays,
+                pixel_grid: p.pixel_grid,
+                coord_grid: p.coord_grid,
             })
             .collect();
         // A workspace file does not keep the windows: the detached views are tabs of the dock.
@@ -1371,7 +1396,7 @@ impl App {
             let mut p = Pane::new(id);
             if let Some(s) = ws.panes.iter().find(|s| s.id == id) {
                 (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe, p.smooth) = (s.space, s.center, s.scale, s.link, s.globe, s.smooth);
-                p.overlays = s.overlays;
+                (p.overlays, p.pixel_grid, p.coord_grid) = (s.overlays, s.pixel_grid, s.coord_grid);
                 (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz) = (s.cmp, s.swipe, s.vertical, s.blend, s.flicker_hz);
                 (p.diff, p.dlo, p.dhi, p.dinvert) = (s.diff, s.dlo, s.dhi, s.dinvert);
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);

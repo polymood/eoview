@@ -293,9 +293,36 @@ The keys act on the view under the mouse.
 | Ctrl+N | New view | Ctrl+D | Duplicate the view |
 | Ctrl+W | Close the view | Alt+1 to Alt+4 | Layouts 1, 2, 2 x 2, 3 x 3 |
 | H | Show or hide the side panel | Ctrl+K | Command palette |
+| M | Measure tool | T | Transect tool |
+| R | Region tool | P | Pin tool |
+| X | Pixel grid | N | Coordinate grid |
+| Esc | Tool off and no shapes, else compare off | | |
 
 The command palette finds all commands, bands, presets, color maps and display CRSs by name: type some
 letters in order (for example `ndvi`, `b8a`, `vir`), then Enter.
+
+### Tools of a view
+
+The **Tools** menu and the toolbar have the tools of the views. The results are in the **Tools** part of
+the side panel.
+
+- **Pixel grid** (X): lines at the edges of the pixels of the selected layer when a pixel is larger than 8
+  screen points, and the value of each pixel when a pixel is larger than 48 screen points.
+- **Coordinate grid** (N): lines of longitude and latitude with their labels at the left and at the bottom
+  of a 2D view.
+- **Measure** (M): click the points of a line. The view shows the length on the ground (on the sphere of
+  the mean Earth radius). Double-click ends the line: with 3 points or more, the area of the polygon too.
+- **Transect** (T): click the two ends of a line. The side panel shows the values along the line as a chart.
+- **Region** (R): drag a rectangle, or click the points of a polygon and double-click. The side panel
+  shows the area and, for each channel, the number of pixels, the mean, the standard deviation, the
+  minimum and the maximum.
+- **Pin a point** (P): a click pins a point, a click on a pin removes it. Each view shows the pins with
+  the value of its selected layer, at all time steps.
+
+The transect and the region use the level of the data that the view shows: zoom in for more pixels. A
+region of more than 4 million pixels uses a regular sample of its pixels. The values of the tools come
+from the tiles on the CPU, in 16-bit floats: they are near the values of the file (about 1/2000 of the
+range of the layer). The inspector shows the exact values.
 
 ### Side panel
 
