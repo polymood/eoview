@@ -7,6 +7,7 @@ mod lang;
 mod layer;
 mod outlines;
 mod prefs;
+mod py;
 mod render;
 mod splash;
 mod theme;
@@ -41,6 +42,9 @@ pub struct Shot {
     /// Frames to draw before the capture.
     wait: u32,
 }
+
+/// Wakes the event loop from other threads (the Python server).
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 pub struct Win {
     window: Arc<Window>,
@@ -297,7 +301,8 @@ impl App {
     /// `eoview --shot`: when the views are complete, run the next command, or write the frame and stop.
     fn shot_tick(&mut self, el: &ActiveEventLoop) {
         let Some(s) = &self.shot else { return };
-        let busy = self.opens_pending() > 0 || self.panes.iter().any(|p| !self.floating.contains(&p.id) && p.painter.is_some() && !p.layers.is_empty() && (p.missing || p.v.fit));
+        let py = self.cli_python.is_some() || self.py.as_ref().is_some_and(|p| p.child.is_some() || !p.reads.is_empty());
+        let busy = py || self.opens_pending() > 0 || self.panes.iter().any(|p| !self.floating.contains(&p.id) && p.painter.is_some() && !p.layers.is_empty() && (p.missing || p.v.fit));
         let (wait, next) = (s.wait, s.cmds.front().cloned());
         let cmd = next.as_ref().and_then(|n| ui::command(self, n));
         let Some(s) = &mut self.shot else { return };
@@ -933,6 +938,25 @@ fn main() {
     }
     let mut app = App::new(engine, events, budget("EOVIEW_GPU_MB", prefs.gpu_mb, 1 << 30), bench);
     app.prefs = prefs;
+    // Python scripts and notebooks. Not in a benchmark and not in a render of the command line.
+    let proxy = el.create_proxy();
+    if !is_bench && args.get(1).map(String::as_str) != Some("--render") {
+        match py::Py::start(Arc::new(move || drop(proxy.send_event(Ev::Wake)))) {
+            Ok(p) => app.py = Some(p),
+            Err(e) => eprintln!("no Python server: {e}"),
+        }
+    }
+    // eoview [--shot ...] --python FILE [products]: run the script when the products show.
+    let mut args = args;
+    if let Some(i) = args.iter().position(|a| a == "--python")
+        && i + 1 < args.len()
+    {
+        app.cli_python = Some(args.remove(i + 1));
+        args.remove(i);
+        if args.get(1).map(String::as_str) != Some("--shot") {
+            app.cli_files = Some(args[1..].to_vec());
+        }
+    }
     // eoview --shot FILE.png [--do "command name"]... [products]
     if args.get(1).map(String::as_str) == Some("--shot") && args.len() > 2 {
         let (mut cmds, mut files, mut it) = (std::collections::VecDeque::new(), vec![], args[3..].iter());

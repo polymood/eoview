@@ -21,10 +21,15 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
   transect with a chart, region statistics (rectangle or polygon), pinned points in all views.
 - `DESIGN.md` step 3 (operations core), first version: computed layers in the engine (`eo_cache::Op`),
   with the aggregate over time (mean, median, minimum, maximum, standard deviation, count) of a cube or
-  of a list of products. To do: the operations in the layer list (on/off, parameters, remove), the
-  operations in the workspace file (3.7), an option "exact at level 0" for the view (3.5), export of a
-  result as GeoTIFF or NetCDF (3.6), mask and arithmetic between products, progress of the steps in the
-  view.
+  of a list of products, in the workspace file. To do: the operations in the layer list (on/off,
+  parameters, remove), an option "exact at level 0" for the view (3.5), export of a result as GeoTIFF or
+  NetCDF (3.6), mask and arithmetic between products, progress of the steps in the view.
+- `DESIGN.md` step 5 (Python), first version: the module `eoview` (`python/`), the Python panel, the
+  notebooks (`ev.connect()`), `input`, `layer`, `layers`, `output`, `plot`, `eoview --python`. To do:
+  `region=` and `steps=` of the inputs (a region of the region tool, time steps as a 3D input), outputs
+  with time steps, an output on a grid of longitudes and latitudes (2D arrays), `ev.plot` as SVG for the
+  figures, a script for each tile for large data.
+- Example project: `examples/features.eoview` (`scripts/make_example.py` makes its data).
 
 ## In work
 
@@ -114,7 +119,6 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
 - The values of the tools of a view (pixel grid, transect, region, pins) come from the tiles on the CPU in
   16-bit floats: about 1/2000 of the range of the layer. The inspector is exact. The operations core
   needs exact tiles (f32): the tools can use them then.
-- The shapes and the pinned points are not in the workspace file.
 
 - Disk cache: no check that a remote object changed. A URL with a new signature does not find its old
   entries.

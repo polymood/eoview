@@ -93,6 +93,9 @@ pub enum Cmd {
     ClearPins,
     /// A new layer: the aggregate over time of the selected layer, on the steps of the side panel.
     Aggregate(eo_cache::Agg),
+    /// Open or close the Python panel, run its script.
+    Python,
+    PythonRun,
 }
 
 #[derive(Default)]
@@ -172,6 +175,8 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Pixel grid: on or off"), "X", Cmd::PixelGrid),
         (t("Coordinate grid: on or off"), "N", Cmd::CoordGrid),
         (t("Remove the pinned points"), "", Cmd::ClearPins),
+        (t("Python panel: open or close"), "F7", Cmd::Python),
+        (t("Python: run the script"), "", Cmd::PythonRun),
         (t("Coasts: on or off"), "", Cmd::Overlay(0)),
         (t("Country borders: on or off"), "", Cmd::Overlay(1)),
         (t("Country names: on or off"), "", Cmd::Overlay(2)),
@@ -811,6 +816,20 @@ impl App {
         self.url_ui(&ctx);
         self.help_ui(&ctx);
         self.prefs_ui(&ctx);
+        self.py_ui(&ctx);
+        // `eoview --python FILE`: the script runs when the layers of the view show.
+        let shown = self.pane(self.active).is_some_and(|p| !p.layers.is_empty() && p.layers.iter().all(|l| !l.inputs.is_empty()) && p.v.inputs.iter().all(|i| i.warp.is_some()));
+        if shown && self.opens_pending() == 0 && let Some(f) = self.cli_python.take() {
+            match std::fs::read_to_string(&f) {
+                Ok(code) => {
+                    if let Some(p) = &mut self.py {
+                        (p.code, p.open) = (code, true);
+                    }
+                    self.py_run();
+                }
+                Err(e) => self.error = Some(format!("{f}: {e}")),
+            }
+        }
         self.render_ui(&ctx);
 
         if let Some(b) = &mut self.bench {
@@ -973,6 +992,7 @@ impl App {
             (cmd, Key::Comma, Cmd::Prefs),
             (cmd, Key::R, Cmd::Render),
             (none, Key::F6, Cmd::Animate),
+            (none, Key::F7, Cmd::Python),
             (cmd, Key::Q, Cmd::Quit),
             (sh, Key::C, Cmd::CopyExtent),
             (none, Key::F1, Cmd::Help),
@@ -1065,6 +1085,12 @@ impl App {
                 self.drag_from = None;
             }
             Cmd::ClearPins => self.pins.clear(),
+            Cmd::Python => {
+                if let Some(p) = &mut self.py {
+                    p.open ^= true;
+                }
+            }
+            Cmd::PythonRun => self.py_run(),
             Cmd::Aggregate(a) => {
                 self.agg.0 = a;
                 let range = self.agg.1.unwrap_or((0, usize::MAX));
@@ -1397,6 +1423,8 @@ impl App {
                     check(ui, cmds, id, tool == tl, t(n), k, Cmd::Tool(tl));
                 }
                 ui.add_enabled_ui(pins, |ui| entry(ui, cmds, id, t("Remove the pinned points"), "", Cmd::ClearPins));
+                ui.separator();
+                entry(ui, cmds, id, t("Python..."), "F7", Cmd::Python);
                 ui.separator();
                 check(ui, cmds, id, grids.0, t("Pixel grid"), "X", Cmd::PixelGrid);
                 check(ui, cmds, id, grids.1, t("Coordinate grid"), "N", Cmd::CoordGrid);
