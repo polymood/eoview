@@ -95,8 +95,8 @@ removes it.
 | Time | Mean of 30 days, maximum of a year | CPU, worker threads | The same tile of each time step |
 
 Pixel operations stay in the shader: they are fast and they need no engine work. An area operation or a
-time operation is a computed layer. A Python operation is an area operation whose `tile` function is in an
-other process (section 6).
+time operation is a computed layer. The output of a Python script is a computed layer with its result
+in memory (section 6).
 
 ### 3.4 Time operations
 
@@ -137,7 +137,7 @@ bar and a stop button. The memory use does not depend on the size of the result.
 ### 3.7 Project file
 
 A layer in the project file has its list of operations: the name and the parameters of each one, and
-the code of a Python operation. The file does not contain results.
+the code of a Python script. The file does not contain results.
 
 ### 3.8 What does not change
 
@@ -175,29 +175,42 @@ These tools do not depend on the operations core:
 | Region | A rectangle or a polygon. Mean, standard deviation, minimum, maximum and number of pixels |
 | Pinned point | A point that keeps its value on the screen, in all linked views and at all time steps |
 
-## 6. Python operations
+## 6. Python scripts
 
-The user types a function in a panel of eoview:
+Decision (Jules, 2026-10-07): the user runs any Python script. A module `eoview` connects the script to
+the viewer: the script gets its inputs from eoview, and gives its outputs to eoview. eoview does not call
+a function for each tile.
 
 ```python
-def process(data, lon, lat, time, params):
-    # data: numpy array (bands, rows, columns), float32, NaN where there is no data
-    return data * params["gain"] + params["offset"]
+import eoview as ev
+
+img = ev.input()                 # the selected layer of the active view
+sst = ev.layer("sst")            # an other layer of the view, by its name
+fixed = img * 1.02 - 0.5         # any code: numpy, xarray, scipy, a model
+ev.output(fixed, name="sst corrected")   # a new layer in the view
 ```
 
-- The function runs in the Python environment of the user (a path in the preferences). eoview does not
-  include Python.
-- The code runs in other processes (workers), not in the process of eoview. An error or a crash of the
-  code shows as a message in the panel: eoview continues.
-- eoview and a worker exchange messages on pipes: a small header (JSON) and the arrays as bytes. The
-  worker program is a small Python file that comes with eoview. The same exchange can serve Julia later.
-- The engine calls the function for each tile, with the halo that the user sets. The view shows the
-  result when the user runs the code.
-- A function that needs the full image (for example its mean) has a second mode: eoview gives the full
-  layer at a level that fits in the memory budget. This mode is for small data or for a coarse level.
-- The default for a Python operation is "not valid at coarse levels" (section 3.5).
+- An input is an `xarray.DataArray` with its coordinates (x, y, longitude and latitude, time), its unit,
+  its fill value as NaN, and its georeferencing in the attributes. Without xarray in the environment of
+  the user, it is a numpy array with the same information in a small object.
+- `ev.input()` gives the area of the view at the resolution of the view by default. The options select
+  all the data, the level 0, a region of the region tool, or a range of time steps. eoview refuses a size
+  that is more than the memory budget, and says so.
+- `ev.output(array, ...)` makes a new layer. On the grid of the input by default. An array with an
+  other grid gives its georeferencing (a transform and a CRS, or longitude and latitude arrays). An
+  array with a time dimension gives a layer with time steps.
+- A script runs from the Python panel of eoview (a text editor with Run and Stop), or from a file. The
+  script runs in the Python environment of the user (a path in the preferences). eoview does not include
+  Python. The module `eoview` is a small Python file that comes with eoview: the panel puts it on the
+  path of the script.
+- The script runs in an other process. An error shows in the panel with its traceback, and the output of
+  `print` shows in the panel. A crash of the script does not stop eoview.
+- eoview and the script exchange messages on a local connection: a small header (JSON) and the arrays as
+  bytes. The same exchange can serve Julia later.
+- The output layer is a computed layer with a result in memory, not a file (section 3). The project file
+  has the code of the script and its inputs: the script runs again when the project opens.
 
-## 7. Figures
+## 7. Figures## 7. Figures
 
 A figure is a page with a size in millimeters. It contains a map (a view) or a chart, and these parts:
 title, frame with coordinate labels, color bar with unit and ticks, scale bar, coasts and borders, text.
@@ -241,7 +254,7 @@ The figure workspace shows the page as it will print. The same drawing code make
 | 2 | Tools of a view (section 5) | |
 | 3 | Operations core, with "Aggregate over time" (sections 3 and 4) | |
 | 4 | Figures (section 7) | 2 for the transect and the regions |
-| 5 | Python operations (section 6) | 3 |
+| 5 | Python scripts (section 6) | 3 |
 | 6 | Packaging (section 9) | |
 
 ## 11. Questions for the review
@@ -251,6 +264,5 @@ The figure workspace shows the page as it will print. The same drawing code make
 2. Section 3.4: is a limit on the number of steps of a median acceptable, or is an approximate median
    (from a histogram of each pixel) better for long series?
 3. Section 3.4: the steps must be on the same grid. Is this sufficient for the first version?
-4. Section 6: one function for each tile, plus the "full image" mode. Does this fit the corrections that
-   you have in mind?
+4. Answered (2026-10-07): any Python script, with a module `eoview` for the inputs and the outputs (section 6).
 5. Section 7: which journal presets and which chart types are necessary first?
