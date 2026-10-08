@@ -1740,6 +1740,37 @@ impl App {
         }
     }
 
+    /// Show variable (channel) `c` of layer `li` of view `id` as one band: alone in a new view at the right
+    /// (`new_view`), linked to the view to compare them, or as a new layer of the view. The new layer uses
+    /// the product that is open (no new open).
+    pub fn show_var(&mut self, id: u32, li: usize, c: usize, new_view: bool) {
+        let Some(src) = self.pane(id).and_then(|p| p.layers.get(li)).cloned() else { return };
+        let Some(p) = self.pane(id) else { return };
+        let (space, center, scale, globe, link) = (p.v.space, p.v.center, p.v.scale, p.v.globe, p.link);
+        let target = if new_view {
+            // The views go in the same link group: a new group if the view has none.
+            let link = if link > 0 { link } else { self.panes.iter().map(|p| p.link).max().unwrap_or(0) + 1 };
+            if let Some(p) = self.pane_mut(id) {
+                p.link = link;
+            }
+            let n = self.split(id);
+            let p = self.pane_mut(n).unwrap();
+            (p.v.space, p.v.center, p.v.scale, p.v.globe, p.v.fit, p.link) = (space, center, scale, globe, false, link);
+            n
+        } else {
+            id
+        };
+        let mut m = src;
+        (m.uid, m.order) = (self.uid(), usize::MAX);
+        (m.kind, m.band, m.auto_pending, m.visible, m.opacity) = (Kind::Band, c, true, true, 1.0);
+        let Some(p) = self.pane_mut(target) else { return };
+        p.layers.push(m);
+        p.sel = p.layers.len() - 1;
+        let k = p.sel;
+        self.active = target;
+        self.compile(target, k);
+    }
+
     /// Export the values of the selected layer of view `id` at the full resolution to the GeoTIFF file `path`.
     pub fn export(&mut self, id: u32, path: String) {
         let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
@@ -2012,6 +2043,23 @@ mod workspace_tests {
         app.open(1, format!("{dir}nc4_grid.nc"), true);
         wait(&mut app, ready(3));
         assert_eq!(app.panes[0].layers.iter().filter(|l| (l.st[0].lo, l.st[0].hi) == (280.0, 290.0)).count(), 2);
+    }
+
+    /// A variable of the product tree in a new view: a second view, linked, with this variable only.
+    #[test]
+    fn variable_in_a_new_view() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, format!("{dir}nc4_swath.nc"), false);
+        wait(&mut app, |a| a.panes[0].layers.first().is_some_and(|l| !l.inputs.is_empty()));
+        let c = (0..app.panes[0].layers[0].chans.len()).find(|&c| c != app.panes[0].layers[0].band).unwrap();
+        app.run(crate::ui::Cmd::ShowVar(0, c, true), 1);
+        wait(&mut app, |a| a.panes.len() == 2 && a.panes[1].layers.first().is_some_and(|l| !l.inputs.is_empty()));
+        let (a, b) = (&app.panes[0], &app.panes[1]);
+        assert_eq!((b.layers.len(), b.layers[0].band, b.layers[0].kind), (1, c, Kind::Band));
+        assert!(a.link > 0 && a.link == b.link && app.active == b.id);
+        assert_eq!(app.view_tabs().len(), 2);
     }
 
     /// Same display for all layers: the stretch of the selected layer goes to the other layers.

@@ -104,6 +104,8 @@ pub enum Cmd {
     Aggregate(eo_cache::Agg),
     /// A new layer: the layer math of the side panel.
     Math,
+    /// Variable (channel) `.1` of layer `.0` of the view, alone in a new view (`.2` true) or as a new layer.
+    ShowVar(usize, usize, bool),
     /// Open or close the Python panel, run its script.
     Python,
     PythonRun,
@@ -692,6 +694,8 @@ enum Pick {
     Rgb(usize, usize),
     /// The red, green and blue bands of a color image.
     Color([usize; 3]),
+    /// Show a variable in a new view (true), or as a new layer of the view.
+    Show(usize, bool),
 }
 
 /// Product tree of a layer: the groups and the variables of the product, with a filter.
@@ -745,9 +749,21 @@ fn leaf_ui(ui: &mut egui::Ui, l: &MapLayer, c: usize, label: &str, pick: &mut Op
         // The name shows the variable as data, with the color map: not all variables are colors.
         let on = l.kind == Kind::Band && l.band == c;
         let tip = format!("{}\n{}", l.chan_label(c), tf("Show as one band with the color map. Name in expressions: {}", &[id]));
-        if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
+        let r = ui.selectable_label(on, label).on_hover_text(tip);
+        if r.clicked() {
             *pick = Some(Pick::Chan(c));
         }
+        // Right click: the variable in a new view (to compare), or as a new layer.
+        r.context_menu(|ui| {
+            if ui.button(t("Open in a new view")).clicked() {
+                *pick = Some(Pick::Show(c, true));
+                ui.close();
+            }
+            if ui.button(t("Add as a layer of this view")).clicked() {
+                *pick = Some(Pick::Show(c, false));
+                ui.close();
+            }
+        });
         // To make a composite: the channel buttons (RGB mode) or the insert button (band math mode).
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match l.kind {
             Kind::Rgb => {
@@ -1162,6 +1178,7 @@ impl App {
             }
             Cmd::PythonRun => self.py_run(),
             Cmd::Math => self.math(id),
+            Cmd::ShowVar(li, c, new) => self.show_var(id, li, c, new),
             Cmd::Aggregate(a) => {
                 self.agg.0 = a;
                 let range = self.agg.1.unwrap_or((0, usize::MAX));
@@ -1880,6 +1897,7 @@ impl App {
                 (l.kind, l.rgb, l.auto_pending) = (Kind::Rgb, c.map(|c| l.chans[c].id.clone()), true);
                 changed = true;
             }
+            Some(Pick::Show(c, new)) => cmds.push((Cmd::ShowVar(sel, c, new), id)),
             None => {}
         }
 
