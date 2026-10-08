@@ -258,13 +258,29 @@ fn runs(pts: impl Iterator<Item = Option<[f32; 2]>>, jump: f32) -> Vec<Vec<[f32;
 impl App {
     /// The settings and the data of the map of view `id`.
     fn map_in(&self, id: u32) -> Option<MapIn> {
-        let p = self.pane(id).filter(|p| !p.layers.is_empty() && p.v.scale > 0.0 && p.v.px.width() > 1.0)?;
+        let p = self.pane(id).filter(|p| !p.layers.is_empty())?;
+        // The area of the view, or of its data if the view was not drawn (a tab hides it, `eoview --figure`).
+        let (center, width) = if p.v.scale > 0.0 && p.v.px.width() > 1.0 {
+            (p.v.center, p.v.px.width() as f64 / p.v.scale)
+        } else {
+            let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for (w, _) in p.v.inputs.iter().filter_map(|i| i.warp.as_ref()) {
+                for q in w.pts.iter().filter(|q| q[0].is_finite() && q[1].is_finite()) {
+                    let (x, y) = (q[0] + w.origin[0], q[1] + w.origin[1]);
+                    b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+                }
+            }
+            if b[0] >= b[2] {
+                return None;
+            }
+            ([(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0], (b[2] - b[0]) * 1.02)
+        };
         let legend = p.layers.iter().rev().find(|l| l.visible && l.kind != crate::layer::Kind::Rgb && !l.inputs.is_empty()).map(|l| {
             let unit = l.inputs[0].var().units.clone();
             let name = l.comp_name();
             (l.stops.clone(), l.invert, l.st[0].lo as f64, l.st[0].hi as f64, if unit.is_empty() { name } else { format!("{name} ({unit})") })
         });
-        Some(MapIn { space: p.v.space, center: p.v.center, width: p.v.px.width() as f64 / p.v.scale, legend })
+        Some(MapIn { space: p.v.space, center, width, legend })
     }
 
     /// The values of the chart of `kind` from view `id`.
