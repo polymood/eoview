@@ -68,6 +68,57 @@ pub const PRESETS: &[(&str, Kind, [&str; 3], &str, bool)] = &[
 /// Presets that a new layer uses first, if its bands exist.
 const DEFAULT_PRESETS: &[&str] = &["True color", "Dual-pol SAR", "OLCI true color"];
 
+/// The automatic range of a new layer (a preference).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StretchInit {
+    /// From the minimum to the maximum of the data (of a sample of the data).
+    #[default]
+    MinMax,
+    /// Without a part of the values at each end (`clip` percent): more contrast.
+    Clip,
+    /// The range of the data type (0 to 255 for 8-bit data, 0 to 65535 for 16-bit data), with the scale
+    /// and the offset of the file. Floats and band math: from the minimum to the maximum.
+    Type,
+}
+
+/// The automatic range of the preferences, and the percent of `StretchInit::Clip` (bits of an f32).
+static INIT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static CLIP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x4000_0000);
+
+/// Set the automatic range of the preferences (`App::apply_prefs`).
+pub fn set_stretch_init(init: StretchInit, clip: f32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    INIT.store(init as u8, Relaxed);
+    CLIP.store(clip.to_bits(), Relaxed);
+}
+
+fn stretch_init() -> (StretchInit, f32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let i = match INIT.load(Relaxed) {
+        1 => StretchInit::Clip,
+        2 => StretchInit::Type,
+        _ => StretchInit::MinMax,
+    };
+    (i, f32::from_bits(CLIP.load(Relaxed)))
+}
+
+/// The physical range of the values of a data type, with the scale and the offset of the variable. None:
+/// a float or a complex type.
+fn type_range(v: &eo_core::Variable, dtype: eo_core::DType) -> Option<(f32, f32)> {
+    use eo_core::DType::*;
+    let (a, b) = match dtype {
+        U8 => (0.0, 255.0),
+        I8 => (-128.0, 127.0),
+        U16 => (0.0, 65535.0),
+        I16 => (-32768.0, 32767.0),
+        U32 => (0.0, u32::MAX as f64),
+        I32 => (i32::MIN as f64, i32::MAX as f64),
+        _ => return None,
+    };
+    let (x, y) = (a * v.scale + v.offset, b * v.scale + v.offset);
+    Some((x.min(y) as f32, x.max(y) as f32))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stretch {
     pub lo: f32,
@@ -270,6 +321,9 @@ pub struct MapLayer {
     pub inputs: Vec<Arc<Layer>>,
     /// Stretch again when the inputs are ready.
     pub auto_pending: bool,
+    /// The stretch is automatic (not a change of the user), and it is new (`App::same_stretch`).
+    pub auto_st: bool,
+    pub fresh: bool,
     /// Histograms of the values of each channel (sample of the product), and their range.
     pub hist: Vec<(Vec<u32>, f32, f32)>,
     /// Product tree, and the filter text of the side panel.
@@ -313,7 +367,7 @@ impl MapLayer {
             trees: vec![],
             used: vec![],
             st: [Stretch::default(); 3],
-            clip: 2.0,
+            clip: if stretch_init().1 > 0.0 { stretch_init().1 } else { 2.0 },
             cmap: 0,
             stops: CMAPS[0].1.iter().map(|&c| hex(c)).collect(),
             invert: false,
@@ -321,6 +375,8 @@ impl MapLayer {
             visible: true,
             inputs: vec![],
             auto_pending: true,
+            auto_st: true,
+            fresh: false,
             hist: vec![],
             contents: Group::default(),
             filter: String::new(),
@@ -537,6 +593,7 @@ impl MapLayer {
         if self.auto_pending {
             self.auto_pending = false;
             if self.is_color() { self.as_is() } else { self.auto() }
+            self.fresh = true;
         }
         self.histograms();
         true
@@ -568,8 +625,9 @@ impl MapLayer {
         vals
     }
 
-    /// Stretch limits of each channel from the sample percentiles.
+    /// Stretch limits of each channel: the automatic range of the preferences (`StretchInit`).
     pub fn auto(&mut self) {
+        let (init, _) = stretch_init();
         let n = if self.gray() { 1 } else { 3 };
         for k in 0..n.min(self.trees.len()) {
             let vals = self.values(k);
@@ -579,12 +637,31 @@ impl MapLayer {
             }
             let q = |p: f32| vals[((vals.len() - 1) as f32 * p) as usize];
             let c = self.clip / 100.0;
-            (self.st[k].lo, self.st[k].hi) = (q(c), q(1.0 - c));
+            // The range of the type of a band (not of band math, not in dB).
+            let typed = match self.trees[k] {
+                Node::Var(j) if !self.st[k].db => self.inputs.get(j).and_then(|l| type_range(l.var(), l.var().levels[0].dtype).filter(|_| l.part == eo_cache::Part::Real)),
+                _ => None,
+            };
+            (self.st[k].lo, self.st[k].hi) = match (init, typed) {
+                (StretchInit::Clip, _) => (q(c), q(1.0 - c)),
+                (StretchInit::Type, Some(r)) => r,
+                _ => (vals[0], vals[vals.len() - 1]),
+            };
             if self.st[k].hi <= self.st[k].lo {
                 self.st[k].hi = self.st[k].lo + 1.0;
             }
         }
+        self.auto_st = true;
         self.histograms();
+    }
+
+    /// What the layer shows: two layers with the same key show the same bands (of other products).
+    pub fn display_key(&self) -> String {
+        match self.kind {
+            Kind::Band => format!("band {}", self.chans.get(self.band).map_or("", |c| c.id.as_str())),
+            Kind::Expr => format!("expr {}", self.expr),
+            k => format!("{k:?} {:?}", self.rgb),
+        }
     }
 
     /// Histograms of the channels, between the 0.1 and 99.9 percentiles of the sample.

@@ -1030,6 +1030,7 @@ impl App {
 
     /// Make the inputs of view `id` again, and ask for the missing warps.
     pub fn rebuild(&mut self, id: u32) {
+        self.same_stretch(id);
         let Some(p) = self.panes.iter_mut().find(|p| p.id == id) else { return };
         let space = p.v.space;
         for l in p.rebuild(&self.warps) {
@@ -1046,6 +1047,42 @@ impl App {
         l.compile();
         self.load_steps(id, layer);
         self.rebuild(id);
+    }
+
+    /// The layers of view `id` with a new automatic stretch get the range of the layers of the view that
+    /// show the same bands: the range of the user if one of them has it, else the union of their automatic
+    /// ranges (for all of them). Two images side by side have no visible edge (preference `own_stretch`).
+    fn same_stretch(&mut self, id: u32) {
+        let own = self.prefs.own_stretch;
+        let Some(p) = self.panes.iter_mut().find(|p| p.id == id) else { return };
+        for i in 0..p.layers.len() {
+            if !std::mem::take(&mut p.layers[i].fresh) || own {
+                continue;
+            }
+            let key = p.layers[i].display_key();
+            let peers: Vec<usize> = (0..p.layers.len()).filter(|&j| j != i && !p.layers[j].fresh && !p.layers[j].inputs.is_empty() && p.layers[j].display_key() == key).collect();
+            if peers.is_empty() {
+                continue;
+            }
+            match peers.iter().find(|&&j| !p.layers[j].auto_st) {
+                Some(&u) => (p.layers[i].st, p.layers[i].auto_st) = (p.layers[u].st, false),
+                None => {
+                    let mut st = p.layers[i].st;
+                    for &j in &peers {
+                        for (a, b) in st.iter_mut().zip(&p.layers[j].st).filter(|(a, b)| a.db == b.db) {
+                            (a.lo, a.hi) = (a.lo.min(b.lo), a.hi.max(b.hi));
+                        }
+                    }
+                    for j in peers.into_iter().chain([i]) {
+                        for (a, b) in p.layers[j].st.iter_mut().zip(&st) {
+                            (a.lo, a.hi) = (b.lo, b.hi);
+                        }
+                        p.layers[j].histograms();
+                    }
+                }
+            }
+            p.layers[i].histograms();
+        }
     }
 
     /// Ask the engine for the layers that layer `layer` of view `id` needs and does not have: the channels
@@ -1945,6 +1982,34 @@ mod workspace_tests {
                 assert!(t.contains(g), "{g} not in {t}");
             }
         }
+    }
+
+    /// Two products with the band sst in one view: the same range, the union of their own ranges. A range
+    /// of the user on a layer goes to a new layer with the same band.
+    #[test]
+    fn same_range_in_a_view() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let ready = |n: usize| move |a: &App| a.panes[0].layers.len() == n && a.panes[0].layers.iter().all(|l| !l.inputs.is_empty());
+        let two = |own: bool| {
+            let (e, rx) = Engine::new(64 << 20, || {});
+            let mut app = App::new(e, rx, 1 << 20, None);
+            app.prefs.own_stretch = own;
+            app.open(1, format!("{dir}nc4_grid.nc"), false);
+            wait(&mut app, ready(1));
+            app.open(1, format!("{dir}time_grid.nc"), true);
+            wait(&mut app, ready(2));
+            app
+        };
+        let own: Vec<(f32, f32)> = two(true).panes[0].layers.iter().map(|l| (l.st[0].lo, l.st[0].hi)).collect();
+        assert_ne!(own[0], own[1]);
+        let mut app = two(false);
+        let union = (own[0].0.min(own[1].0), own[0].1.max(own[1].1));
+        assert!(app.panes[0].layers.iter().all(|l| (l.st[0].lo, l.st[0].hi) == union), "{own:?}");
+        // A range of the user.
+        (app.panes[0].layers[1].st[0].lo, app.panes[0].layers[1].st[0].hi, app.panes[0].layers[1].auto_st) = (280.0, 290.0, false);
+        app.open(1, format!("{dir}nc4_grid.nc"), true);
+        wait(&mut app, ready(3));
+        assert_eq!(app.panes[0].layers.iter().filter(|l| (l.st[0].lo, l.st[0].hi) == (280.0, 290.0)).count(), 2);
     }
 
     /// Same display for all layers: the stretch of the selected layer goes to the other layers.

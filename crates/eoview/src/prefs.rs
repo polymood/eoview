@@ -27,6 +27,12 @@ pub struct Prefs {
     pub cache_dir: String,
     /// The Python program for the scripts. Empty: `python3` (`python` on Windows) of the search path.
     pub python: String,
+    /// The automatic range of a new layer, and the percent of the clip (0: 2 %).
+    pub stretch: crate::layer::StretchInit,
+    pub clip: f32,
+    /// Each new layer of a view keeps its own automatic range. False: the layers of a view that show the
+    /// same bands get the same range (the union of their automatic ranges, or the range of the user).
+    pub own_stretch: bool,
 }
 
 /// The configuration directory of eoview: `%APPDATA%\eoview` on Windows, `$XDG_CONFIG_HOME/eoview` or
@@ -75,6 +81,8 @@ enum Item {
     Lang,
     Recent,
     Theme,
+    Stretch,
+    SameStretch,
     FullRes,
     Ram,
     Gpu,
@@ -86,10 +94,12 @@ enum Item {
     About,
 }
 
-const ITEMS: [(Item, Section, &str, &str); 12] = [
+const ITEMS: [(Item, Section, &str, &str); 14] = [
     (Item::Lang, Section::General, "Language", "The language of the interface."),
     (Item::Recent, Section::General, "Recent products", "The list of the recent products and workspaces of the File menu."),
     (Item::Theme, Section::Appearance, "Theme", "Colors, corners, spacing and size of the text. To add a theme, put a JSON file in the themes directory."),
+    (Item::Stretch, Section::Appearance, "Range of a new layer", "The automatic stretch of a new layer, and of the Auto button (A). Minimum to maximum: all the values of the data. Clip: without a part of the values at each end, for more contrast. Data type: 0 to 255 for 8-bit data, 0 to 65535 for 16-bit data (with the scale and the offset of the file)."),
+    (Item::SameStretch, Section::Appearance, "Same range for the layers of a view", "The layers of a view that show the same bands (for example the orbits of a day, or the tiles of an area) get the same range: no visible edge between them. The range is the union of their automatic ranges, or the range that you set on one of them."),
     (Item::FullRes, Section::Performance, "Full resolution at all zoom levels", "The views use the finest level of the data, not the level of the zoom. If the GPU memory does not have room for the tiles of a view, the view uses the finest level that has room."),
     (Item::Ram, Section::Performance, "Memory budget (MB)", "Memory for the data in RAM. 0: a quarter of the RAM of the system. For the next start."),
     (Item::Gpu, Section::Performance, "GPU memory budget (MB)", "Memory for the tiles on the GPU. 0: 1024 MB. For the next start."),
@@ -133,6 +143,7 @@ impl App {
     /// Use the theme and the language of the preferences in all windows.
     pub fn apply_prefs(&self) {
         crate::lang::set(&self.prefs.lang);
+        crate::layer::set_stretch_init(self.prefs.stretch, if self.prefs.clip > 0.0 { self.prefs.clip } else { 2.0 });
         let th = self.theme();
         th.apply(&self.ctx);
         self.wins.iter().for_each(|d| th.apply(&d.ctx));
@@ -234,6 +245,28 @@ impl App {
                         c = true;
                     }
                 });
+                c
+            }
+            Item::Stretch => {
+                use crate::layer::StretchInit as S;
+                let mut c = false;
+                ui.horizontal(|ui| {
+                    for (v, n) in [(S::MinMax, "Minimum to maximum"), (S::Clip, "Clip"), (S::Type, "Data type")] {
+                        c |= ui.selectable_value(&mut p.stretch, v, t(n)).changed();
+                    }
+                });
+                if p.stretch == S::Clip {
+                    if p.clip <= 0.0 {
+                        p.clip = 2.0;
+                    }
+                    c |= ui.add(egui::Slider::new(&mut p.clip, 0.1..=10.0).suffix(" %")).changed();
+                }
+                c
+            }
+            Item::SameStretch => {
+                let mut on = !p.own_stretch;
+                let c = ui.checkbox(&mut on, t("On")).changed();
+                p.own_stretch = !on;
                 c
             }
             Item::FullRes => ui.checkbox(&mut p.full_res, t("On")).changed(),

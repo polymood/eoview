@@ -409,7 +409,11 @@ eoview --render --out wind_globe.mp4 --steps 1095744:1096464:6 --sub 6 --bbox -2
 A view contains a stack of layers. The side panel shows the layers of the active view (the last view that
 you clicked), top layer first: show or hide, move up or down, remove. Each layer has its own composite,
 stretch, color map and opacity. A view draws all its visible layers: for example the 14 orbits of a day of
-Sentinel-3 OLCI, each as a true color layer. **Layer**, then **Same display
+Sentinel-3 OLCI, each as a true color layer. Two layers of a view that show the same bands (for example two orbits, or two tiles) get the
+same range of colors: the union of their automatic ranges, or the range that you set on one of them. Thus
+two images side by side have no visible edge. Preferences, Appearance: **Range of a new layer** (minimum to
+maximum of the data, the default; a clip of a percent at each end; or the range of the data type) and
+**Same range for the layers of a view** (on by default). **Layer**, then **Same display
 for all layers**, gives all layers of the view the bands, the stretch and the color map of the selected
 layer (for example the orbits of one day: no seams between them).
 

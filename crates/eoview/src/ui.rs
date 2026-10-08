@@ -1887,6 +1887,7 @@ impl App {
         let n = if l.kind == Kind::Rgb { 3 } else { 1 };
         let colors = if n == 3 { [Color32::from_rgb(230, 80, 80), Color32::from_rgb(90, 200, 90), Color32::from_rgb(90, 140, 255)] } else { [ui.visuals().text_color(); 3] };
         let mut again = false;
+        let before = l.st;
         for k in 0..n {
             if let Some(h) = l.hist.get(k).cloned() {
                 let (_, dbl) = histogram(ui, &h, &mut l.st[k], colors[k]);
@@ -1909,6 +1910,10 @@ impl App {
                 l.as_is();
             }
         });
+        // A change of the limits by the user: the new layers of the view with the same bands take it.
+        if l.st != before && !again {
+            l.auto_st = false;
+        }
         if again {
             l.auto();
         }
