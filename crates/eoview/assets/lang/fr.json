@@ -14,7 +14,7 @@
  "A new cell below": "Une nouvelle cellule en dessous",
  "A new layer of this view. The tiles of the view read the steps: the result shows step by step.": "Une nouvelle couche de cette vue. Les tuiles de la vue lisent les pas : le résultat s'affiche pas à pas.",
  "A point is not in the projection of the view.": "Un point n'est pas dans la projection de la vue.",
- "A product of a view that a program writes again (for example the output of a processing) opens again in the view, with the same settings. eoview checks the local products each 2 seconds.": "Un produit d'une vue qu'un programme réécrit (par exemple la sortie d'un traitement) s'ouvre à nouveau dans la vue, avec les mêmes réglages. eoview vérifie les produits locaux toutes les 2 secondes.",
+ "A product of a view that a program writes again (for example the output of a processing) opens again in the view, with the same settings. eoview checks the local products each second.": "Un produit d'une vue qu'un programme réécrit (par exemple la sortie d'un traitement) s'ouvre à nouveau dans la vue, avec les mêmes réglages. eoview vérifie les produits locaux chaque seconde.",
  "A regular sample of the pixels.": "Un échantillon régulier des pixels.",
  "A shape has 2 points or more.": "Une forme a 2 points ou plus.",
  "A shape of this kind has {} points or more.": "Une forme de ce type a {} points ou plus.",

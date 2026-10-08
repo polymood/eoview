@@ -1799,11 +1799,11 @@ impl App {
         }
     }
 
-    /// Each 2 seconds: the local products of the views that changed on the disk open again, with the
+    /// Each second: the local products of the views that changed on the disk open again, with the
     /// settings of their layers (the bands, the stretch, the colors, the time step). A product opens again
     /// when its stamp is the same at two checks: the program that writes it has ended. Preference `no_reload`.
     pub fn watch_tick(&mut self) {
-        if self.prefs.no_reload || self.watch_at.elapsed() < std::time::Duration::from_secs(2) {
+        if self.prefs.no_reload || self.watch_at.elapsed() < std::time::Duration::from_secs(1) {
             return;
         }
         self.watch_at = std::time::Instant::now();

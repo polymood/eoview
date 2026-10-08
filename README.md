@@ -96,7 +96,7 @@ computed layer: the layer is computed again when the workspace opens.
 
 A product of a view that a program writes again (for example the output of a processing chain) opens
 again in the view, with the same bands, stretch, colors and time step. eoview checks the local products
-each 2 seconds (a product directory: the files in it), and opens a product again when it has not changed
+each second (a product directory: the files in it), and opens a product again when it has not changed
 for one check: the program that writes it has ended. Preferences, General: **Reload the products that
 change** (on by default). A workspace file (File, Save workspace) keeps the views of a project.
 
