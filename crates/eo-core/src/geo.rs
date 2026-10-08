@@ -41,6 +41,21 @@ pub fn ecef_to_lonlat(p: [f64; 3]) -> (f64, f64) {
     (p[1].atan2(p[0]).to_degrees(), lat.to_degrees())
 }
 
+/// Continuous longitudes on a grid of `n` x `n` nodes (row order): each node is within 180 degrees of the
+/// node before it in its row (the first node of a row: of the first node of the row above).
+fn unwrap_lon(pts: &mut [[f64; 2]], n: usize) {
+    for j in 0..n {
+        for i in 0..n {
+            let k = j * n + i;
+            let r = if i > 0 { k - 1 } else if j > 0 { k - n } else { continue };
+            let (a, b) = (pts[r][0], pts[k][0]);
+            if a.is_finite() && b.is_finite() {
+                pts[k][0] = b - 360.0 * ((b - a) / 360.0).round();
+            }
+        }
+    }
+}
+
 /// Display coordinates at the nodes of a regular grid over the level-0 pixels of a layer.
 /// Display coordinates have y up: in a map CRS, y is the northing. In pixel space, y = -row.
 /// Values are relative to `origin`, so that they stay precise in f32.
@@ -53,6 +68,10 @@ pub struct Warp {
     /// Row order (j * nx + i). NaN where the transform fails.
     pub pts: Vec<[f64; 2]>,
     pub origin: [f64; 2],
+    /// The smallest and the largest x (absolute). In longitude and latitude, the longitudes are continuous
+    /// (a swath on the 180 degree meridian goes from 170 to 190 degrees, not to -170): x can be out of -180
+    /// to 180.
+    pub xr: [f64; 2],
     /// Cells in each bucket of a regular grid over the display box, for `inverse`. Made at the first use.
     index: std::sync::OnceLock<Index>,
 }
@@ -69,6 +88,7 @@ impl Warp {
     /// `georef` must not be `Georef::Arrays` (the engine reads the arrays and makes a `Georef::Grid`).
     pub fn new(georef: &Georef, w: f64, h: f64, dst: Option<u32>) -> Result<Warp> {
         let Some(dst) = dst else { return Ok(Warp::build(w, h, |c, r| [c, -r])) };
+        let lon = Proj::epsg(dst)?.is_latlong();
         let src = match georef.crs() {
             Some(c) => c.epsg.ok_or_else(|| Error(format!("CRS {} has no EPSG code", c.name)))?,
             None => return Err("layer without georeferencing".into()),
@@ -78,23 +98,38 @@ impl Warp {
         }
         let map = |c, r| georef.map(c, r).unwrap_or((f64::NAN, f64::NAN));
         if src == dst {
-            return Ok(Warp::build(w, h, |c, r| map(c, r).into()));
+            return Ok(Warp::build_with(w, h, |c, r| map(c, r).into(), lon));
         }
         let (a, b) = (Proj::epsg(src)?, Proj::epsg(dst)?);
-        Ok(Warp::build(w, h, |c, r| {
-            let (x, y) = map(c, r);
-            a.to(&b, x, y).map_or([f64::NAN; 2], Into::into)
-        }))
+        Ok(Warp::build_with(
+            w,
+            h,
+            |c, r| {
+                let (x, y) = map(c, r);
+                a.to(&b, x, y).map_or([f64::NAN; 2], Into::into)
+            },
+            lon,
+        ))
     }
 
     /// Grid of 2^k + 1 nodes on each side. It gets finer until the bilinear interpolation of the grid
     /// agrees with `f` at the cell centers to 0.05 pixel (or the grid has 257 x 257 nodes).
     pub fn build(w: f64, h: f64, f: impl Fn(f64, f64) -> [f64; 2]) -> Warp {
+        Warp::build_with(w, h, f, false)
+    }
+
+    /// `build`. `lon`: x is a longitude (degrees): the longitudes of the grid are continuous.
+    pub fn build_with(w: f64, h: f64, f: impl Fn(f64, f64) -> [f64; 2], lon: bool) -> Warp {
         let mut n = 2;
+        // The difference of two x values (modulo 360 for longitudes).
+        let dx = |a: f64, b: f64| if lon { (a - b + 180.0).rem_euclid(360.0) - 180.0 } else { a - b };
         loop {
-            let pts: Vec<[f64; 2]> =
+            let mut pts: Vec<[f64; 2]> =
                 (0..n).flat_map(|j| (0..n).map(move |i| (i, j))).map(|(i, j)| f(w * i as f64 / (n - 1) as f64, h * j as f64 / (n - 1) as f64)).collect();
-            let mut wp = Warp { w, h, nx: n, ny: n, pts, origin: [0.0; 2], index: Default::default() };
+            if lon {
+                unwrap_lon(&mut pts, n);
+            }
+            let mut wp = Warp { w, h, nx: n, ny: n, pts, origin: [0.0; 2], xr: [0.0; 2], index: Default::default() };
             let px = wp.px_size().max(1e-12);
             let mut err = 0f64;
             for j in 0..n - 1 {
@@ -102,7 +137,7 @@ impl Warp {
                     let (c, r) = (w * (i as f64 + 0.5) / (n - 1) as f64, h * (j as f64 + 0.5) / (n - 1) as f64);
                     let (e, g) = (f(c, r), wp.at(c, r));
                     if e[0].is_finite() && g[0].is_finite() {
-                        err = err.max((e[0] - g[0]).hypot(e[1] - g[1]) / px);
+                        err = err.max(dx(e[0], g[0]).hypot(e[1] - g[1]) / px);
                     }
                 }
             }
@@ -111,10 +146,19 @@ impl Warp {
                 wp.origin = if c[0].is_finite() { c } else { wp.pts.iter().copied().find(|p| p[0].is_finite()).unwrap_or([0.0; 2]) };
                 let o = wp.origin;
                 wp.pts.iter_mut().for_each(|p| *p = [p[0] - o[0], p[1] - o[1]]);
+                let xs = wp.pts.iter().map(|p| p[0] + o[0]).filter(|x| x.is_finite());
+                wp.xr = xs.fold([f64::MAX, f64::MIN], |r, x| [r[0].min(x), r[1].max(x)]);
                 return wp;
             }
             n = 2 * n - 1;
         }
+    }
+
+    /// True if the layer repeats to the east and to the west in a view in longitude and latitude: a grid of
+    /// the full globe (360 degrees), or a layer that goes over the 180 degree meridian.
+    pub fn repeats(&self) -> bool {
+        let span = self.at(self.w, self.h / 2.0)[0] - self.at(0.0, self.h / 2.0)[0];
+        (span.abs() - 360.0).abs() < 1.0 || self.xr[0] < -180.0 || self.xr[1] > 180.0
     }
 
     fn node(&self, i: usize, j: usize) -> [f64; 2] {
@@ -272,6 +316,17 @@ impl Warp {
 mod tests {
     use super::*;
     use crate::Crs;
+
+    #[test]
+    fn swath_over_the_180_meridian() {
+        // A tie-point grid from 170 to -170 degrees (190): the interpolation and the warp are continuous.
+        let g = Georef::Grid { cols: vec![0.0, 100.0], rows: vec![0.0, 100.0], lon: vec![170.0, -170.0, 170.0, -170.0], lat: vec![10.0, 10.0, 0.0, 0.0] };
+        assert!((g.map(50.0, 50.0).unwrap().0 - 180.0).abs() < 1e-9);
+        let w = Warp::new(&g, 100.0, 100.0, Some(4326)).unwrap();
+        assert!((w.at(100.0, 50.0)[0] - 190.0).abs() < 1e-6, "{:?}", w.at(100.0, 50.0));
+        assert!(w.repeats() && w.xr[1] > 180.0);
+        assert!(w.nx <= 3, "{}", w.nx);
+    }
 
     #[test]
     fn utm_to_geographic() {
