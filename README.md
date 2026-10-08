@@ -92,6 +92,16 @@ Limits of this version: one band (not band math or RGB), all steps on the same g
 most the steps that a quarter of the RAM budget permits. The workspace file keeps the operation of a
 computed layer: the layer is computed again when the workspace opens.
 
+### Export data
+
+**Layer**, then **Export data (GeoTIFF)...**, writes the values of the selected layer at the full
+resolution to a GeoTIFF file: one band of 32-bit floats, in tiles of 512 x 512 pixels, with Deflate
+compression and NaN for no data. The values are physical values (the scale and the offset of the file are
+applied). A computed layer (an aggregate, a layer math, a Python output) exports as a layer of a file. The
+export computes and writes one tile after the other: its memory does not depend on the size of the layer.
+The status bar shows the progress, with a Stop button. A file of more than 3.5 GB of values is a BigTIFF.
+A layer with a georeferencing of longitude and latitude arrays (a swath) exports without georeferencing.
+
 ### Layer math
 
 The part **Layer math** of the side panel makes a new layer from the layers of the view. The layers have

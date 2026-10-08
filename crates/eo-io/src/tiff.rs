@@ -333,6 +333,153 @@ fn georef(rd: &Rd, ifd: &Ifd) -> Georef {
     Georef::Affine { gt, crs: Crs { epsg, name } }
 }
 
+/// A writer of a tiled GeoTIFF file of 32-bit floats with Deflate compression. NaN is no data. The tiles
+/// come in row order. The file is a BigTIFF if it can be larger than 4 GB. The memory does not depend on
+/// the size of the image.
+pub struct Writer {
+    f: std::io::BufWriter<std::fs::File>,
+    w: u64,
+    h: u64,
+    tile: u64,
+    big: bool,
+    pos: u64,
+    offs: Vec<u64>,
+    counts: Vec<u64>,
+    georef: Georef,
+    z: libdeflater::Compressor,
+}
+
+/// A value of an IFD entry: its type, its number of values and its bytes (little-endian).
+type Entry = (u16, u64, Vec<u8>);
+
+fn entry_u16(v: &[u16]) -> Entry {
+    (3, v.len() as u64, v.iter().flat_map(|x| x.to_le_bytes()).collect())
+}
+
+fn entry_f64(v: &[f64]) -> Entry {
+    (12, v.len() as u64, v.iter().flat_map(|x| x.to_le_bytes()).collect())
+}
+
+impl Writer {
+    /// A new file of `w` x `h` pixels in tiles of `tile` x `tile` pixels (a multiple of 16).
+    pub fn create(path: &str, w: u64, h: u64, tile: u64, georef: Georef) -> Result<Writer> {
+        use std::io::Write;
+        let f = std::fs::File::create(path).map_err(|e| Error(format!("{path}: {e}")))?;
+        let mut f = std::io::BufWriter::new(f);
+        // Deflate makes a tile smaller in most cases: 3.5 GB of values is the limit of a classic TIFF.
+        let big = w * h * 4 > 3_500_000_000;
+        let head: Vec<u8> = if big { [b"II".as_slice(), &43u16.to_le_bytes(), &8u16.to_le_bytes(), &0u16.to_le_bytes(), &0u64.to_le_bytes()].concat() } else { [b"II".as_slice(), &42u16.to_le_bytes(), &0u32.to_le_bytes()].concat() };
+        f.write_all(&head).map_err(|e| Error(e.to_string()))?;
+        let z = libdeflater::Compressor::new(libdeflater::CompressionLvl::new(6).unwrap());
+        Ok(Writer { f, w, h, tile, big, pos: head.len() as u64, offs: vec![], counts: vec![], georef, z })
+    }
+
+    /// The number of tiles: columns, rows.
+    pub fn tiles(&self) -> (u64, u64) {
+        (self.w.div_ceil(self.tile), self.h.div_ceil(self.tile))
+    }
+
+    /// The next tile: `tw` x `th` values (the tile, or less at the right and bottom edges).
+    pub fn add(&mut self, v: &[f32], tw: u64, th: u64) -> Result<()> {
+        use std::io::Write;
+        let t = self.tile as usize;
+        let mut raw = vec![0u8; t * t * 4];
+        for y in 0..t {
+            for x in 0..t {
+                let val = if (x as u64) < tw && (y as u64) < th { v[y * tw as usize + x] } else { f32::NAN };
+                raw[(y * t + x) * 4..(y * t + x + 1) * 4].copy_from_slice(&val.to_le_bytes());
+            }
+        }
+        let mut out = vec![0u8; self.z.zlib_compress_bound(raw.len())];
+        let n = self.z.zlib_compress(&raw, &mut out).map_err(|e| Error(format!("Deflate: {e:?}")))?;
+        self.f.write_all(&out[..n]).map_err(|e| Error(e.to_string()))?;
+        self.offs.push(self.pos);
+        self.counts.push(n as u64);
+        self.pos += n as u64;
+        Ok(())
+    }
+
+    /// Write the directory of the image, and close the file.
+    pub fn finish(mut self) -> Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        let (nx, ny) = self.tiles();
+        if self.offs.len() as u64 != nx * ny {
+            return Err(Error(format!("{} tiles, {} expected", self.offs.len(), nx * ny)));
+        }
+        let long = |v: &[u64]| -> Entry {
+            if self.big { (16, v.len() as u64, v.iter().flat_map(|x| x.to_le_bytes()).collect()) } else { (4, v.len() as u64, v.iter().flat_map(|&x| (x as u32).to_le_bytes()).collect()) }
+        };
+        let mut tags: Vec<(u16, Entry)> = vec![
+            (256, long(&[self.w])),
+            (257, long(&[self.h])),
+            (258, entry_u16(&[32])),
+            (259, entry_u16(&[8])),
+            (262, entry_u16(&[1])),
+            (277, entry_u16(&[1])),
+            (284, entry_u16(&[1])),
+            (322, long(&[self.tile])),
+            (323, long(&[self.tile])),
+            (324, long(&self.offs)),
+            (325, long(&self.counts)),
+            (339, entry_u16(&[3])),
+            (42113, (2, 4, b"nan\0".to_vec())),
+        ];
+        if let Georef::Affine { gt, crs } = &self.georef {
+            if gt[2] == 0.0 && gt[4] == 0.0 {
+                tags.push((33550, entry_f64(&[gt[1], -gt[5], 0.0])));
+                tags.push((33922, entry_f64(&[0.0, 0.0, 0.0, gt[0], gt[3], 0.0])));
+            } else {
+                tags.push((34264, entry_f64(&[gt[1], gt[2], 0.0, gt[0], gt[4], gt[5], 0.0, gt[3], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])));
+            }
+            if let Some(e) = crs.epsg.filter(|&e| e < 65536) {
+                // A geographic CRS (2) or a projected CRS (1), the pixels are areas.
+                let geo = eo_core::geo::Proj::epsg(e).map(|p| p.is_latlong()).unwrap_or(false);
+                let (model, key) = if geo { (2, 2048) } else { (1, 3072) };
+                tags.push((34735, entry_u16(&[1, 1, 0, 3, 1024, 0, 1, model, 1025, 0, 1, 1, key, 0, 1, e as u16])));
+            }
+        }
+        tags.sort_by_key(|t| t.0);
+        let (inline, esz) = if self.big { (8, 20) } else { (4, 12) };
+        // The values that do not fit in their entry go before the directory.
+        let mut at = vec![0u64; tags.len()];
+        for (k, (_, (_, _, b))) in tags.iter().enumerate() {
+            if b.len() > inline {
+                if self.pos % 2 == 1 {
+                    self.f.write_all(&[0]).map_err(|e| Error(e.to_string()))?;
+                    self.pos += 1;
+                }
+                at[k] = self.pos;
+                self.f.write_all(b).map_err(|e| Error(e.to_string()))?;
+                self.pos += b.len() as u64;
+            }
+        }
+        if self.pos % 2 == 1 {
+            self.f.write_all(&[0]).map_err(|e| Error(e.to_string()))?;
+            self.pos += 1;
+        }
+        let ifd = self.pos;
+        let mut d: Vec<u8> = if self.big { (tags.len() as u64).to_le_bytes().to_vec() } else { (tags.len() as u16).to_le_bytes().to_vec() };
+        for (k, (tag, (typ, n, b))) in tags.iter().enumerate() {
+            d.extend(tag.to_le_bytes());
+            d.extend(typ.to_le_bytes());
+            if self.big { d.extend(n.to_le_bytes()) } else { d.extend((*n as u32).to_le_bytes()) }
+            let mut v = vec![0u8; inline];
+            if b.len() > inline {
+                v.copy_from_slice(&if self.big { at[k].to_le_bytes().to_vec() } else { (at[k] as u32).to_le_bytes().to_vec() });
+            } else {
+                v[..b.len()].copy_from_slice(b);
+            }
+            d.extend(v);
+        }
+        d.extend(vec![0u8; inline]);
+        debug_assert_eq!(d.len(), if self.big { 8 } else { 2 } + tags.len() * esz + inline);
+        self.f.write_all(&d).map_err(|e| Error(e.to_string()))?;
+        let mut f = self.f.into_inner().map_err(|e| Error(e.to_string()))?;
+        let (at, v) = if self.big { (8, ifd.to_le_bytes().to_vec()) } else { (4, (ifd as u32).to_le_bytes().to_vec()) };
+        f.seek(SeekFrom::Start(at)).and_then(|_| f.write_all(&v)).and_then(|_| f.sync_all()).map_err(|e| Error(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
