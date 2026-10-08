@@ -239,8 +239,14 @@ impl View {
             // that goes over the 180 degree meridian (its longitudes are continuous: 170 to 190 degrees).
             let wrap = self.space == Some(4326) && warp.repeats();
             self.wraps[k] = wrap;
+            // A 2D view shows one world (-180 to 180 degrees): the copies give the parts of the layer that are out
+            // of it (a grid from 0 to 360 degrees, a swath over the 180 degree meridian), not a second world.
+            let (x0, x1) = if wrap && !self.globe { (view[0].max(-180.0), view[2].min(180.0)) } else { (view[0], view[2]) };
             for &shift in if wrap { &[0.0, -360.0, 360.0][..] } else { &[0.0][..] } {
-            let Some(pb) = warp.pixel_bbox([view[0] - shift, view[1], view[2] - shift, view[3]]) else { continue };
+            if x0 >= x1 {
+                continue;
+            }
+            let Some(pb) = warp.pixel_bbox([x0 - shift, view[1], x1 - shift, view[3]]) else { continue };
             // The globe shows a longitude and the same longitude plus 360 degrees at the same place: the
             // tiles of the copies are in the view, and they do not move.
             let place = if self.globe { 0.0 } else { shift };
