@@ -92,6 +92,18 @@ Limits of this version: one band (not band math or RGB), all steps on the same g
 most the steps that a quarter of the RAM budget permits. The workspace file keeps the operation of a
 computed layer: the layer is computed again when the workspace opens.
 
+### Products that change
+
+A product of a view that a program writes again (for example the output of a processing chain) opens
+again in the view, with the same bands, stretch, colors and time step. eoview checks the local products
+each 2 seconds (a product directory: the files in it), and opens a product again when it has not changed
+for one check: the program that writes it has ended. Preferences, General: **Reload the products that
+change** (on by default). A workspace file (File, Save workspace) keeps the views of a project.
+
+On Windows, eoview reads the local files without a memory map, so that an other program can replace or
+rewrite a file that a view shows (Windows does not permit this for a mapped file). On Linux and macOS the
+files are memory-mapped: replace a product (write a new file, then rename it), do not rewrite it in place.
+
 ### Export data
 
 **Layer**, then **Export data (GeoTIFF)...**, writes the values of the selected layer at the full

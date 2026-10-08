@@ -903,6 +903,7 @@ impl App {
         self.help_ui(&ctx);
         self.prefs_ui(&ctx);
         self.py_frame();
+        self.watch_tick();
         // `eoview --python FILE`: the script runs when the layers of the view show.
         let shown = self.pane(self.active).is_some_and(|p| !p.layers.is_empty() && p.layers.iter().all(|l| !l.inputs.is_empty()) && p.v.inputs.iter().all(|i| i.warp.is_some()));
         if shown && self.opens_pending() == 0 && let Some(f) = self.cli_python.take() {

@@ -35,6 +35,10 @@ pub struct Source {
 
 enum Inner {
     File { map: Bytes, mmap: Option<Arc<memmap2::Mmap>> },
+    /// A local file read with positional reads, without a memory map (Windows, or EOVIEW_NO_MMAP): an
+    /// other program can replace or rewrite the file while eoview shows it (Windows does not permit this
+    /// for a mapped file), and eoview opens it again (`App::watch`).
+    Handle { file: std::fs::File, len: u64 },
     /// A local file that does not exist. For a chunk, this means: all values are the fill value.
     Missing,
     Remote { store: Arc<dyn ObjectStore>, path: Path },
@@ -166,6 +170,11 @@ impl Source {
                         let at = if end { map.len() - size as usize } else { 0 };
                         Some(map.slice(at..at + (n * 16) as usize))
                     }
+                    Inner::Handle { len, .. } if *len < size => None,
+                    Inner::Handle { file, len } => {
+                        let at = if end { len - size } else { 0 };
+                        Some(read_at(&self.name, file, *len, &(at..at + n * 16))?)
+                    }
                     Inner::Remote { store, path } => {
                         let range = if end { GetRange::Suffix(size) } else { GetRange::Bounded(0..size) };
                         match store.get_opts(path, GetOptions::new().with_range(Some(range))).await {
@@ -227,8 +236,12 @@ impl Source {
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Inner::Missing),
                         Err(e) => return Err(Error(format!("{url}: {e}"))),
                     };
-                    if f.metadata()?.len() == 0 {
+                    let len = f.metadata()?.len();
+                    if len == 0 {
                         return Ok(Inner::File { map: Bytes::new(), mmap: None });
+                    }
+                    if cfg!(windows) || std::env::var_os("EOVIEW_NO_MMAP").is_some() {
+                        return Ok(Inner::Handle { file: f, len });
                     }
                     // SAFETY: read-only map. If another process truncates the file, access fails with SIGBUS.
                     let mmap = Arc::new(unsafe { memmap2::Mmap::map(&f) }?);
@@ -252,6 +265,7 @@ impl Source {
         self.len
             .get_or_init(|| match self.inner()? {
                 Inner::File { map, .. } => Ok(map.len() as u64),
+                Inner::Handle { len, .. } => Ok(*len),
                 Inner::Missing => Ok(0),
                 Inner::Remote { store, path } => {
                     let (s, p) = (store.clone(), path.clone());
@@ -281,6 +295,7 @@ impl Source {
     pub fn read(&self, r: Range<u64>) -> Result<Bytes> {
         match self.inner()? {
             Inner::File { map, .. } => slice(&self.name, map, &r),
+            Inner::Handle { file, len } => read_at(&self.name, file, *len, &r),
             Inner::Missing => Err(Error(format!("{}: file not found", self.name))),
             Inner::Remote { .. } => self.rt.block_on(self.get_ranges(std::slice::from_ref(&r))).map(|mut v| v.remove(0)),
         }
@@ -290,6 +305,7 @@ impl Source {
     pub async fn get_ranges(&self, rs: &[Range<u64>]) -> Result<Vec<Bytes>> {
         match self.inner()? {
             Inner::File { map, .. } => rs.iter().map(|r| slice(&self.name, map, r)).collect(),
+            Inner::Handle { file, len } => rs.iter().map(|r| read_at(&self.name, file, *len, r)).collect(),
             Inner::Missing => Err(Error(format!("{}: file not found", self.name))),
             Inner::Remote { store, path } => store.get_ranges(path, rs).await.map_err(|e| Error(format!("{}: {e}", self.name))),
         }
@@ -299,6 +315,7 @@ impl Source {
     pub async fn get_whole(&self) -> Result<Option<Bytes>> {
         match self.inner()? {
             Inner::File { map, .. } => Ok(Some(map.clone())),
+            Inner::Handle { file, len } => read_at(&self.name, file, *len, &(0..*len)).map(Some),
             Inner::Missing => Ok(None),
             Inner::Remote { store, path } => match store.get(path).await {
                 Ok(r) => r.bytes().await.map(Some).map_err(|e| Error(format!("{}: {e}", self.name))),
@@ -317,6 +334,29 @@ impl Source {
             None => Err(Error(format!("{}: not found", self.name))),
         }
     }
+}
+
+/// Range `r` of a file of `len` bytes, with a positional read (the position of the file does not change:
+/// threads read at the same time).
+fn read_at(name: &str, f: &std::fs::File, len: u64, r: &Range<u64>) -> Result<Bytes> {
+    if r.start > r.end || r.end > len {
+        return Err(Error(format!("{name}: range {r:?} is after end of data ({len} bytes)")));
+    }
+    let mut buf = vec![0u8; (r.end - r.start) as usize];
+    #[cfg(unix)]
+    std::os::unix::fs::FileExt::read_exact_at(f, &mut buf, r.start).map_err(|e| Error(format!("{name}: {e}")))?;
+    #[cfg(windows)]
+    {
+        let mut done = 0;
+        while done < buf.len() {
+            let n = std::os::windows::fs::FileExt::seek_read(f, &mut buf[done..], r.start + done as u64).map_err(|e| Error(format!("{name}: {e}")))?;
+            if n == 0 {
+                return Err(Error(format!("{name}: the file is shorter than {} bytes", r.end)));
+            }
+            done += n;
+        }
+    }
+    Ok(Bytes::from(buf))
 }
 
 fn slice(name: &str, map: &Bytes, r: &Range<u64>) -> Result<Bytes> {

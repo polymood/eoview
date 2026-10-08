@@ -357,6 +357,47 @@ struct Open {
     op: Option<crate::layer::OpSave>,
     /// The layer is input `.1` of the layer math `.0` (`App::maths`), not a layer of the view.
     to: Option<(u64, usize)>,
+    /// The product changed on the disk: the new layer replaces the layer of this uid (`App::watch_tick`).
+    replace: Option<u64>,
+}
+
+/// A product of the views on the disk (`App::watch_tick`): its stamp (times and sizes of its files), and a
+/// new stamp that waits one check (the program that writes the product can still write it).
+pub struct Watch {
+    stamp: u64,
+    pending: Option<u64>,
+}
+
+/// The stamp of a local product: the modification time and the size of the file, or of the files of a
+/// directory (SAFE, SEN3, Zarr: 4 levels, 20000 entries at most). None: it does not exist now.
+fn stamp(path: &str) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let m = std::fs::metadata(path).ok()?;
+    let one = |p: &std::path::Path, m: &std::fs::Metadata| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (p, m.len(), m.modified().ok()).hash(&mut h);
+        h.finish()
+    };
+    if !m.is_dir() {
+        return Some(one(std::path::Path::new(path), &m));
+    }
+    let (mut sum, mut n) = (one(std::path::Path::new(path), &m), 0);
+    let mut dirs = vec![(std::path::PathBuf::from(path), 0)];
+    while let Some((d, depth)) = dirs.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let (Ok(m), p) = (e.metadata(), e.path()) else { continue };
+            // The sum does not depend on the order of the entries.
+            sum = sum.wrapping_add(one(&p, &m));
+            n += 1;
+            if m.is_dir() && depth < 4 {
+                dirs.push((p, depth + 1));
+            }
+            if n > 20_000 {
+                return Some(sum);
+            }
+        }
+    }
+    Some(sum)
 }
 
 /// A layer math of a workspace file: it starts when all its inputs are ready.
@@ -568,6 +609,9 @@ pub struct App {
     pub agg: (eo_cache::Agg, Option<(usize, usize)>),
     /// The export of a layer that runs or that ended.
     pub export: Option<Export>,
+    /// The local products of the views, and the time of the last check (`watch_tick`).
+    pub watched: HashMap<String, Watch>,
+    pub watch_at: std::time::Instant,
     /// The figure: its settings, its tab open or not, its state (the image of the map).
     pub figure: crate::figure::FigSet,
     pub figure_open: bool,
@@ -649,6 +693,8 @@ impl App {
             shape_edit: Default::default(),
             agg: (eo_cache::Agg::Mean, None),
             export: None,
+            watched: HashMap::new(),
+            watch_at: std::time::Instant::now(),
             figure: Default::default(),
             figure_open: false,
             fig: Default::default(),
@@ -923,7 +969,7 @@ impl App {
             self.rebuild(pane);
         }
         let req = self.engine.open(path.clone());
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band, op: None, to: None });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band, op: None, to: None, replace: None });
     }
 
     /// Put a path at the top of the recent list, and write the list.
@@ -1387,6 +1433,19 @@ impl App {
             }
             p.v.fit = true;
         }
+        // A product that changed on the disk: the new layer takes the place of the old one.
+        let old = o.replace.and_then(|u| p.layers.iter().position(|x| x.uid == u));
+        if let Some(i) = old {
+            let sel = p.sel;
+            m.order = p.layers[i].order;
+            p.layers[i] = m;
+            p.sel = sel;
+            return self.compile(o.pane, i);
+        }
+        if o.replace.is_some() {
+            // The layer is not in the view now.
+            return;
+        }
         let at = p.layers.iter().position(|x| x.order > m.order).unwrap_or(p.layers.len());
         p.layers.insert(at, m);
         p.sel = at;
@@ -1408,14 +1467,14 @@ impl App {
     pub fn aggregate(&mut self, id: u32, how: eo_cache::Agg, range: (usize, usize)) {
         let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
         match agg_start(&self.engine, l, how, range) {
-            Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None })),
+            Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None, replace: None })),
             Err(e) => self.error = Some(e),
         }
     }
 
     /// Engine request `req` makes a layer (a computed layer): put it in view `pane` when it comes, with the name `path`.
     pub fn open_req(&mut self, req: u64, pane: u32, path: String) {
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band: None, op: None, to: None });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band: None, op: None, to: None, replace: None });
     }
 
     /// Number of products that open now, time steps included.
@@ -1687,7 +1746,7 @@ impl App {
     /// Open the saved layer `s` in view `pane` at position `order`, or as input `to` of a layer math. A
     /// computed layer opens its source (an aggregate) or its inputs (a layer math) first.
     fn load_layer(&mut self, pane: u32, order: usize, s: LayerSave, to: Option<(u64, usize)>) {
-        let open = Open { pane, save: Some(s.clone()), order, path: s.path.clone(), series: vec![], band: None, op: s.op.clone(), to };
+        let open = Open { pane, save: Some(s.clone()), order, path: s.path.clone(), series: vec![], band: None, op: s.op.clone(), to, replace: None };
         match &s.op {
             Some(OpSave::Math { expr, names, inputs }) => {
                 let mid = self.uid();
@@ -1737,6 +1796,49 @@ impl App {
                 Ok((req, _)) => drop(self.opens.insert(req, ml.open)),
                 Err(e) => self.error = Some(format!("{}: {e}", ml.expr)),
             }
+        }
+    }
+
+    /// Each 2 seconds: the local products of the views that changed on the disk open again, with the
+    /// settings of their layers (the bands, the stretch, the colors, the time step). A product opens again
+    /// when its stamp is the same at two checks: the program that writes it has ended. Preference `no_reload`.
+    pub fn watch_tick(&mut self) {
+        if self.prefs.no_reload || self.watch_at.elapsed() < std::time::Duration::from_secs(2) {
+            return;
+        }
+        self.watch_at = std::time::Instant::now();
+        let paths: HashSet<String> = self.panes.iter().flat_map(|p| p.layers.iter()).filter(|l| l.op.is_none() && !l.path.contains("://")).map(|l| l.path.clone()).collect();
+        self.watched.retain(|p, _| paths.contains(p));
+        let mut changed = vec![];
+        for p in paths {
+            // Not there now: a program replaces it. The check waits for the new product.
+            let Some(st) = stamp(&p) else { continue };
+            match self.watched.get_mut(&p) {
+                None => drop(self.watched.insert(p, Watch { stamp: st, pending: None })),
+                Some(w) if w.stamp == st => w.pending = None,
+                Some(w) if w.pending == Some(st) => {
+                    (w.stamp, w.pending) = (st, None);
+                    changed.push(p);
+                }
+                Some(w) => w.pending = Some(st),
+            }
+        }
+        for p in changed {
+            self.reload(&p);
+        }
+    }
+
+    /// Open the product `path` again for each layer that shows it: the new layer replaces the layer, with its settings.
+    pub fn reload(&mut self, path: &str) {
+        let mut todo = vec![];
+        for p in &self.panes {
+            for (i, l) in p.layers.iter().enumerate().filter(|(_, l)| l.path == path && l.op.is_none()) {
+                todo.push((p.id, i, l.uid, l.save()));
+            }
+        }
+        for (pane, order, uid, save) in todo {
+            let req = self.engine.open(path.to_string());
+            self.opens.insert(req, Open { pane, save: Some(save), order, path: path.to_string(), series: vec![], band: None, op: None, to: None, replace: Some(uid) });
         }
     }
 
@@ -1800,7 +1902,7 @@ impl App {
                     names: used.iter().map(|&k| names[k].clone()).collect(),
                     inputs: used.iter().map(|&k| p.layers[k].save()).collect(),
                 });
-                self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path: expr, series: vec![], band: None, op, to: None });
+                self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path: expr, series: vec![], band: None, op, to: None, replace: None });
             }
             Err(e) => self.error = Some(e),
         }
@@ -2043,6 +2145,33 @@ mod workspace_tests {
         app.open(1, format!("{dir}nc4_grid.nc"), true);
         wait(&mut app, ready(3));
         assert_eq!(app.panes[0].layers.iter().filter(|l| (l.st[0].lo, l.st[0].hi) == (280.0, 290.0)).count(), 2);
+    }
+
+    /// A product that a program writes again opens again, with the settings of its layer.
+    #[test]
+    fn reload_a_product_that_changes() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let f = std::env::temp_dir().join(format!("eoview-reload-{}.nc", std::process::id()));
+        std::fs::copy(format!("{dir}nc4_grid.nc"), &f).unwrap();
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, f.to_string_lossy().into(), false);
+        wait(&mut app, |a| a.panes[0].layers.first().is_some_and(|l| !l.inputs.is_empty()));
+        let size = app.panes[0].layers[0].inputs[0].size();
+        (app.panes[0].layers[0].st[0].lo, app.panes[0].layers[0].st[0].hi) = (281.0, 289.0);
+        let check = |a: &mut App| {
+            a.watch_at = std::time::Instant::now() - std::time::Duration::from_secs(3);
+            a.watch_tick();
+        };
+        check(&mut app);
+        // The new product (an other grid), then two checks with the same stamp.
+        std::fs::copy(format!("{dir}time_grid.nc"), &f).unwrap();
+        check(&mut app);
+        check(&mut app);
+        wait(&mut app, |a| a.panes[0].layers.first().is_some_and(|l| l.inputs.first().is_some_and(|x| x.size() != size)));
+        std::fs::remove_file(&f).ok();
+        let l = &app.panes[0].layers[0];
+        assert_eq!((app.panes[0].layers.len(), l.st[0].lo, l.st[0].hi), (1, 281.0, 289.0));
     }
 
     /// A variable of the product tree in a new view: a second view, linked, with this variable only.
