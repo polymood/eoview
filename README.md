@@ -120,6 +120,9 @@ sst = ev.layer("sst", extent="all", level=0)   # a layer of a view, by its name:
 ev.output(img * 1.02 - 0.5, name="corrected")  # a new layer in the active view, on the grid of the input
 ev.plot(fig)                             # a matplotlib figure in the charts window
 print(ev.layers())                       # the layers of all views
+print(ev.shapes())                       # the shapes of the views (regions, transects, measures)
+box = ev.layer("sst", region="Region 1")   # the pixels of a region: its box, NaN outside the polygon
+line = ev.layer("sst", region="Transect 1")  # the values along a line: 1D, with distance, lon and lat
 ```
 
 - **Python panel** (Tools, then Python, or F7): type a script, then Run (Ctrl+Enter). The script runs in
@@ -133,6 +136,13 @@ print(ev.layers())                       # the layers of all views
   NaN for no data (a numpy array with `attrs` without xarray). `extent="view"` (the default) gives the
   area of the view at the resolution of the view, `extent="all"` all the data. `level=0` is the full
   resolution. eoview refuses an input that is more than a quarter of its RAM budget.
+- `region=` gives the values of a shape (see **Tools of a view**), by its name, at the level of the view
+  (or `level=`). A region (a polygon) gives the box of the polygon with NaN at the pixels with a center
+  outside it. A line (a transect, or a measure that is not a polygon) gives a 1D array with about one value
+  for each pixel along the line, and its coordinates: `distance` (meters from the first point, along the
+  line), `lon` and `lat`. The shape can be in an other view: its points go through longitude and latitude.
+- `ev.shapes()` gives the name, the kind (`region` or `line`), the view and the points of each shape:
+  longitude and latitude, or column and row of the data in a view without a CRS.
 - An output has the grid of the input that it comes from, or `transform` (GDAL order) and `crs`
   (`"EPSG:4326"`). It is a computed layer in memory: all that works for a layer works for it.
 - eoview listens on a local port (127.0.0.1) only, with a random token for each session. The port and the
@@ -382,7 +392,7 @@ The keys act on the view under the mouse.
 | M | Measure tool | T | Transect tool |
 | R | Region tool | P | Pin tool |
 | X | Pixel grid | N | Coordinate grid |
-| Esc | Tool off and no shapes, else compare off | | |
+| Esc | Tool off, no selected shape, else compare off | Delete | Remove the selected shape |
 
 The command palette finds all commands, bands, presets, color maps and display CRSs by name: type some
 letters in order (for example `ndvi`, `b8a`, `vir`), then Enter.
@@ -404,6 +414,15 @@ the side panel.
   minimum and the maximum.
 - **Pin a point** (P): a click pins a point, a click on a pin removes it. Each view shows the pins with
   the value of its selected layer, at all time steps.
+
+A view keeps all its shapes. Each shape has a name ("Region 1", "Transect 2"): a Python script gets its
+values by this name. With no tool, a click on a shape selects it, a drag on the selected shape moves it,
+a drag on one of its points moves the point, and Delete removes it. The side panel shows the result of the
+selected shape and the list of the shapes. For the selected shape it has the name and the points as text
+(longitude and latitude, one point on each line): change them, then **Apply the points**. **New shape from
+coordinates** makes a region from a box (west, south, east, north, or **Box of the view**), or a region
+or a line from points that you type or paste. The shapes stay when the display CRS changes, and the
+workspace file keeps them.
 
 The transect and the region use the level of the data that the view shows: zoom in for more pixels. A
 region of more than 4 million pixels uses a regular sample of its pixels. The values of the tools come

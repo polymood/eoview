@@ -87,10 +87,12 @@ pub enum Cmd {
     /// Pixel grid, coordinate grid of the view: on or off.
     PixelGrid,
     CoordGrid,
-    /// Escape: the tool off and no shapes, else the compare mode off.
+    /// Escape: the tool off, the shape that the user draws goes, no selected shape. Else the compare mode off.
     Escape,
     /// Remove the pinned points.
     ClearPins,
+    /// Remove the selected shape of the view.
+    DeleteShape,
     /// A new layer: the aggregate over time of the selected layer, on the steps of the side panel.
     Aggregate(eo_cache::Agg),
     /// A new layer: the layer math of the side panel.
@@ -205,6 +207,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     for (tl, n, k) in Tool::ALL {
         v.push((tf("Tool: {}", &[t(n)]), k, Cmd::Tool(tl)));
     }
+    v.push((t("Remove the selected shape").into(), "Delete", Cmd::DeleteShape));
     for (a, n) in eo_cache::Agg::ALL {
         v.push((tf("Aggregate over time: {}", &[t(n)]), "", Cmd::Aggregate(a)));
     }
@@ -399,7 +402,8 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     // The events of the tool: a click (display position, double-click), a rectangle (start, end, done).
     let mut click: Option<([f64; 2], bool)> = None;
     let mut drag: Option<([f64; 2], [f64; 2], bool)> = None;
-    let drag_from = app.drag_from;
+    let (drag_from, shape_drag) = (app.drag_from, app.shape_drag.filter(|d| d.0 == id));
+    let mut edit = None;
     let Some(p) = app.pane_mut(id) else { return };
     let vp = egui::epaint::ViewportInPixels::from_points(&rect, ppp, screen);
     p.v.px = Rect::from_min_size(egui::pos2(vp.left_px as f32, vp.top_px as f32), vec2(vp.width_px as f32, vp.height_px as f32));
@@ -455,6 +459,13 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
             let from = if resp.drag_started() { start().unwrap_or(c) } else { drag_from.unwrap_or(c) };
             drag = Some((from, c, resp.drag_stopped()));
         }
+    } else if let Some((_, k, v)) = shape_drag.filter(|_| resp.dragged() || resp.drag_stopped()) {
+        // A drag of a shape or of one of its points.
+        let d = resp.drag_delta() * ppp;
+        let kx = if p.v.globe { p.v.center[1].to_radians().cos().max(0.05) } else { 1.0 };
+        if let Some(c) = resp.interact_pointer_pos().and_then(|q| disp(p, q)) {
+            edit = Some((k, v, c, [d.x as f64 / (p.v.scale * kx), -d.y as f64 / p.v.scale]));
+        }
     } else if resp.dragged() {
         let d = resp.drag_delta() * ppp;
         // Globe: a degree of longitude is shorter away from the equator.
@@ -469,10 +480,27 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
             click = Some((c, resp.double_clicked()));
         }
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-    } else if resp.double_clicked() {
-        p.v.fit = true;
-        p.fit_user = true;
+    } else {
+        // No tool: a click selects a shape, a drag on a shape moves it or its point.
+        let hit = |p: &Pane, q: Option<Pos2>| q.and_then(|q| crate::tools::shape_at(p, q));
+        if resp.clicked() {
+            p.sel_shape = hit(p, resp.interact_pointer_pos()).map(|h| h.0);
+        }
+        if let Some((k, v)) = hit(p, resp.hover_pos()) {
+            ui.ctx().set_cursor_icon(if v.is_some() || p.sel_shape == Some(k) { egui::CursorIcon::Move } else { egui::CursorIcon::PointingHand });
+        }
+        if resp.drag_started()
+            && let Some((k, v)) = hit(p, ui.input(|i| i.pointer.press_origin()))
+            && (p.sel_shape == Some(k) || v.is_some())
+        {
+            p.sel_shape = Some(k);
+            app.shape_drag = Some((id, k, v));
+        } else if resp.double_clicked() && hit(p, resp.interact_pointer_pos()).is_none() {
+            p.v.fit = true;
+            p.fit_user = true;
+        }
     }
+    let p = app.pane_mut(id).unwrap();
     p.v.cursor = None;
     if let Some(h) = resp.hover_pos() {
         let q = [(h.x * ppp - p.v.px.min.x) as f64, (h.y * ppp - p.v.px.min.y) as f64];
@@ -497,8 +525,15 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         app.tool_click(id, c, double);
     }
     if let Some((a, b, done)) = drag {
+        let first = app.drag_from.is_none();
         app.drag_from = (!done).then_some(a);
-        app.tool_rect(id, a, b, done);
+        app.tool_rect(id, a, b, done, first);
+    }
+    if let Some((k, v, c, d)) = edit {
+        app.shape_drag(id, k, v, c, d);
+    }
+    if resp.drag_stopped() {
+        app.shape_drag = None;
     }
     let p = app.pane_mut(id).unwrap();
     // Link badge: one click links or unlinks the view.
@@ -1026,6 +1061,7 @@ impl App {
             (none, Key::D, Cmd::Compare(Cmp::Difference)),
             (none, Key::K, Cmd::Compare(Cmp::Flicker)),
             (none, Key::Escape, Cmd::Escape),
+            (none, Key::Delete, Cmd::DeleteShape),
             (none, Key::M, Cmd::Tool(Tool::Measure)),
             (none, Key::T, Cmd::Tool(Tool::Transect)),
             (none, Key::R, Cmd::Tool(Tool::Region)),
@@ -1099,10 +1135,14 @@ impl App {
                 let range = self.agg.1.unwrap_or((0, usize::MAX));
                 self.aggregate(id, a, range);
             }
+            Cmd::DeleteShape => self.delete_shape(id),
             Cmd::Escape => {
-                if self.tool != Tool::None || self.panes.iter().any(|p| p.shape.is_some()) {
+                if self.tool != Tool::None || self.panes.iter().any(|p| p.sel_shape.is_some() || p.shapes.iter().any(|s| !s.done)) {
                     self.tool = Tool::None;
-                    self.panes.iter_mut().for_each(|p| p.shape = None);
+                    for p in &mut self.panes {
+                        p.shapes.retain(|s| s.done);
+                        p.sel_shape = None;
+                    }
                 } else {
                     self.run(Cmd::Compare(Cmp::Off), id);
                 }

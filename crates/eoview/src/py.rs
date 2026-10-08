@@ -7,6 +7,7 @@
 //! configuration directory and puts it on the path of its scripts.
 use crate::app::App;
 use crate::lang::{t, tf};
+use eo_core::geo::Warp;
 use eo_core::{Crs, Georef};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -36,8 +37,9 @@ pub struct Py {
     pub port: u16,
     token: String,
     rx: mpsc::Receiver<Req>,
-    /// Reads of the inputs of the clients: engine request to the answer channel and the text of the layer.
-    pub reads: std::collections::HashMap<u64, (Reply, Value)>,
+    /// Reads of the inputs of the clients: engine request to the answer channel, the text of the layer, and
+    /// the work on the values of a shape.
+    pub reads: std::collections::HashMap<u64, (Reply, Value, Option<Clip>)>,
     /// The directory of the module `eoview`.
     pub path: Option<std::path::PathBuf>,
     /// The panel: open or not, the code, the script that runs, its output.
@@ -51,6 +53,15 @@ pub struct Py {
     pub used: bool,
     /// The script of a workspace file: the panel asks the user to run it.
     pub ask: bool,
+}
+
+/// The values of a shape in an input (`region=` of `ev.layer`).
+pub enum Clip {
+    /// A polygon (display coordinates of the view): no data outside it. The warp of the layer in the view,
+    /// and the level and the window of the read.
+    Mask { poly: Vec<[f64; 2]>, warp: Arc<Warp>, lv: eo_cache::Level, win: (u64, u64, u64, u64) },
+    /// A line: the pixel of the level at each point (None: not on the layer), in the window `win`.
+    Line { px: Vec<Option<(u64, u64)>>, win: (u64, u64, u64, u64) },
 }
 
 /// An answer with an error.
@@ -179,11 +190,12 @@ impl App {
             let cmd = r.head.get("cmd").and_then(Value::as_str).unwrap_or("").to_string();
             let res = match cmd.as_str() {
                 "layers" => Ok(self.py_layers()),
+                "shapes" => Ok(self.py_shapes()),
                 "input" => match self.py_input(&r.head) {
                     // The answer comes with the data (`py_read`).
-                    Ok((req, meta)) => {
+                    Ok((req, meta, clip)) => {
                         if let Some(p) = &mut self.py {
-                            p.reads.insert(req, (r.reply.clone(), meta));
+                            p.reads.insert(req, (r.reply.clone(), meta, clip));
                         }
                         continue;
                     }
@@ -228,27 +240,65 @@ impl App {
         json!({ "ok": true, "layers": ls })
     }
 
+    /// The shapes of all views, the active view first: name, kind, view, and the points (longitude and
+    /// latitude, or column and row of the data in a view without a CRS).
+    fn py_shapes(&mut self) -> Value {
+        let ids: Vec<u32> = self.py_views().iter().map(|p| p.id).collect();
+        let mut out = vec![];
+        for id in ids {
+            let Some(p) = self.pane(id) else { continue };
+            let geo = p.v.space.is_some();
+            let shapes: Vec<crate::tools::Shape> = p.shapes.iter().filter(|s| s.done).cloned().collect();
+            for sh in shapes {
+                let pts: Vec<[f64; 2]> = sh.pts.iter().filter_map(|&c| self.point_text(id, c)).collect();
+                let kind = if sh.closed() { "region" } else { "line" };
+                out.push(json!({ "name": sh.name, "kind": kind, "tool": sh.tool.noun(), "view": id, "points": pts, "coords": if geo { "lonlat" } else { "pixel" } }));
+            }
+        }
+        json!({ "ok": true, "shapes": out })
+    }
+
+    /// The points of the shape `name` in the display coordinates of view `id`: the shapes of this view first,
+    /// then the shapes of the other views (through longitude and latitude).
+    fn py_shape(&mut self, id: u32, name: &str) -> Result<crate::tools::Shape, String> {
+        let find = |p: &crate::app::Pane| p.shapes.iter().find(|s| s.done && s.name == name).cloned();
+        if let Some(sh) = self.pane(id).and_then(find) {
+            return Ok(sh);
+        }
+        let (from, mut sh) = self.panes.iter().find_map(|p| Some((p.v.space, find(p)?))).ok_or_else(|| format!("no shape {name} in the views"))?;
+        let to = self.pane(id).and_then(|p| p.v.space);
+        let (Some(a), Some(b)) = (from, to) else { return Err(format!("the shape {name} is in an other view, and a view has no CRS")) };
+        sh.pts = sh.pts.iter().map(|&c| self.lonlat_in(a, c).and_then(|ll| self.from_lonlat(b, [ll.0, ll.1]))).collect::<Option<_>>().ok_or_else(|| format!("the shape {name} is not in the projection of the view"))?;
+        Ok(sh)
+    }
+
     /// Start the read of an input: the layer (`layer`: a name, else the selected layer), the extent (`view`
-    /// or `all`) and the level. Return the engine request and the text of the layer.
-    fn py_input(&mut self, h: &Value) -> Result<(u64, Value), String> {
+    /// or `all`) or the shape (`region`: its name), and the level. Return the engine request, the text of the
+    /// layer, and the work on the values of a shape.
+    fn py_input(&mut self, h: &Value) -> Result<(u64, Value, Option<Clip>), String> {
         // A name: the layer in the active view, else in an other view.
-        let (p, li) = match h.get("layer").and_then(Value::as_str) {
+        let (id, li) = match h.get("layer").and_then(Value::as_str) {
             Some(n) => self
                 .py_views()
                 .into_iter()
-                .find_map(|p| Some((p, p.layers.iter().rposition(|l| l.label(200) == n || l.comp_name() == n || l.name == n)?)))
+                .find_map(|p| Some((p.id, p.layers.iter().rposition(|l| l.label(200) == n || l.comp_name() == n || l.name == n)?)))
                 .ok_or_else(|| format!("no layer {n} in the views"))?,
             None => {
                 let p = self.pane(self.active).ok_or("no view")?;
-                (p, p.sel)
+                (p.id, p.sel)
             }
         };
+        let shape = match h.get("region").and_then(Value::as_str) {
+            Some(n) => Some(self.py_shape(id, n)?),
+            None => None,
+        };
+        let p = self.pane(id).ok_or("no view")?;
         let l = p.layers.get(li).ok_or("the view has no layer")?;
         if l.kind != crate::layer::Kind::Band || l.inputs.len() != 1 {
             return Err("an input is one band: show one band of the layer".into());
         }
         let x = l.inputs[0].clone();
-        let all = h.get("extent").and_then(Value::as_str) == Some("all");
+        let all = h.get("extent").and_then(Value::as_str) == Some("all") && shape.is_none();
         let k = p.v.inputs.iter().position(|i| i.layer.id == x.id);
         let level = match h.get("level").and_then(Value::as_u64) {
             Some(v) => v as usize,
@@ -258,30 +308,100 @@ impl App {
         .min(x.levels.len() - 1);
         let lv = x.levels[level];
         let mut win = (0, 0, lv.w, lv.h);
+        let mut clip = None;
+        let mut line = Value::Null;
         if !all {
-            // The pixel box of the view, at the level.
             let warp = k.and_then(|k| p.v.inputs[k].warp.clone()).ok_or("the layer does not show in the view")?.0;
             let (w0, h0) = x.size();
-            let b = crate::tools::pixel_box(&warp, p.v.rect(), w0 as f64, h0 as f64).ok_or("the layer is not in the view")?;
+            // The level pixel of a level-0 position.
             let cx = |v: f64| (((v - lv.ox) / lv.kx).max(0.0) as u64).min(lv.w);
             let cy = |v: f64| (((v - lv.oy) / lv.ky).max(0.0) as u64).min(lv.h);
-            let (x0, y0, x1, y1) = (cx(b[0]), cy(b[1]), cx(b[2]).max(cx(b[2] + lv.kx)), cy(b[3]).max(cy(b[3] + lv.ky)));
-            if x1 <= x0 || y1 <= y0 {
-                return Err("the layer is not in the view".into());
+            match &shape {
+                Some(sh) if !sh.closed() => {
+                    // About one point for each pixel of the level along the line.
+                    let mut pts: Vec<[f64; 2]> = vec![];
+                    for s in sh.pts.windows(2) {
+                        let n = match (warp.inverse(s[0][0], s[0][1]), warp.inverse(s[1][0], s[1][1])) {
+                            (Some(a), Some(b)) => ((a.0 - b.0) / lv.kx).hypot((a.1 - b.1) / lv.ky).ceil() as usize,
+                            _ => 512,
+                        }
+                        .clamp(1, 100_000);
+                        pts.extend((0..n).map(|k| {
+                            let f = k as f64 / n as f64;
+                            [s[0][0] + f * (s[1][0] - s[0][0]), s[0][1] + f * (s[1][1] - s[0][1])]
+                        }));
+                    }
+                    pts.extend(sh.pts.last());
+                    let px: Vec<Option<(u64, u64)>> = pts
+                        .iter()
+                        .map(|d| warp.inverse(d[0], d[1]).filter(|q| q.0 >= 0.0 && q.1 >= 0.0 && q.0 < w0 as f64 && q.1 < h0 as f64).map(|q| (cx(q.0).min(lv.w - 1), cy(q.1).min(lv.h - 1))))
+                        .collect();
+                    let on: Vec<(u64, u64)> = px.iter().flatten().copied().collect();
+                    if on.is_empty() {
+                        return Err(format!("the line {} is not on the layer", sh.name));
+                    }
+                    let (x0, y0) = (on.iter().map(|q| q.0).min().unwrap(), on.iter().map(|q| q.1).min().unwrap());
+                    let (x1, y1) = (on.iter().map(|q| q.0).max().unwrap() + 1, on.iter().map(|q| q.1).max().unwrap() + 1);
+                    win = (x0, y0, x1 - x0, y1 - y0);
+                    // The distance from the first point (meters, or display units without a CRS), and the
+                    // longitude and the latitude of each point.
+                    let ll: Vec<Option<(f64, f64)>> = pts.iter().map(|&c| self.lonlat(id, c)).collect();
+                    let mut dist = vec![0.0];
+                    for k in 1..pts.len() {
+                        let d = match (ll[k - 1], ll[k]) {
+                            (Some(a), Some(b)) => crate::app::haversine(a, b),
+                            _ => (pts[k][0] - pts[k - 1][0]).hypot(pts[k][1] - pts[k - 1][1]),
+                        };
+                        dist.push(dist[k - 1] + d);
+                    }
+                    let lon: Vec<Value> = ll.iter().map(|q| q.map_or(Value::Null, |q| q.0.into())).collect();
+                    let lat: Vec<Value> = ll.iter().map(|q| q.map_or(Value::Null, |q| q.1.into())).collect();
+                    line = json!({ "distance": dist, "lon": lon, "lat": lat, "geo": ll.iter().all(Option::is_some) });
+                    clip = Some(Clip::Line { px, win });
+                }
+                _ => {
+                    // The pixel box of the view or of the polygon, at the level.
+                    let r = match &shape {
+                        Some(sh) => sh.pts.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, c| [b[0].min(c[0]), b[1].min(c[1]), b[2].max(c[0]), b[3].max(c[1])]),
+                        None => p.v.rect(),
+                    };
+                    let what = if shape.is_some() { "the region" } else { "the view" };
+                    let b = crate::tools::pixel_box(&warp, r, w0 as f64, h0 as f64).ok_or_else(|| format!("the layer is not in {what}"))?;
+                    let (x0, y0, x1, y1) = (cx(b[0]), cy(b[1]), cx(b[2]).max(cx(b[2] + lv.kx)), cy(b[3]).max(cy(b[3] + lv.ky)));
+                    if x1 <= x0 || y1 <= y0 {
+                        return Err(format!("the layer is not in {what}"));
+                    }
+                    win = (x0, y0, x1 - x0, y1 - y0);
+                    if let Some(sh) = &shape {
+                        clip = Some(Clip::Mask { poly: sh.pts.clone(), warp, lv, win });
+                    }
+                }
             }
-            win = (x0, y0, x1 - x0, y1 - y0);
         }
-        let meta = json!({ "name": l.comp_name(), "units": x.var().units, "level": level, "x0": win.0, "y0": win.1, "w": win.2, "h": win.3 });
-        Ok((self.engine.read(x, level, win), meta))
+        let p = self.pane(id).ok_or("no view")?;
+        let l = &p.layers[li];
+        let mut meta = json!({ "name": l.comp_name(), "units": x.var().units, "level": level, "x0": win.0, "y0": win.1, "w": win.2, "h": win.3 });
+        if let Some(sh) = &shape {
+            meta["region"] = sh.name.clone().into();
+        }
+        if !line.is_null() {
+            meta["line"] = line;
+        }
+        Ok((self.engine.read(x, level, win), meta, clip))
     }
 
     /// The values of an input are there: answer the client.
     pub fn py_read(&mut self, req: u64, res: eo_core::Result<(Arc<Vec<f32>>, Georef)>) {
-        let Some((reply, mut meta)) = self.py.as_mut().and_then(|p| p.reads.remove(&req)) else { return };
+        let Some((reply, mut meta, clip)) = self.py.as_mut().and_then(|p| p.reads.remove(&req)) else { return };
         let ans = match res {
             Ok((v, g)) => {
                 meta["ok"] = true.into();
                 meta["georef"] = georef_json(&g);
+                let v = match clip {
+                    None => v,
+                    Some(Clip::Mask { poly, warp, lv, win }) => Arc::new(mask(&v, &poly, &warp, &lv, win)),
+                    Some(Clip::Line { px, win }) => Arc::new(px.iter().map(|q| q.map_or(f32::NAN, |(x, y)| v[((y - win.1) * win.2 + x - win.0) as usize])).collect()),
+                };
                 let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
                 (meta, bytes)
             }
@@ -442,6 +562,22 @@ impl App {
     }
 }
 
+/// The values `v` of window `win` of level `lv`, with no data (NaN) at the pixels with a center out of the
+/// polygon `poly` (display coordinates, `warp`: level-0 pixels to display coordinates).
+fn mask(v: &[f32], poly: &[[f64; 2]], warp: &Warp, lv: &eo_cache::Level, win: (u64, u64, u64, u64)) -> Vec<f32> {
+    let (x0, y0, w, h) = win;
+    let mut out = v.to_vec();
+    for j in 0..h {
+        for i in 0..w {
+            let d = warp.at(lv.ox + (x0 + i) as f64 * lv.kx + 0.5 * lv.kx, lv.oy + (y0 + j) as f64 * lv.ky + 0.5 * lv.ky);
+            if !crate::tools::inside(poly, d) {
+                out[(j * w + i) as usize] = f32::NAN;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,5 +589,16 @@ mod tests {
         for x in [a, g, Georef::None] {
             assert_eq!(georef_of(&georef_json(&x)).unwrap(), x);
         }
+    }
+
+    /// A triangle on a 4 x 4 window: the pixels with a center in it keep their values.
+    #[test]
+    fn mask_of_a_polygon() {
+        let warp = Warp::build(10.0, 10.0, |c, r| [c, -r]);
+        let lv = eo_cache::Level { w: 10, h: 10, kx: 1.0, ky: 1.0, ox: 0.0, oy: 0.0, src: eo_cache::LevelSrc::File(0) };
+        let poly = [[2.0, -2.0], [6.0, -2.0], [2.0, -6.0]];
+        let m = mask(&[1.0; 16], &poly, &warp, &lv, (2, 2, 4, 4));
+        let kept: Vec<usize> = (0..16).filter(|&k| m[k] == 1.0).collect();
+        assert_eq!(kept, [0, 1, 2, 4, 5, 8]);
     }
 }

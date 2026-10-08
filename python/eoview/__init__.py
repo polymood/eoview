@@ -6,6 +6,8 @@
     sst = ev.layer("sst")                   # an other layer of the active view, by its name
     ev.output(img * 1.02 - 0.5, name="corrected")   # a new layer in the active view
     ev.plot(fig)                            # a matplotlib figure in the charts window
+    box = ev.layer("sst", region="Region 1")  # the pixels of a region (NaN outside the polygon)
+    prof = ev.layer("sst", region="Transect 1")  # the values along a line (1D, with distance, lon, lat)
 
 A script of the Python panel of eoview connects without arguments. A notebook calls `ev.connect()`:
 it connects to the eoview that runs on this computer, or starts eoview.
@@ -22,7 +24,7 @@ import time
 
 import numpy as np
 
-__all__ = ["connect", "input", "layer", "layers", "output", "plot"]
+__all__ = ["connect", "input", "layer", "layers", "output", "plot", "shapes"]
 
 _conn = None
 # The shape and the georeferencing of the last input: the default grid of an output.
@@ -114,19 +116,49 @@ def layers():
     return _c().call({"cmd": "layers"})[0]["layers"]
 
 
-def layer(name=None, extent="view", level=None):
+def shapes():
+    """The shapes of the views (the tools Region, Transect and Measure), the active view first.
+
+    Each shape is a dictionary: name ("Region 1"), kind ("region": a polygon, or "line"), tool, view, and
+    points: a list of [longitude, latitude] (coords "lonlat"), or [column, row] of the data in a view
+    without a CRS (coords "pixel").
+    """
+    return _c().call({"cmd": "shapes"})[0]["shapes"]
+
+
+def layer(name=None, extent="view", level=None, region=None):
     """The values of a layer of the active view (the selected layer if `name` is None).
 
     extent: "view" (the area of the view) or "all" (all the data).
     level: the level of the data, 0 is the full resolution. Default: the level of the view for "view",
     0 for "all". eoview refuses a size that is more than its memory budget.
+    region: the name of a shape (see `shapes`), in place of the extent. A region (a polygon): the values of
+    its box, with NaN outside the polygon. A line: the values along the line, about one for each pixel of
+    the level, as a 1D array with the distance from the first point (meters), the longitude and the
+    latitude of each point.
     """
     global _last
-    ans, data = _c().call({"cmd": "input", "layer": name, "extent": extent, "level": level})
+    ans, data = _c().call({"cmd": "input", "layer": name, "extent": extent, "level": level, "region": region})
+    g = ans.get("georef") or {}
+    attrs = {"name": ans.get("name", ""), "units": ans.get("units", ""), "level": ans.get("level", 0)}
+    if ans.get("region"):
+        attrs["region"] = ans["region"]
+    line = ans.get("line")
+    if line:
+        a = np.frombuffer(data, dtype="<f4").copy()
+        nan = lambda v: np.array([np.nan if x is None else x for x in v], dtype="f8")
+        dist, lon, lat = np.asarray(line["distance"]), nan(line["lon"]), nan(line["lat"])
+        attrs["distance_units"] = "m" if line.get("geo") else "display units"
+        try:
+            import xarray as xr
+        except ImportError:
+            attrs.update(distance=dist, lon=lon, lat=lat)
+            return EOArray(a, attrs)
+        coords = {"distance": ("point", dist), "lon": ("point", lon), "lat": ("point", lat)}
+        return xr.DataArray(a, dims=("point",), coords=coords, name=attrs["name"], attrs=attrs)
     h, w = ans["h"], ans["w"]
     a = np.frombuffer(data, dtype="<f4").reshape(h, w).copy()
-    g = ans.get("georef") or {}
-    attrs = {"name": ans.get("name", ""), "units": ans.get("units", ""), "eoview_georef": g, "eoview_shape": [h, w], "level": ans.get("level", 0)}
+    attrs.update(eoview_georef=g, eoview_shape=[h, w])
     if g.get("transform"):
         attrs["transform"] = g["transform"]
         attrs["crs"] = "EPSG:%d" % g["epsg"] if g.get("epsg") else g.get("crs", "")
@@ -142,9 +174,9 @@ def layer(name=None, extent="view", level=None):
     return xr.DataArray(a, dims=("y", "x"), coords=coords, name=attrs["name"], attrs=attrs)
 
 
-def input(extent="view", level=None):
+def input(extent="view", level=None, region=None):
     """The values of the selected layer of the active view. See `layer`."""
-    return layer(None, extent=extent, level=level)
+    return layer(None, extent=extent, level=level, region=region)
 
 
 def output(data, name="output", units=None, transform=None, crs=None):

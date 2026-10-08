@@ -99,7 +99,7 @@ def pane(id, layers, **kw):
         "id": id, "space": 4326, "center": [10.0, 50.0], "scale": 26.0, "link": 1, "cmp": "Off", "swipe": 0.5,
         "vertical": True, "blend": 0.5, "flicker_hz": 2.0, "diff": 0, "dlo": -1.0, "dhi": 1.0, "dcmap": "RdBu",
         "dinvert": False, "layers": layers, "globe": False, "smooth": False,
-        "overlays": {"coasts": True, "borders": True, "names": False}, "pixel_grid": False, "coord_grid": False, "shape": None,
+        "overlays": {"coasts": True, "borders": True, "names": False}, "pixel_grid": False, "coord_grid": False, "shapes": [],
     }
     p.update(kw)
     return p
@@ -119,8 +119,8 @@ project = {
     "active": 2,
     "link_px": False,
     "panes": [
-        pane(1, [days, mean], cmp="Swipe", coord_grid=True, shape={"tool": "Region", "pts": [[-2.0, 51.0], [8.0, 51.0], [8.0, 43.0], [-2.0, 43.0]], "done": True}),
-        pane(2, [count], shape={"tool": "Transect", "pts": [[-8.0, 38.0], [24.0, 60.0]], "done": True}),
+        pane(1, [days, mean], cmp="Swipe", coord_grid=True, shapes=[{"tool": "Region", "name": "France", "pts": [[-2.0, 51.0], [8.0, 51.0], [8.0, 43.0], [-2.0, 43.0]], "done": True}]),
+        pane(2, [count], shapes=[{"tool": "Transect", "name": "Lisbon to Stockholm", "pts": [[-8.0, 38.0], [24.0, 60.0]], "done": True}]),
     ],
     "pins": [{"Geo": {"lon": 2.35, "lat": 48.86, "m": 1000.0}}, {"Geo": {"lon": -3.70, "lat": 40.42, "m": 1000.0}}],
     "python": open(os.path.join(E, "correct_lst.py")).read(),

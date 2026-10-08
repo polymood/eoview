@@ -30,12 +30,24 @@ pub enum Tool {
 impl Tool {
     /// Tool, name, key.
     pub const ALL: [(Tool, &str, &str); 4] = [(Tool::Measure, "Measure", "M"), (Tool::Transect, "Transect", "T"), (Tool::Region, "Region", "R"), (Tool::Pin, "Pin a point", "P")];
+
+    /// The name of the shapes of the tool. The names of the shapes are in English: a script uses them.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Tool::Measure => "Measure",
+            Tool::Transect => "Transect",
+            _ => "Region",
+        }
+    }
 }
 
 /// A shape that the user draws in a view, in the display coordinates of the view.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Shape {
     pub tool: Tool,
+    /// A name that is unique in the view, for example "Region 2": a Python script gets the shape by its name.
+    #[serde(default)]
+    pub name: String,
     pub pts: Vec<[f64; 2]>,
     /// The user ended the shape (double-click, the second point of a transect, the end of a drag).
     pub done: bool,
@@ -44,6 +56,77 @@ pub struct Shape {
     pub result: Option<Res>,
     #[serde(skip)]
     key: Option<Key>,
+}
+
+impl Shape {
+    /// A polygon: a region, or a measure of 3 points or more.
+    pub fn closed(&self) -> bool {
+        self.tool == Tool::Region || (self.tool == Tool::Measure && self.done && self.pts.len() >= 3)
+    }
+}
+
+/// A new name for a shape of `tool` in view `p`: "Region 1", "Region 2", ...
+pub fn new_name(p: &Pane, tool: Tool) -> String {
+    (1..).map(|n| format!("{} {n}", tool.noun())).find(|n| !p.shapes.iter().any(|s| s.name == *n)).unwrap_or_default()
+}
+
+/// Names for the shapes without a name (a workspace file of an older version).
+pub fn name_shapes(p: &mut Pane) {
+    for k in 0..p.shapes.len() {
+        if p.shapes[k].name.is_empty() {
+            p.shapes[k].name = new_name(p, p.shapes[k].tool);
+        }
+    }
+}
+
+/// Distance from `q` to the segment `a` `b`.
+fn seg_dist(q: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let f = ((q - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+    q.distance(a + ab * f)
+}
+
+/// The shape of view `p` at screen position `q`: its index, and the index of the point of the shape near
+/// `q`. The selected shape first, then the shapes on top.
+pub fn shape_at(p: &Pane, q: Pos2) -> Option<(usize, Option<usize>)> {
+    for k in p.sel_shape.into_iter().chain((0..p.shapes.len()).rev()) {
+        let Some(sh) = p.shapes.get(k).filter(|s| s.done) else { continue };
+        let s: Vec<Pos2> = sh.pts.iter().map(|&c| p.v.to_screen(c, p.rect)).collect();
+        if let Some(v) = s.iter().position(|x| x.distance(q) < 7.0) {
+            return Some((k, Some(v)));
+        }
+        let n = s.len();
+        let segs = if sh.closed() { n } else { n.saturating_sub(1) };
+        let poly: Vec<[f64; 2]> = s.iter().map(|x| [x.x as f64, x.y as f64]).collect();
+        if (0..segs).any(|i| seg_dist(q, s[i], s[(i + 1) % n]) < 6.0) || (sh.closed() && inside(&poly, [q.x as f64, q.y as f64])) {
+            return Some((k, None));
+        }
+    }
+    None
+}
+
+/// The text of the side panel for the coordinates of the shapes.
+#[derive(Default)]
+pub struct ShapeEdit {
+    /// The points of the selected shape, one on each line, and the shape of the text (view, index).
+    pub text: String,
+    pub of: Option<(u32, usize, u64)>,
+    /// A new box: west, south, east, north (or columns and rows in a view without a CRS).
+    pub bbox: [f64; 4],
+    /// The points of a new shape, one on each line.
+    pub pts: String,
+}
+
+/// The points of a text: two numbers on each line (separated by a comma, a space or a tab).
+pub fn parse_points(s: &str) -> Result<Vec<[f64; 2]>, String> {
+    s.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let v: Vec<f64> = l.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|x| !x.is_empty()).map(|x| x.parse::<f64>()).collect::<Result<_, _>>().map_err(|_| tf("Not a point: {}", &[l]))?;
+            if v.len() == 2 { Ok([v[0], v[1]]) } else { Err(tf("Not a point: {}", &[l])) }
+        })
+        .collect()
 }
 
 /// What the result of a shape depends on: the points, the layer and its time step, the level.
@@ -368,13 +451,17 @@ impl App {
             return;
         }
         let Some(p) = self.pane_mut(id) else { return };
-        let sh = p.shape.get_or_insert_with(Shape::default);
-        if sh.tool != tool || sh.done {
+        if !p.shapes.last().is_some_and(|s| !s.done && s.tool == tool) {
             if double {
                 return;
             }
-            *sh = Shape { tool, ..Default::default() };
+            // A new shape. A shape that the user did not end goes.
+            p.shapes.retain(|s| s.done);
+            let name = new_name(p, tool);
+            p.shapes.push(Shape { tool, name, ..Default::default() });
+            p.sel_shape = Some(p.shapes.len() - 1);
         }
+        let sh = p.shapes.last_mut().unwrap();
         // The second click of a double-click is at the same place as the first: it ends the shape.
         if double {
             sh.done = sh.pts.len() >= 2;
@@ -387,12 +474,98 @@ impl App {
         }
     }
 
-    /// A drag of the region tool in view `id` from display position `a` to `b`: a rectangle.
-    pub fn tool_rect(&mut self, id: u32, a: [f64; 2], b: [f64; 2], done: bool) {
-        if let Some(p) = self.pane_mut(id) {
-            let pts = vec![a, [b[0], a[1]], b, [a[0], b[1]]];
-            p.shape = Some(Shape { tool: Tool::Region, pts, done, ..Default::default() });
+    /// A drag of the region tool in view `id` from display position `a` to `b`: a rectangle. `first`: the
+    /// drag starts (a new shape).
+    pub fn tool_rect(&mut self, id: u32, a: [f64; 2], b: [f64; 2], done: bool, first: bool) {
+        let Some(p) = self.pane_mut(id) else { return };
+        if first || !p.shapes.last().is_some_and(|s| !s.done && s.tool == Tool::Region) {
+            p.shapes.retain(|s| s.done);
+            let name = new_name(p, Tool::Region);
+            p.shapes.push(Shape { tool: Tool::Region, name, ..Default::default() });
+            p.sel_shape = Some(p.shapes.len() - 1);
         }
+        let sh = p.shapes.last_mut().unwrap();
+        (sh.pts, sh.done, sh.result) = (vec![a, [b[0], a[1]], b, [a[0], b[1]]], done, None);
+    }
+
+    /// A drag of shape `k` of view `id` with no tool: point `v` goes to display position `c`, or (no point)
+    /// all points move by `d` (display units).
+    pub fn shape_drag(&mut self, id: u32, k: usize, v: Option<usize>, c: [f64; 2], d: [f64; 2]) {
+        let Some(sh) = self.pane_mut(id).and_then(|p| p.shapes.get_mut(k)) else { return };
+        match v {
+            Some(v) if v < sh.pts.len() => sh.pts[v] = c,
+            _ => sh.pts.iter_mut().for_each(|q| *q = [q[0] + d[0], q[1] + d[1]]),
+        }
+        sh.result = None;
+    }
+
+    /// Remove the selected shape of view `id`.
+    pub fn delete_shape(&mut self, id: u32) {
+        if let Some(p) = self.pane_mut(id)
+            && let Some(k) = p.sel_shape.take().filter(|&k| k < p.shapes.len())
+        {
+            p.shapes.remove(k);
+        }
+    }
+
+    /// The points of the shapes of view `id` go from the display CRS `from` to `to`. Without a CRS, the
+    /// shapes go.
+    pub fn move_shapes(&mut self, id: u32, from: Option<u32>, to: Option<u32>) {
+        let Some(i) = self.panes.iter().position(|p| p.id == id) else { return };
+        let mut shapes = std::mem::take(&mut self.panes[i].shapes);
+        match (from, to) {
+            (Some(a), Some(b)) => shapes.retain_mut(|s| {
+                let pts: Option<Vec<[f64; 2]>> = s.pts.iter().map(|&c| self.lonlat_in(a, c).and_then(|ll| self.from_lonlat(b, [ll.0, ll.1]))).collect();
+                (s.result, s.key) = (None, None);
+                pts.map(|p| s.pts = p).is_some()
+            }),
+            _ => shapes.clear(),
+        }
+        let p = &mut self.panes[i];
+        p.sel_shape = p.sel_shape.filter(|&k| k < shapes.len());
+        p.shapes = shapes;
+    }
+
+    /// The text of a display position of view `id`: longitude and latitude, or column and row of the data
+    /// in a view without a CRS.
+    pub fn point_text(&mut self, id: u32, c: [f64; 2]) -> Option<[f64; 2]> {
+        match self.pane(id)?.v.space {
+            Some(_) => self.lonlat(id, c).map(|(a, b)| [a, b]),
+            None => Some([c[0], -c[1]]),
+        }
+    }
+
+    /// The display position of a point of a text (see `point_text`).
+    pub fn text_point(&mut self, id: u32, q: [f64; 2]) -> Option<[f64; 2]> {
+        match self.pane(id)?.v.space {
+            Some(e) => self.from_lonlat(e, q),
+            None => Some([q[0], -q[1]]),
+        }
+    }
+
+    /// A new shape of `tool` in view `id` with the points `pts` of a text (see `point_text`). A box in
+    /// longitude and latitude has more points on its edges in a projected view.
+    pub fn add_shape(&mut self, id: u32, tool: Tool, mut pts: Vec<[f64; 2]>, bbox: bool) -> Result<(), String> {
+        let space = self.pane(id).ok_or("no view")?.v.space;
+        if bbox && space.is_some_and(|e| e != 4326) {
+            let n = 16;
+            let ring: Vec<[f64; 2]> = (0..4).flat_map(|e| {
+                let (a, b) = (pts[e], pts[(e + 1) % 4]);
+                (0..n).map(move |k| [a[0] + (b[0] - a[0]) * k as f64 / n as f64, a[1] + (b[1] - a[1]) * k as f64 / n as f64])
+            }).collect();
+            pts = ring;
+        }
+        let need = if tool == Tool::Region { 3 } else { 2 };
+        if pts.len() < need {
+            return Err(tf("A shape of this kind has {} points or more.", &[&need.to_string()]));
+        }
+        let pts: Vec<[f64; 2]> = pts.iter().map(|&q| self.text_point(id, q).ok_or_else(|| tf("The point {} is not in the projection of the view.", &[&format!("{}, {}", q[0], q[1])]))).collect::<Result<_, _>>()?;
+        let p = self.pane_mut(id).ok_or("no view")?;
+        p.shapes.retain(|s| s.done);
+        let name = new_name(p, tool);
+        p.shapes.push(Shape { tool, name, pts, done: true, ..Default::default() });
+        p.sel_shape = Some(p.shapes.len() - 1);
+        Ok(())
     }
 
     /// Draw the tools of view `i` (pixel grid, coordinate grid, shapes, pins), and make the results of its
@@ -410,22 +583,29 @@ impl App {
         self.shape_result(i, need);
         let p = &self.panes[i];
         let ink = Color32::from_rgb(255, 214, 0);
-        if let Some(sh) = &p.shape {
+        for (k, sh) in p.shapes.iter().enumerate() {
+            let sel = p.sel_shape == Some(k) || !sh.done;
             let mut q: Vec<Pos2> = sh.pts.iter().map(|&c| p.v.to_screen(c, r)).collect();
-            let close = sh.tool == Tool::Region || (sh.tool == Tool::Measure && sh.done && q.len() >= 3);
             // While the shape is not done: the line to the cursor.
             if let (false, Some(c)) = (sh.done, p.v.cursor) {
                 q.push(p.v.to_screen(c, r));
             }
-            for s in [Stroke::new(3.5, Color32::from_black_alpha(150)), Stroke::new(1.6, ink)] {
-                pt.add(if close { egui::Shape::closed_line(q.clone(), s) } else { egui::Shape::line(q.clone(), s) });
+            let (w, c) = if sel { (1.6, ink) } else { (1.2, Color32::from_white_alpha(200)) };
+            for s in [Stroke::new(w + 2.0, Color32::from_black_alpha(150)), Stroke::new(w, c)] {
+                pt.add(if sh.closed() { egui::Shape::closed_line(q.clone(), s) } else { egui::Shape::line(q.clone(), s) });
             }
-            for c in &q[..sh.pts.len()] {
-                pt.circle(*c, 3.5, ink, Stroke::new(1.0, Color32::BLACK));
+            if sel {
+                for c in &q[..sh.pts.len()] {
+                    pt.circle(*c, 3.5, ink, Stroke::new(1.0, Color32::BLACK));
+                }
+            }
+            if let (true, Some(&a)) = (sh.done, q.first()) {
+                pt.text(a + vec2(6.0, -6.0), Align2::LEFT_BOTTOM, &sh.name, FontId::proportional(11.0), c);
             }
         }
-        // The label of a measure: its length, and the area of its polygon.
-        let label = match p.shape.as_ref().filter(|s| s.tool == Tool::Measure && !s.pts.is_empty()) {
+        // The label of a measure that the user draws or selects: its length, and the area of its polygon.
+        let now = p.shapes.last().filter(|s| !s.done).or(p.sel_shape.and_then(|k| p.shapes.get(k)));
+        let label = match now.filter(|s| s.tool == Tool::Measure && !s.pts.is_empty()) {
             Some(sh) => {
                 let (mut pts, done) = (sh.pts.clone(), sh.done);
                 if let (false, Some(c)) = (done, p.v.cursor) {
@@ -471,9 +651,10 @@ impl App {
     /// Make the result of the shape of view `i` if its points or its data changed.
     fn shape_result(&mut self, i: usize, need: &mut Vec<(Arc<Layer>, TileKey)>) {
         let p = &self.panes[i];
-        let Some(sh) = p.shape.as_ref().filter(|s| s.done && matches!(s.tool, Tool::Region | Tool::Transect)) else { return };
+        let Some(k) = p.sel_shape else { return };
+        let Some(sh) = p.shapes.get(k).filter(|s| s.done && matches!(s.tool, Tool::Region | Tool::Transect)) else { return };
         let Some(sampler) = Sampler::new(p, p.sel, None) else {
-            if let Some(sh) = &mut self.panes[i].shape {
+            if let Some(sh) = self.panes[i].shapes.get_mut(k) {
                 sh.result = Some(Res::Empty("The selected layer does not show."));
             }
             return;
@@ -509,18 +690,20 @@ impl App {
             if !ok {
                 Res::Wait
             } else {
-                // The distance from the first point along the line.
+                // The distance from the first point along the line (as `ev.layer` of a line in Python).
                 let mut prof = vec![];
-                let mut geo = true;
+                let (mut m, mut geo) = (0.0, true);
                 for (k, (d, v)) in out.iter().enumerate() {
-                    let (m, g) = if k == 0 { (0.0, true) } else { self.line_length(id, &[out[0].0, *d]) };
-                    geo &= g;
+                    if k > 0 {
+                        let (dm, g) = self.line_length(id, &[out[k - 1].0, *d]);
+                        (m, geo) = (m + dm, geo & g);
+                    }
                     prof.push((m, v.clone()));
                 }
                 Res::Profile(prof, geo, err)
             }
         };
-        if let Some(sh) = &mut self.panes[i].shape {
+        if let Some(sh) = self.panes[i].shapes.get_mut(k) {
             (sh.key, sh.result) = (Some(key), Some(res));
         }
     }
@@ -731,12 +914,131 @@ fn pixel_grid(p: &Pane, fields: &Fields, need: &mut Vec<(Arc<Layer>, TileKey)>, 
     }
 }
 
+/// A hash of the points of a shape: the text of its points changes when they change.
+fn pts_hash(pts: &[[f64; 2]]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    pts.iter().for_each(|q| (q[0].to_bits(), q[1].to_bits()).hash(&mut h));
+    h.finish()
+}
+
+/// The shapes of view `id` in the side panel: select, remove, rename, the points as text, new shapes from
+/// coordinates.
+fn shapes_ui(app: &mut App, ui: &mut egui::Ui, id: u32) {
+    let Some(p) = app.pane(id) else { return };
+    let geo = p.v.space.is_some();
+    let rows: Vec<(String, Tool)> = p.shapes.iter().filter(|s| s.done).map(|s| (s.name.clone(), s.tool)).collect();
+    let mut sel = p.sel_shape;
+    let mut remove = None;
+    for (k, (name, tool)) in rows.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if ui.selectable_label(sel == Some(k), format!("{name}   {}", t(tool.noun()).to_lowercase())).clicked() {
+                sel = if sel == Some(k) { None } else { Some(k) };
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("x").on_hover_text(t("Remove the shape (Delete)")).clicked() {
+                    remove = Some(k);
+                }
+            });
+        });
+    }
+    if let Some(p) = app.pane_mut(id) {
+        p.sel_shape = sel;
+    }
+    if let Some(k) = remove {
+        app.pane_mut(id).unwrap().sel_shape = Some(k);
+        app.delete_shape(id);
+    }
+    let (ax, ay) = if geo { (t("Longitude"), t("Latitude")) } else { (t("Column"), t("Row")) };
+    // The selected shape: its name and its points.
+    if let Some((k, sh)) = app.pane(id).and_then(|p| p.sel_shape.and_then(|k| Some((k, p.shapes.get(k)?.clone())))).filter(|s| s.1.done) {
+        let h = pts_hash(&sh.pts);
+        if app.shape_edit.of != Some((id, k, h)) {
+            let lines: Vec<String> = sh.pts.iter().filter_map(|&c| app.point_text(id, c)).map(|q| format!("{:.6}, {:.6}", q[0], q[1])).collect();
+            app.shape_edit.text = lines.join("\n");
+            app.shape_edit.of = Some((id, k, h));
+        }
+        ui.horizontal(|ui| {
+            ui.label(t("Name"));
+            let mut name = sh.name.clone();
+            if ui.text_edit_singleline(&mut name).changed()
+                && let Some(s) = app.pane_mut(id).and_then(|p| p.shapes.get_mut(k))
+            {
+                s.name = name;
+            }
+        });
+        ui.small(tf("Points ({}, {}): one on each line.", &[ax, ay]));
+        ui.add(egui::TextEdit::multiline(&mut app.shape_edit.text).code_editor().desired_rows(3).desired_width(f32::INFINITY));
+        if ui.button(t("Apply the points")).clicked() {
+            let res = parse_points(&app.shape_edit.text).and_then(|pts| pts.iter().map(|&q| app.text_point(id, q).ok_or_else(|| t("A point is not in the projection of the view.").to_string())).collect::<Result<Vec<_>, _>>());
+            match res {
+                Ok(pts) if pts.len() >= 2 => {
+                    if let Some(s) = app.pane_mut(id).and_then(|p| p.shapes.get_mut(k)) {
+                        (s.pts, s.result) = (pts, None);
+                    }
+                }
+                Ok(_) => app.error = Some(t("A shape has 2 points or more.").into()),
+                Err(e) => app.error = Some(e),
+            }
+        }
+    }
+    egui::CollapsingHeader::new(t("New shape from coordinates")).id_salt(("new shape", id)).show(ui, |ui| {
+        let b = &mut app.shape_edit.bbox;
+        egui::Grid::new(("bbox", id)).num_columns(4).show(ui, |ui| {
+            let names = if geo { [t("West"), t("South"), t("East"), t("North")] } else { [t("First column"), t("Last row"), t("Last column"), t("First row")] };
+            for (j, n) in names.iter().enumerate() {
+                ui.label(*n);
+                ui.add(egui::DragValue::new(&mut b[j]).speed(0.01).max_decimals(6));
+                if j % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+        let bb = *b;
+        ui.horizontal(|ui| {
+            if ui.button(t("Box of the view")).clicked()
+                && let Some(r) = app.pane(id).map(|p| p.v.rect())
+            {
+                let c: Vec<[f64; 2]> = [[r[0], r[1]], [r[2], r[3]], [r[0], r[3]], [r[2], r[1]]].iter().filter_map(|&c| app.point_text(id, c)).collect();
+                if !c.is_empty() {
+                    let f = |i: usize, max: bool| c.iter().map(|q| q[i]).fold(if max { f64::MIN } else { f64::MAX }, if max { f64::max } else { f64::min });
+                    app.shape_edit.bbox = [f(0, false), f(1, false), f(0, true), f(1, true)];
+                }
+            }
+            if ui.button(t("New region of the box")).clicked() {
+                let pts = vec![[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]];
+                if let Err(e) = app.add_shape(id, Tool::Region, pts, true) {
+                    app.error = Some(e);
+                }
+            }
+        });
+        ui.small(tf("Points ({}, {}): one on each line.", &[ax, ay]));
+        ui.add(egui::TextEdit::multiline(&mut app.shape_edit.pts).code_editor().desired_rows(3).desired_width(f32::INFINITY).hint_text("2.35, 48.85\n4.83, 45.76"));
+        ui.horizontal(|ui| {
+            for (tool, label) in [(Tool::Region, t("New region")), (Tool::Transect, t("New line"))] {
+                if ui.button(label).clicked() {
+                    // A line of more than 2 points is a measure: a transect has 2 points.
+                    let res = parse_points(&app.shape_edit.pts).and_then(|pts| {
+                        let tool = if tool == Tool::Transect && pts.len() > 2 { Tool::Measure } else { tool };
+                        app.add_shape(id, tool, pts, false)
+                    });
+                    if let Err(e) = res {
+                        app.error = Some(e);
+                    }
+                }
+            }
+        });
+    });
+    ui.separator();
+}
+
 /// The result of the shape of view `id` in the side panel: the length and the area of a measure, the
 /// statistics of a region, the chart of a transect.
 pub fn results_ui(app: &mut App, ui: &mut egui::Ui, id: u32) {
-    let Some(sh) = app.pane(id).and_then(|p| p.shape.clone()) else {
+    shapes_ui(app, ui, id);
+    let Some(sh) = app.pane(id).and_then(|p| p.sel_shape.and_then(|k| p.shapes.get(k)).cloned()) else {
         ui.weak(match app.tool {
-            Tool::None => t("Select a tool, then click in the view."),
+            Tool::None => t("Select a tool, then click in the view. Without a tool: click a shape to select it, drag it or its points to move them, Delete removes it."),
             Tool::Measure => t("Click the points of a line. Double-click: the end. With 3 points or more: the area."),
             Tool::Transect => t("Click the two ends of a line."),
             Tool::Region => t("Drag a rectangle, or click the points of a polygon. Double-click: the end."),
@@ -850,6 +1152,25 @@ mod tests {
         assert!((a / 1e6 - 12_364.0).abs() < 20.0, "{a}");
         assert_eq!(length(12_345.0, true), "12.35 km");
         assert_eq!(surface(2.5e6, true), "2.5 km²");
+        assert_eq!(parse_points("1.5, 2\n# a comment\n\n-3 4e1\n").unwrap(), [[1.5, 2.0], [-3.0, 40.0]]);
+        assert!(parse_points("1, 2, 3").is_err());
+    }
+
+    /// A click selects the point of a shape, the inside of a region, a line, or no shape.
+    #[test]
+    fn shape_under_the_mouse() {
+        let mut p = Pane::new(1);
+        p.rect = Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(400.0, 400.0));
+        (p.v.px, p.v.scale, p.v.center) = (p.rect, 10.0, [15.0, 5.0]);
+        let sh = |tool, pts: Vec<[f64; 2]>| Shape { tool, name: String::new(), pts, done: true, ..Default::default() };
+        p.shapes = vec![sh(Tool::Region, vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]), sh(Tool::Transect, vec![[20.0, 0.0], [30.0, 10.0]])];
+        let at = |c: [f64; 2]| shape_at(&p, p.v.to_screen(c, p.rect));
+        assert_eq!(at([10.0, 10.0]), Some((0, Some(2))));
+        assert_eq!(at([5.0, 5.0]), Some((0, None)));
+        assert_eq!(at([25.0, 5.0]), Some((1, None)));
+        assert_eq!(at([25.0, 0.0]), None);
+        name_shapes(&mut p);
+        assert_eq!((p.shapes[0].name.as_str(), p.shapes[1].name.as_str(), new_name(&p, Tool::Region).as_str()), ("Region 1", "Transect 1", "Region 2"));
     }
 
     /// The statistics of a region that covers a file are the statistics of its values (h5py: 5384
@@ -866,15 +1187,15 @@ mod tests {
             assert!(t0.elapsed().as_secs() < 20, "timeout");
             std::thread::sleep(std::time::Duration::from_millis(5));
             let Some(w) = app.panes[0].v.inputs.first().and_then(|i| i.warp.clone()) else { continue };
-            if app.panes[0].shape.is_none() {
+            if app.panes[0].shapes.is_empty() {
                 app.panes[0].v.levels = vec![0];
-                app.tool_rect(1, w.0.at(-1.0, -1.0), w.0.at(91.0, 61.0), true);
+                app.tool_rect(1, w.0.at(-1.0, -1.0), w.0.at(91.0, 61.0), true, true);
             }
             let mut need = vec![];
             app.shape_result(0, &mut need);
             app.field_keys.extend(need.iter().map(|n| n.1));
             app.engine.want_copy(0x8000_0001, need);
-            match app.panes[0].shape.as_ref().and_then(|s| s.result.clone()) {
+            match app.panes[0].shapes[0].result.clone() {
                 Some(Res::Wait) | None => continue,
                 Some(r) => break r,
             }

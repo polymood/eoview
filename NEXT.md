@@ -18,7 +18,9 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
   a search field. Not done: the dock for all workspaces (the animate workspace has fixed panels), a font
   of eoview (the interface uses the font of egui).
 - `DESIGN.md` step 2 (tools of a view): pixel grid with values, coordinate grid, measure (length, area),
-  transect with a chart, region statistics (rectangle or polygon), pinned points in all views.
+  transect with a chart, region statistics (rectangle or polygon), pinned points in all views. Each view
+  keeps several named shapes: select, move, move a point, remove, points as text, a new region from a box
+  or from typed points (Jules, 2026-10-08).
 - `DESIGN.md` step 3 (operations core), first version: computed layers in the engine (`eo_cache::Op`),
   with the aggregate over time (mean, median, minimum, maximum, standard deviation, count) of a cube or
   of a list of products, and layer math (arithmetic and mask between layers of different products on
@@ -26,8 +28,9 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
   remove), an option "exact at level 0" for the view (3.5), export of a result as GeoTIFF or NetCDF
   (3.6), progress of the steps in the view.
 - `DESIGN.md` step 5 (Python), first version: the module `eoview` (`python/`), the Python panel, the
-  notebooks (`ev.connect()`), `input`, `layer`, `layers`, `output`, `plot`, `eoview --python`. To do:
-  `region=` and `steps=` of the inputs (a region of the region tool, time steps as a 3D input), outputs
+  notebooks (`ev.connect()`), `input`, `layer`, `layers`, `output`, `plot`, `shapes`, `region=` (the
+  pixels of a polygon, the values along a line), `eoview --python`. To do: `steps=` of the inputs (time
+  steps as a 3D input), outputs
   with time steps, an output on a grid of longitudes and latitudes (2D arrays), `ev.plot` as SVG for the
   figures, a script for each tile for large data.
 - Example project: `examples/features.eoview` (`scripts/make_example.py` makes its data).
@@ -71,9 +74,10 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
 
 ## Asked by Jules, not started
 
-6. **Precise control of the bounding box.** Type the limits of the view (west, south, east, north, or
-   center and scale), go to a latitude and longitude, draw a box and read its coordinates, copy and paste
-   an extent, use the box as the area of a STAC search and of an export.
+6. **Precise control of the bounding box.** Done: draw a box and read its coordinates, type a box or a
+   polygon (a region), copy the extent of the view (Ctrl+Shift+C). To do: type the limits of the view
+   (west, south, east, north, or center and scale), go to a latitude and longitude, use a region as the
+   area of a STAC search and of an export.
 7. **1D data.** A variable with one dimension has no view now (the readers ignore it). Show it as a
    line plot: along-track data (Sentinel-6, CryoSat-2 altimetry), coordinates, time series. A 1D variable
    with latitude and longitude can also be a track on the map and on the globe.
