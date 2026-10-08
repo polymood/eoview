@@ -408,11 +408,12 @@ eoview --render --out wind_globe.mp4 --steps 1095744:1096464:6 --sub 6 --bbox -2
 
 A view contains a stack of layers. The side panel shows the layers of the active view (the last view that
 you clicked), top layer first: show or hide, move up or down, remove. Each layer has its own composite,
-stretch, color map and opacity. The view draws the 4 lowest visible layers. **Layer**, then **Same display
+stretch, color map and opacity. A view draws all its visible layers: for example the 14 orbits of a day of
+Sentinel-3 OLCI, each as a true color layer. **Layer**, then **Same display
 for all layers**, gives all layers of the view the bands, the stretch and the color map of the selected
 layer (for example the orbits of one day: no seams between them).
 
-The compare modes use the two lowest visible layers: A and B.
+The compare modes use the two lowest visible layers: A and B. The other layers are not drawn in a compare mode.
 
 | Mode | Key | Function |
 |---|---|---|

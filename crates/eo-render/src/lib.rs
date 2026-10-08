@@ -812,19 +812,17 @@ impl Input {
 }
 
 /// GPU resources of one 2D view: offscreen targets, color map and composite.
-pub struct View2d {
+/// The GPU resources of a group of layers of a view: the color maps, the composite uniforms and one
+/// offscreen target for each input of the group.
+struct Group {
     lut: wgpu::Texture,
     cbuf: wgpu::Buffer,
     targets: Vec<(wgpu::Texture, wgpu::TextureView)>,
     size: (u32, u32),
-    pub inputs: Vec<Input>,
-    /// Magnified pixels are smooth (linear), not squares. Data at a low resolution, for example a
-    /// weather model. The tiles do not have the pixels of the next tiles: their edges show.
-    pub smooth: bool,
 }
 
-impl View2d {
-    pub fn new(gpu: &Gpu) -> View2d {
+impl Group {
+    fn new(gpu: &Gpu) -> Group {
         let lut = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("lut"),
             size: wgpu::Extent3d { width: 256, height: LUT_ROWS, depth_or_array_layers: 1 },
@@ -841,17 +839,7 @@ impl View2d {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        View2d { lut, cbuf, targets: vec![], size: (0, 0), inputs: vec![], smooth: false }
-    }
-
-    /// Color map of row `row`: 0 to 3 for the layers, 4 for the difference.
-    pub fn set_lut(&self, gpu: &Gpu, row: u32, rgba: &[[u8; 4]]) {
-        gpu.queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &self.lut, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: row.min(LUT_ROWS - 1), z: 0 }, aspect: wgpu::TextureAspect::All },
-            bytemuck::cast_slice(rgba),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
-            wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
-        );
+        Group { lut, cbuf, targets: vec![], size: (0, 0) }
     }
 
     /// Offscreen targets: one for each input, of the view size. They change only when the size or the count changes.
@@ -879,14 +867,51 @@ impl View2d {
         self.size = (w, h);
         gpu.target_bytes += n * (w * h * 4) as usize;
     }
+}
 
-    /// Write the buffers and make the paint callback for egui. `layers[k]` are the uniforms and the u8 flag
-    /// of input k. `rect` is the view in points, `px` its size in physical pixels, `origin` in window pixels.
-    /// `inputs[k]` are the uniforms and the u8 flag of input k. `specs` are the layers of the composite.
+/// The GPU part of a 2D view. The layers of a view are in groups of at most 4 layers and `MAX_INPUTS`
+/// inputs: one composite for each group, each over the groups below it.
+pub struct View2d {
+    groups: Vec<Group>,
+    pub inputs: Vec<Input>,
+    /// Magnified pixels are smooth (linear), not squares. Data at a low resolution, for example a
+    /// weather model. The tiles do not have the pixels of the next tiles: their edges show.
+    pub smooth: bool,
+}
+
+impl View2d {
+    pub fn new(_: &Gpu) -> View2d {
+        View2d { groups: vec![], inputs: vec![], smooth: false }
+    }
+
+    fn group(&mut self, gpu: &Gpu, g: usize) -> &mut Group {
+        while self.groups.len() <= g {
+            self.groups.push(Group::new(gpu));
+        }
+        &mut self.groups[g]
+    }
+
+    /// Color map of row `row` of group `g`: 0 to 3 for the layers, 4 for the difference.
+    pub fn set_lut(&mut self, gpu: &Gpu, g: usize, row: u32, rgba: &[[u8; 4]]) {
+        let lut = &self.group(gpu, g).lut;
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: lut, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: row.min(LUT_ROWS - 1), z: 0 }, aspect: wgpu::TextureAspect::All },
+            bytemuck::cast_slice(rgba),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256 * 4), rows_per_image: None },
+            wgpu::Extent3d { width: 256, height: 1, depth_or_array_layers: 1 },
+        );
+    }
+
+    /// Write the buffers and make the paint callback for egui of group `g`, with the inputs `range` of the
+    /// view (at most `MAX_INPUTS`). `inputs[k]` are the uniforms and the u8 flag of input k of the view.
+    /// `specs` are the layers of the group (input indices in the group). `rect` is the view in points,
+    /// `px` its size in physical pixels.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,
         gpu: &mut Gpu,
+        g: usize,
+        range: std::ops::Range<usize>,
         inputs: &[(LayerUniforms, bool)],
         specs: &[LayerSpec],
         cmp: Compare,
@@ -894,19 +919,21 @@ impl View2d {
         rect: egui::Rect,
         px: (u32, u32),
     ) -> Result<Option<egui::PaintCallback>, String> {
-        let layers = inputs;
-        let n = layers.len().min(self.inputs.len()).min(MAX_INPUTS);
+        let start = range.start;
+        let layers = inputs.get(range.clone()).unwrap_or(&[]);
+        let n = layers.len().min(self.inputs.len().saturating_sub(start)).min(MAX_INPUTS);
         if n == 0 || specs.is_empty() || px.0 == 0 || px.1 == 0 {
             return Ok(None);
         }
         let pipe = gpu.composite(specs, cmp)?;
-        self.targets(gpu, px.0, px.1, n);
+        self.group(gpu, g).targets(gpu, px.0, px.1, n);
+        let grp = &self.groups[g];
         let mut passes = vec![];
         for (k, (lu, u8)) in layers.iter().take(n).enumerate() {
-            let inp = &mut self.inputs[k];
+            let inp = &mut self.inputs[start + k];
             inp.insts.truncate(MAX_DRAWS);
             let Some((warp, wid)) = &inp.warp else {
-                passes.push((self.targets[k].1.clone(), None));
+                passes.push((grp.targets[k].1.clone(), None));
                 continue;
             };
             gpu.queue.write_buffer(&inp.ubuf, 0, bytemuck::bytes_of(lu));
@@ -935,23 +962,30 @@ impl View2d {
                 verts: 6 * lu.n * lu.n,
                 insts: inp.insts.len() as u32,
             });
-            passes.push((self.targets[k].1.clone(), draw));
+            passes.push((grp.targets[k].1.clone(), draw));
         }
-        gpu.queue.write_buffer(&self.cbuf, 0, bytemuck::bytes_of(cu));
-        let lv = self.lut.create_view(&Default::default());
+        gpu.queue.write_buffer(&grp.cbuf, 0, bytemuck::bytes_of(cu));
+        let lv = grp.lut.create_view(&Default::default());
         let mut entries = vec![
-            wgpu::BindGroupEntry { binding: 0, resource: self.cbuf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 0, resource: grp.cbuf.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&gpu.lut_sampler) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&lv) },
         ];
         for k in 0..MAX_INPUTS {
-            let v = self.targets.get(k).map_or(&gpu.dummy, |t| &t.1);
+            let v = grp.targets.get(k).map_or(&gpu.dummy, |t| &t.1);
             entries.push(wgpu::BindGroupEntry { binding: 3 + k as u32, resource: wgpu::BindingResource::TextureView(v) });
         }
         // ponytail: a new composite bind group each frame. Keep it if profiles show the cost.
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &gpu.comp_bgl, entries: &entries });
         let cb = Draw { layer_pipe: gpu.layer_pipe.clone(), passes, pipe, bind };
         Ok(Some(egui_wgpu::Callback::new_paint_callback(rect, cb)))
+    }
+
+    /// Free the targets of the groups after `n` (the view has fewer groups now).
+    pub fn keep_groups(&mut self, gpu: &mut Gpu, n: usize) {
+        for g in self.groups.drain(n.min(self.groups.len())..) {
+            gpu.target_bytes -= g.targets.len() * (g.size.0 * g.size.1 * 4) as usize;
+        }
     }
 }
 
