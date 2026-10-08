@@ -41,13 +41,36 @@ def smooth_noise(scale):
 base = 293.0 - 0.35 * (LAT - 41.0) + 0.6 * smooth_noise(30)
 
 
+# Digits of 5 x 7 cells, for the version number in the data.
+DIGITS = ["01110100011001110101110011000101110", "00100011000010000100001000010001110", "01110100010000100010001000100011111", "11111000100010000010000011000101110", "00010001100101010010111110001000010",
+          "11111100001111000001000011000101110", "00110010001000011110100011000101110", "11111000010001000100010000100001000", "01110100011000101110100011000101110", "01110100011000101111000010001001100"]
+
+
+def number(k, x0, y0, cell):
+    """A mask with the number k in cells of `cell` pixels, from pixel (x0, y0)."""
+    m = np.zeros((H, W), bool)
+    for i, ch in enumerate(str(k)):
+        d = DIGITS[int(ch)]
+        for r in range(7):
+            for c in range(5):
+                if d[r * 5 + c] == "1":
+                    y, x = y0 + r * cell, x0 + (i * 6 + c) * cell
+                    m[y:y + cell, x:x + cell] = True
+    return m
+
+
 def field(k):
-    """Version k of the product: an eddy on a circle, a front that moves to the south and back."""
-    t = k * 0.25
-    ex, ey = 10.0 + 4.0 * np.cos(t), 40.0 + 1.5 * np.sin(t)
-    eddy = 4.0 * np.exp(-(((LON - ex) / 1.2) ** 2 + ((LAT - ey) / 0.9) ** 2))
-    front = 1.5 * np.tanh((LAT - (41.5 + 1.5 * np.sin(0.5 * t))) / 0.3)
-    return base + eddy - front + 0.15 * rng.standard_normal((H, W))
+    """Version k of the product: a hot disc that crosses the map (1.5 degrees for each version), an eddy on
+    a circle, a front that moves to the south and back, and the number k in the data (top left)."""
+    t = k * 0.6
+    dx = LON0 + (1.5 * k) % (W * STEP)
+    disc = 8.0 * np.exp(-(((LON - dx) / 1.0) ** 2 + ((LAT - 38.0) / 1.0) ** 2) ** 2)
+    ex, ey = 14.0 + 5.0 * np.cos(t), 40.5 + 2.0 * np.sin(t)
+    eddy = 5.0 * np.exp(-(((LON - ex) / 1.2) ** 2 + ((LAT - ey) / 0.9) ** 2))
+    front = 3.0 * np.tanh((LAT - (41.0 + 2.5 * np.sin(0.7 * t))) / 0.3)
+    v = base + disc + eddy - front + 0.15 * rng.standard_normal((H, W))
+    v[number(k, 12, 12, 6)] = 300.0
+    return v
 
 
 def write(k):
