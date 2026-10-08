@@ -14,7 +14,7 @@ use futures_util::future::{BoxFuture, FutureExt, WeakShared, join_all};
 use futures_util::stream::{self, StreamExt};
 use rayon::prelude::*;
 use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
@@ -199,6 +199,9 @@ pub enum Event {
     Warp { layer: u64, dst: Option<u32>, res: Result<Arc<Warp>> },
     /// Values of a window of a layer (see `Engine::read`), and the georeferencing of the window.
     Read { req: u64, res: Result<(Arc<Vec<f32>>, Georef)> },
+    /// Progress of an export (see `Engine::export`): tiles written and tiles in total. `res`: the end, with a
+    /// note for the user.
+    Export { req: u64, done: u64, total: u64, res: Option<Result<String>> },
     Error(String),
 }
 

@@ -569,6 +569,48 @@ impl Inner {
         Ok((out, g))
     }
 
+    /// See `Engine::export`.
+    fn export(self: &Arc<Self>, l: &Arc<Layer>, path: &str, stop: &AtomicBool, req: u64) -> Result<String> {
+        let g = self.georef(l)?;
+        let lv = l.levels[0];
+        let affine = matches!(g, Georef::Affine { .. });
+        let mut w = eo_io::tiff::Writer::create(path, lv.w, lv.h, TILE, if affine { g } else { Georef::None })?;
+        let (nx, ny) = w.tiles();
+        let total = nx * ny;
+        let tiles: Vec<(u32, u32)> = (0..ny).flat_map(|ty| (0..nx).map(move |tx| (tx as u32, ty as u32))).collect();
+        self.rt.block_on(async {
+            // Four tiles at a time, in the order of the file.
+            let mut jobs = stream::iter(tiles)
+                .map(|(tx, ty)| {
+                    let i = self.clone();
+                    async move { i.values(l, 0, tx, ty, 0).await.map(|v| (tx, ty, v)) }
+                })
+                .buffered(4);
+            let (mut done, mut last) = (0, Instant::now());
+            while let Some(r) = jobs.next().await {
+                if stop.load(Relaxed) {
+                    return Err(Error("the export stopped".into()));
+                }
+                let (tx, ty, v) = r?;
+                // ponytail: the compression runs on the thread of the runtime (a few ms for each tile). Move
+                // it to the pool if an export slows the views.
+                w.add(&v, TILE.min(lv.w - tx as u64 * TILE), TILE.min(lv.h - ty as u64 * TILE))?;
+                done += 1;
+                if last.elapsed() > Duration::from_millis(200) {
+                    self.send(Event::Export { req, done, total, res: None });
+                    last = Instant::now();
+                }
+            }
+            Ok(())
+        })?;
+        w.finish()?;
+        let mut note = format!("{path}: {} x {} pixels", lv.w, lv.h);
+        if !affine {
+            note += ", without georeferencing (a GeoTIFF file has no grid of longitudes and latitudes)";
+        }
+        Ok(note)
+    }
+
     /// A computed layer with the values `data` (`w` columns, NaN: no data) and the georeferencing `g`.
     fn memory_layer(&self, name: &str, units: &str, w: u64, data: Vec<f32>, g: Georef) -> Result<Arc<Layer>> {
         let h = data.len() as u64 / w.max(1);
@@ -602,6 +644,22 @@ impl Engine {
         self.rt.spawn(async move {
             let res = i.read(&l, lv, win).await.map(|(v, g)| (Arc::new(v), g));
             i.send(Event::Read { req, res });
+        });
+        req
+    }
+
+    /// Write the values of layer `l` (a file or computed) at the full resolution (level 0) to the GeoTIFF
+    /// file `path`, one tile after the other. `stop` stops the export (the file goes). The progress and the
+    /// end come as `Event::Export`.
+    pub fn export(&self, l: Arc<Layer>, path: String, stop: Arc<AtomicBool>) -> u64 {
+        let i = self.inner.clone();
+        let req = i.next.fetch_add(1, Relaxed);
+        self.rt.spawn_blocking(move || {
+            let res = i.export(&l, &path, &stop, req);
+            if res.is_err() {
+                let _ = std::fs::remove_file(&path);
+            }
+            i.send(Event::Export { req, done: 0, total: 0, res: Some(res) });
         });
         req
     }
@@ -703,6 +761,44 @@ mod tests {
         match want {
             Some(x) => assert!((t as f64 - x).abs() < 0.05, "{t} {x}"),
             None => assert!(t.is_nan()),
+        }
+    }
+
+    /// Export of a layer of a file to GeoTIFF: the file opens with the same size, georeferencing and values.
+    #[test]
+    fn export_to_geotiff() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let out = std::env::temp_dir().join(format!("eoview-export-{}.tif", std::process::id())).to_string_lossy().into_owned();
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let next = |f: &dyn Fn(&Event) -> bool| loop {
+            let ev = rx.recv_timeout(Duration::from_secs(20)).expect("timeout");
+            if f(&ev) {
+                break ev;
+            }
+        };
+        let opened = || match next(&|e| matches!(e, Event::Opened { .. })) {
+            Event::Opened { res, .. } => res.unwrap(),
+            _ => unreachable!(),
+        };
+        let probe = |l: &Arc<Layer>, x, y| {
+            e.probe(l.clone(), x, y);
+            let Event::Probe { values, .. } = next(&|e| matches!(e, Event::Probe { .. })) else { unreachable!() };
+            values[l.band as usize]
+        };
+        e.open(format!("{dir}nc4_grid.nc"));
+        let a = opened();
+        e.export(a.clone(), out.clone(), Default::default());
+        let Event::Export { res: Some(res), .. } = next(&|e| matches!(e, Event::Export { res: Some(_), .. })) else { unreachable!() };
+        res.unwrap();
+        e.open(out.clone());
+        let b = opened();
+        std::fs::remove_file(&out).ok();
+        assert_eq!(b.size(), a.size());
+        // The same transform and EPSG code (the file has no name of the CRS).
+        let (Georef::Affine { gt: ga, crs: ca }, Georef::Affine { gt: gb, crs: cb }) = (e.georef(&a).unwrap(), e.georef(&b).unwrap()) else { panic!("no affine georeferencing") };
+        assert_eq!((ga, ca.epsg), (gb, cb.epsg));
+        for (x, y) in [(0, 0), (11, 7), (89, 59), (45, 30)] {
+            assert_eq!(probe(&a, x, y), probe(&b, x, y), "{x} {y}");
         }
     }
 

@@ -25,8 +25,9 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
   with the aggregate over time (mean, median, minimum, maximum, standard deviation, count) of a cube or
   of a list of products, and layer math (arithmetic and mask between layers of different products on
   the same grid), in the workspace file. To do: the operations in the layer list (on/off, parameters,
-  remove), an option "exact at level 0" for the view (3.5), export of a result as GeoTIFF or NetCDF
-  (3.6), progress of the steps in the view.
+  remove), an option "exact at level 0" for the view (3.5), export with time steps (NetCDF) and as a
+  COG with overviews (now: a tiled GeoTIFF without overviews), export of a region only, progress of the
+  steps in the view. Done: export of a layer to GeoTIFF (3.6).
 - `DESIGN.md` step 5 (Python), first version: the module `eoview` (`python/`), the Python panel, the
   notebooks (`ev.connect()`), `input`, `layer`, `layers`, `output`, `plot`, `shapes`, `region=` (the
   pixels of a polygon, the values along a line), `eoview --python`. To do: `steps=` of the inputs (time

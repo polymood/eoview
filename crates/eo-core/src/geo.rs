@@ -14,6 +14,11 @@ impl Proj {
         Ok(Proj { latlong: p.is_latlong(), p })
     }
 
+    /// True for a geographic CRS (degrees).
+    pub fn is_latlong(&self) -> bool {
+        self.latlong
+    }
+
     /// Transform a point to `dst`. None if the point is outside the domain of a projection.
     pub fn to(&self, dst: &Proj, x: f64, y: f64) -> Option<(f64, f64)> {
         let mut pt = if self.latlong { (x.to_radians(), y.to_radians()) } else { (x, y) };

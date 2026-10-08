@@ -363,6 +363,18 @@ pub enum Dialog {
     Load,
     /// The output file of a render.
     RenderOut,
+    /// The GeoTIFF file of an export of the selected layer of a view.
+    Export(u32),
+}
+
+/// An export of a layer to a file (`Engine::export`).
+pub struct Export {
+    pub req: u64,
+    pub done: u64,
+    pub total: u64,
+    pub stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The end: a note for the user.
+    pub end: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -519,6 +531,8 @@ pub struct App {
     pub shape_edit: crate::tools::ShapeEdit,
     /// The aggregate over time of the side panel: the aggregate, and the first and last steps (None: all).
     pub agg: (eo_cache::Agg, Option<(usize, usize)>),
+    /// The export of a layer that runs or that ended.
+    pub export: Option<Export>,
     /// The expression of the layer math of the side panel.
     pub math: String,
     /// Layer math of a workspace file that waits for its inputs.
@@ -595,6 +609,7 @@ impl App {
             shape_drag: None,
             shape_edit: Default::default(),
             agg: (eo_cache::Agg::Mean, None),
+            export: None,
             math: String::new(),
             maths: HashMap::new(),
             py: None,
@@ -1183,6 +1198,15 @@ impl App {
                     }
                 }
                 Event::Read { req, res } => self.py_read(req, res),
+                Event::Export { req, done, total, res } => {
+                    if let Some(x) = self.export.as_mut().filter(|x| x.req == req) {
+                        match res {
+                            None => (x.done, x.total) = (done, total),
+                            Some(Ok(note)) => x.end = Some(note),
+                            Some(Err(e)) => x.end = Some(e.0),
+                        }
+                    }
+                }
                 Event::Error(e) => self.error = Some(e),
             }
         }
@@ -1588,6 +1612,20 @@ impl App {
                 Err(e) => self.error = Some(format!("{}: {e}", ml.expr)),
             }
         }
+    }
+
+    /// Export the values of the selected layer of view `id` at the full resolution to the GeoTIFF file `path`.
+    pub fn export(&mut self, id: u32, path: String) {
+        let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
+        if l.kind != Kind::Band || l.inputs.len() != 1 {
+            return self.error = Some(t("An export is one band: show one band of the layer.").into());
+        }
+        if self.export.as_ref().is_some_and(|x| x.end.is_none()) {
+            return self.error = Some(t("An export runs: wait for its end, or stop it.").into());
+        }
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let req = self.engine.export(l.inputs[0].clone(), path, stop.clone());
+        self.export = Some(Export { req, done: 0, total: 0, stop, end: None });
     }
 
     /// Make a new layer in view `id`: the expression `App::math` of the layers of the view. Layer i of

@@ -32,6 +32,8 @@ pub enum Cmd {
     Open(bool, What),
     Save,
     Load,
+    /// Export the values of the selected layer to a GeoTIFF file.
+    Export,
     NewView,
     Duplicate,
     CloseView,
@@ -146,6 +148,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Add layer: folder (SAFE, SEN3, Zarr)..."), "", Cmd::Open(true, What::Dirs)),
         (t("Add layer: URL..."), "", Cmd::Open(true, What::Url)),
         (t("Save workspace..."), "Ctrl+S", Cmd::Save),
+        (t("Export data (GeoTIFF)..."), "", Cmd::Export),
         (t("Open workspace..."), "", Cmd::Load),
         (t("New view"), "Ctrl+N", Cmd::NewView),
         (t("Duplicate view"), "Ctrl+D", Cmd::Duplicate),
@@ -988,7 +991,7 @@ impl App {
             match c {
                 Cmd::Panel => self.wins[k].panel ^= true,
                 // The dialogs of these commands are in the main window.
-                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Render | Cmd::Open(..) | Cmd::Save | Cmd::Load => {
+                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Render | Cmd::Open(..) | Cmd::Save | Cmd::Load | Cmd::Export => {
                     self.run(c, i);
                     if let Some(w) = &self.win {
                         w.window.focus_window();
@@ -1092,6 +1095,7 @@ impl App {
             Cmd::Open(add, What::Path(p)) => self.open(id, p, add),
             Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
+            Cmd::Export => self.dialog = Some(Dialog::Export(id)),
             Cmd::Load => self.dialog = Some(Dialog::Load),
             Cmd::NewView => drop(self.split(id)),
             Cmd::Duplicate => self.duplicate(id),
@@ -1435,6 +1439,7 @@ impl App {
                             }
                         });
                     });
+                    entry(ui, cmds, id, t("Export data (GeoTIFF)..."), "", Cmd::Export);
                     ui.separator();
                     entry(ui, cmds, id, t("Automatic stretch"), "A", Cmd::Auto);
                     ui.menu_button(t("Color map"), |ui| {
@@ -1632,6 +1637,25 @@ impl App {
                     ui.separator();
                     ui.monospace(v);
                 }
+            }
+            if let Some(x) = &self.export {
+                match &x.end {
+                    None => {
+                        ui.spinner();
+                        ui.monospace(tf("Export: {} / {} tiles", &[&x.done.to_string(), &x.total.to_string()]));
+                        if ui.small_button(t("Stop")).clicked() {
+                            x.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    Some(note) => {
+                        let note = note.clone();
+                        if ui.small_button("x").on_hover_text(t("Close the message")).clicked() {
+                            self.export = None;
+                        }
+                        ui.label(tf("Export: {}", &[&note]));
+                    }
+                }
+                ui.separator();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let st = self.engine.stats();
@@ -2387,6 +2411,12 @@ pub fn dialogs(app: &mut App) {
                 if let Err(e) = app.save_workspace(&p.to_string_lossy()) {
                     app.error = Some(e);
                 }
+            }
+        }
+        Dialog::Export(pane) => {
+            let name = app.pane(pane).and_then(|p| p.layers.get(p.sel)).map_or("layer".into(), |l| l.comp_name().replace(['/', '\\', ':', ' '], "_"));
+            if let Some(p) = rfd::FileDialog::new().set_title(t("Export data (GeoTIFF)")).add_filter("GeoTIFF", &["tif", "tiff"]).set_file_name(format!("{name}.tif")).save_file() {
+                app.export(pane, p.to_string_lossy().into_owned());
             }
         }
         Dialog::RenderOut => {
