@@ -21,7 +21,7 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::task::AbortHandle;
 
 mod ops;
-pub use ops::{Agg, Op, OpKind, StepIn};
+pub use ops::{Agg, Op, OpKind, PixelFn, StepIn};
 
 /// Width and height of a display tile.
 pub const TILE: u64 = 512;

@@ -93,6 +93,8 @@ pub enum Cmd {
     ClearPins,
     /// A new layer: the aggregate over time of the selected layer, on the steps of the side panel.
     Aggregate(eo_cache::Agg),
+    /// A new layer: the layer math of the side panel.
+    Math,
     /// Open or close the Python panel, run its script.
     Python,
     PythonRun,
@@ -1091,6 +1093,7 @@ impl App {
                 }
             }
             Cmd::PythonRun => self.py_run(),
+            Cmd::Math => self.math(id),
             Cmd::Aggregate(a) => {
                 self.agg.0 = a;
                 let range = self.agg.1.unwrap_or((0, usize::MAX));
@@ -1855,6 +1858,20 @@ impl App {
                 ui.small(tf("{} steps. The steps must be on the same grid.", &[&(a.abs_diff(b) + 1).to_string()]));
                 if ui.button(t("Make the layer")).on_hover_text(t("A new layer of this view. The tiles of the view read the steps: the result shows step by step.")).clicked() {
                     cmds.push((Cmd::Aggregate(*how), id));
+                }
+            });
+        }
+        if let Some(p) = self.pane(id).filter(|p| !p.layers.is_empty()) {
+            let names: Vec<String> = p.layers.iter().enumerate().map(|(i, l)| format!("{} = {}", crate::app::math_name(i), l.name)).collect();
+            ui.separator();
+            egui::CollapsingHeader::new(t("Layer math")).default_open(false).show(ui, |ui| {
+                for n in names {
+                    ui.small(n);
+                }
+                let r = ui.add(egui::TextEdit::singleline(&mut self.math).hint_text("a - b").desired_width(f32::INFINITY));
+                ui.small(t("Operators: + - * / ^, comparisons < > <= >= == != (1 or 0), functions abs sqrt ln log10 exp min max pow clamp, and mask(x, c): no data where c is not 0. Each layer shows one band. The layers are on the same grid."));
+                if ui.button(t("Make the layer")).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    cmds.push((Cmd::Math, id));
                 }
             });
         }

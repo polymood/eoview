@@ -21,9 +21,10 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
   transect with a chart, region statistics (rectangle or polygon), pinned points in all views.
 - `DESIGN.md` step 3 (operations core), first version: computed layers in the engine (`eo_cache::Op`),
   with the aggregate over time (mean, median, minimum, maximum, standard deviation, count) of a cube or
-  of a list of products, in the workspace file. To do: the operations in the layer list (on/off,
-  parameters, remove), an option "exact at level 0" for the view (3.5), export of a result as GeoTIFF or
-  NetCDF (3.6), mask and arithmetic between products, progress of the steps in the view.
+  of a list of products, and layer math (arithmetic and mask between layers of different products on
+  the same grid), in the workspace file. To do: the operations in the layer list (on/off, parameters,
+  remove), an option "exact at level 0" for the view (3.5), export of a result as GeoTIFF or NetCDF
+  (3.6), progress of the steps in the view.
 - `DESIGN.md` step 5 (Python), first version: the module `eoview` (`python/`), the Python panel, the
   notebooks (`ev.connect()`), `input`, `layer`, `layers`, `output`, `plot`, `eoview --python`. To do:
   `region=` and `steps=` of the inputs (a region of the region tool, time steps as a 3D input), outputs

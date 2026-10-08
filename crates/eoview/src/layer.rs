@@ -737,14 +737,15 @@ pub struct LayerSave {
     pub op: Option<OpSave>,
 }
 
-/// The operation of a computed layer in a workspace file: an aggregate over time (`how`: the English name
-/// of `eo_cache::Agg`) of the steps `first` to `last` of the layer `source`.
+/// The operation of a computed layer in a workspace file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct OpSave {
-    pub how: String,
-    pub source: Box<LayerSave>,
-    pub first: usize,
-    pub last: usize,
+#[serde(untagged)]
+pub enum OpSave {
+    /// An aggregate over time (`how`: the English name of `eo_cache::Agg`) of the steps `first` to `last`
+    /// of the layer `source`.
+    Agg { how: String, source: Box<LayerSave>, first: usize, last: usize },
+    /// Layer math: the expression `expr` of the layers `inputs`, with the names `names` in the expression.
+    Math { expr: String, names: Vec<String>, inputs: Vec<LayerSave> },
 }
 
 /// Path without the query, the fragment and the user information of a URL: they can contain credentials
@@ -761,6 +762,12 @@ pub fn clean_path(p: &str) -> String {
 }
 
 impl MapLayer {
+    /// True if a workspace file can keep the layer: a layer of a file, or a computed layer with its
+    /// operation. The outputs of a Python script are not in the file: the script makes them again.
+    pub fn saveable(&self) -> bool {
+        self.op.is_some() || self.any().is_none_or(|x| x.op.is_none())
+    }
+
     pub fn save(&self) -> LayerSave {
         LayerSave {
             path: clean_path(&self.path),

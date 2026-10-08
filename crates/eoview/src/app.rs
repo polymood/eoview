@@ -2,7 +2,7 @@
 //! events and workspace files.
 use crate::bench::Bench;
 use crate::lang::{t, tf};
-use crate::layer::{LayerSave, MapLayer};
+use crate::layer::{Kind, LayerSave, MapLayer, OpSave};
 use crate::view::{Ahead, Input, View};
 use crate::Win;
 use eo_cache::{Engine, Event, Layer};
@@ -324,6 +324,16 @@ struct Open {
     /// The operation of a computed layer. If the layer that comes is not computed, it is the source of the
     /// operation: the operation starts then.
     op: Option<crate::layer::OpSave>,
+    /// The layer is input `.1` of the layer math `.0` (`App::maths`), not a layer of the view.
+    to: Option<(u64, usize)>,
+}
+
+/// A layer math of a workspace file: it starts when all its inputs are ready.
+struct MathLoad {
+    open: Open,
+    expr: String,
+    names: Vec<String>,
+    got: Vec<Option<Arc<Layer>>>,
 }
 
 /// What an open command opens.
@@ -498,6 +508,10 @@ pub struct App {
     pub drag_from: Option<[f64; 2]>,
     /// The aggregate over time of the side panel: the aggregate, and the first and last steps (None: all).
     pub agg: (eo_cache::Agg, Option<(usize, usize)>),
+    /// The expression of the layer math of the side panel.
+    pub math: String,
+    /// Layer math of a workspace file that waits for its inputs.
+    maths: HashMap<u64, MathLoad>,
     /// Python scripts and notebooks (None: the server did not start).
     pub py: Option<crate::py::Py>,
     /// `eoview --python FILE`: the script to run when the products are open.
@@ -568,6 +582,8 @@ impl App {
             pins: vec![],
             drag_from: None,
             agg: (eo_cache::Agg::Mean, None),
+            math: String::new(),
+            maths: HashMap::new(),
             py: None,
             cli_python: None,
         }
@@ -800,7 +816,7 @@ impl App {
             self.rebuild(pane);
         }
         let req = self.engine.open(path.clone());
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band, op: None });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band, op: None, to: None });
     }
 
     /// Put a path at the top of the recent list, and write the list.
@@ -1159,15 +1175,18 @@ impl App {
     /// A product is open: make its layer in the target view.
     fn opened(&mut self, mut o: Open, l: Arc<Layer>) {
         // The source of a computed layer of a workspace: start the operation.
-        if let Some(op) = o.op.clone().filter(|_| l.op.is_none()) {
-            let mut m = MapLayer::new(0, op.source.path.clone(), l);
-            m.apply(&op.source);
-            let how = eo_cache::Agg::ALL.iter().find(|a| a.1 == op.how).map_or(eo_cache::Agg::Mean, |a| a.0);
-            match agg_start(&self.engine, &m, how, (op.first, op.last)) {
+        if let Some(OpSave::Agg { how, source, first, last }) = o.op.clone().filter(|_| l.op.is_none()) {
+            let mut m = MapLayer::new(0, source.path.clone(), l);
+            m.apply(&source);
+            let how = eo_cache::Agg::ALL.iter().find(|a| a.1 == how).map_or(eo_cache::Agg::Mean, |a| a.0);
+            match agg_start(&self.engine, &m, how, (first, last)) {
                 Ok((req, _, _)) => drop(self.opens.insert(req, o)),
                 Err(e) => self.error = Some(format!("{}: {e}", o.path)),
             }
             return;
+        }
+        if let Some((mid, k)) = o.to {
+            return self.math_input(mid, k, o, l);
         }
         let uid = self.uid();
         let mut m = MapLayer::new(uid, o.path, l);
@@ -1228,14 +1247,14 @@ impl App {
     pub fn aggregate(&mut self, id: u32, how: eo_cache::Agg, range: (usize, usize)) {
         let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
         match agg_start(&self.engine, l, how, range) {
-            Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op) })),
+            Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None })),
             Err(e) => self.error = Some(e),
         }
     }
 
     /// Engine request `req` makes a layer (a computed layer): put it in view `pane` when it comes, with the name `path`.
     pub fn open_req(&mut self, req: u64, pane: u32, path: String) {
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band: None, op: None });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band: None, op: None, to: None });
     }
 
     /// Number of products that open now, time steps included.
@@ -1404,7 +1423,7 @@ impl App {
                 dinvert: p.dinvert,
                 // A computed layer is in the file with its operation. The outputs of the Python script are
                 // not: the script makes them again.
-                layers: p.layers.iter().filter(|l| l.op.is_some() || l.any().is_none_or(|x| x.op.is_none())).map(MapLayer::save).collect(),
+                layers: p.layers.iter().filter(|l| l.saveable()).map(MapLayer::save).collect(),
                 globe: p.v.globe,
                 smooth: p.smooth,
                 overlays: p.overlays,
@@ -1433,6 +1452,7 @@ impl App {
             self.engine.want(p.id, vec![]);
         }
         self.opens.clear();
+        self.maths.clear();
         self.requests.clear();
         self.step_opens.clear();
         self.job = None;
@@ -1449,16 +1469,20 @@ impl App {
                 *p = dir.join(&*p).to_string_lossy().into_owned();
             }
         };
-        let fix_save = |s: &mut LayerSave| {
-            fix(&mut s.path);
-            s.series.iter_mut().for_each(|x| fix(&mut x.0));
-            if let Some(op) = &mut s.op {
-                fix(&mut op.source.path);
-                op.source.series.iter_mut().for_each(|x| fix(&mut x.0));
+        fn fix_save(s: &mut LayerSave, fix: &dyn Fn(&mut String)) {
+            // The path of a computed layer is its name.
+            if s.op.is_none() {
+                fix(&mut s.path);
             }
-        };
+            s.series.iter_mut().for_each(|x| fix(&mut x.0));
+            match &mut s.op {
+                Some(OpSave::Agg { source, .. }) => fix_save(source, fix),
+                Some(OpSave::Math { inputs, .. }) => inputs.iter_mut().for_each(|i| fix_save(i, fix)),
+                None => {}
+            }
+        }
         let mut ws_panes = ws.panes;
-        ws_panes.iter_mut().flat_map(|p| p.layers.iter_mut()).for_each(fix_save);
+        ws_panes.iter_mut().flat_map(|p| p.layers.iter_mut()).for_each(|s| fix_save(s, &fix));
         self.dock = ws.dock;
         self.link_px = ws.link_px;
         self.error = None;
@@ -1477,16 +1501,115 @@ impl App {
                 (p.diff, p.dlo, p.dhi, p.dinvert) = (s.diff, s.dlo, s.dhi, s.dinvert);
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);
                 for (order, l) in s.layers.iter().enumerate() {
-                    // A computed layer: its source opens first.
-                    let src = l.op.as_ref().map_or(&l.path, |o| &o.source.path);
-                    let req = self.engine.open(src.clone());
-                    self.opens.insert(req, Open { pane: id, save: Some(l.clone()), order, path: l.path.clone(), series: vec![], band: None, op: l.op.clone() });
+                    self.load_layer(id, order, l.clone(), None);
                 }
             }
             self.panes.push(p);
         }
         self.active = if self.pane(ws.active).is_some() { ws.active } else { self.panes[0].id };
     }
+
+    /// Open the saved layer `s` in view `pane` at position `order`, or as input `to` of a layer math. A
+    /// computed layer opens its source (an aggregate) or its inputs (a layer math) first.
+    fn load_layer(&mut self, pane: u32, order: usize, s: LayerSave, to: Option<(u64, usize)>) {
+        let open = Open { pane, save: Some(s.clone()), order, path: s.path.clone(), series: vec![], band: None, op: s.op.clone(), to };
+        match &s.op {
+            Some(OpSave::Math { expr, names, inputs }) => {
+                let mid = self.uid();
+                self.maths.insert(mid, MathLoad { open, expr: expr.clone(), names: names.clone(), got: vec![None; inputs.len()] });
+                for (k, i) in inputs.iter().enumerate() {
+                    self.load_layer(pane, order, i.clone(), Some((mid, k)));
+                }
+            }
+            op => {
+                let src = match op {
+                    Some(OpSave::Agg { source, .. }) => &source.path,
+                    _ => &s.path,
+                };
+                let req = self.engine.open(src.clone());
+                self.opens.insert(req, open);
+            }
+        }
+    }
+
+    /// Layer `l` is input `k` of the layer math `mid` of a workspace file. A layer of a file first gets
+    /// the band and the time step of its saved layer. The layer math starts when all inputs are ready.
+    fn math_input(&mut self, mid: u64, k: usize, o: Open, l: Arc<Layer>) {
+        if let (Some(s), None) = (&o.save, &l.op) {
+            let mut m = MapLayer::new(0, o.path.clone(), l.clone());
+            m.apply(s);
+            // A step of a product list: its product opens.
+            if let Some(p) = m.steps.get(m.step).map(|x| x.path.clone()).filter(|p| !p.is_empty() && *p != o.path) {
+                let mut s = s.clone();
+                (s.path, s.series, s.step) = (p.clone(), vec![], 0);
+                let req = self.engine.open(p.clone());
+                return drop(self.opens.insert(req, Open { path: p, save: Some(s), ..o }));
+            }
+            let Some(c) = m.chans.get(m.band).filter(|_| m.kind == Kind::Band) else {
+                return self.error = Some(format!("{}: {}", o.path, t("An input of layer math shows one band.")));
+            };
+            let time = m.time_of(m.step, c.var);
+            if (c.var, c.choice, time) != (l.var, l.choice, l.time) {
+                let req = self.engine.select(&l, c.var, c.choice, time);
+                return drop(self.opens.insert(req, Open { save: None, ..o }));
+            }
+        }
+        let Some(ml) = self.maths.get_mut(&mid) else { return };
+        ml.got[k] = Some(l);
+        if ml.got.iter().all(Option::is_some) {
+            let ml = self.maths.remove(&mid).unwrap();
+            match math_start(&self.engine, &ml.expr, &ml.names, &ml.got) {
+                Ok((req, _)) => drop(self.opens.insert(req, ml.open)),
+                Err(e) => self.error = Some(format!("{}: {e}", ml.expr)),
+            }
+        }
+    }
+
+    /// Make a new layer in view `id`: the expression `App::math` of the layers of the view. Layer i of
+    /// the view is the letter i of the alphabet (`math_name`).
+    pub fn math(&mut self, id: u32) {
+        let Some(p) = self.pane(id) else { return };
+        let expr = self.math.trim().to_string();
+        let names: Vec<String> = (0..p.layers.len()).map(math_name).collect();
+        let layers: Vec<Option<Arc<Layer>>> = p.layers.iter().map(|l| l.inputs.first().filter(|_| l.kind == Kind::Band).cloned()).collect();
+        match math_start(&self.engine, &expr, &names, &layers) {
+            Ok((req, used)) => {
+                // A layer math of the outputs of a Python script is not in the workspace file, as they are not.
+                let op = used.iter().all(|&k| p.layers[k].saveable()).then(|| OpSave::Math {
+                    expr: expr.clone(),
+                    names: used.iter().map(|&k| names[k].clone()).collect(),
+                    inputs: used.iter().map(|&k| p.layers[k].save()).collect(),
+                });
+                self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path: expr, series: vec![], band: None, op, to: None });
+            }
+            Err(e) => self.error = Some(e),
+        }
+    }
+}
+
+/// The name of layer `i` of a view in layer math: a, b, c, ... z, then l27, l28, ...
+pub fn math_name(i: usize) -> String {
+    if i < 26 { ((b'a' + i as u8) as char).to_string() } else { format!("l{}", i + 1) }
+}
+
+/// Start the layer math `expr` of the layers `layers` (the layer of name `names[i]`: `layers[i]`, None if it
+/// is not ready or shows more than one band). Return the engine request and the layers that the expression
+/// uses (indices into `layers`).
+fn math_start(engine: &Engine, expr: &str, names: &[String], layers: &[Option<Arc<Layer>>]) -> Result<(u64, Vec<usize>), String> {
+    let (trees, used) = eo_render::bandmath::parse(&[expr], names)?;
+    let mut inputs = vec![];
+    for &k in &used {
+        let l = layers.get(k).cloned().flatten().ok_or_else(|| tf("Layer {} must show one band, and be ready.", &[&names[k]]).to_string())?;
+        inputs.push(l);
+    }
+    if inputs.is_empty() {
+        return Err(t("The expression uses no layer.").into());
+    }
+    let units = inputs[0].var().units.clone();
+    let units = if inputs.iter().all(|l| l.var().units == units) { units } else { String::new() };
+    let tree = trees.into_iter().next().ok_or("no expression")?;
+    let key = format!("math {expr} {:?}", inputs.iter().map(|l| l.id).collect::<Vec<_>>());
+    Ok((engine.math(expr.to_string(), units, inputs, Arc::new(move |v| tree.eval(v)), key), used))
 }
 
 /// Start the aggregate `how` of the steps `range` of the band of layer `l`. Return the engine request, the
@@ -1512,7 +1635,7 @@ fn agg_start(engine: &Engine, l: &MapLayer, how: eo_cache::Agg, range: (usize, u
         })
         .collect();
     let path = format!("{} {} {} - {}", l.chan_label(l.band), t(how.name()).to_lowercase(), l.step_label(a), l.step_label(b));
-    let op = crate::layer::OpSave { how: how.name().into(), source: Box::new(l.save()), first: a, last: b };
+    let op = OpSave::Agg { how: how.name().into(), source: Box::new(l.save()), first: a, last: b };
     Ok((engine.aggregate(base, var, choice, steps, how), path, op))
 }
 
@@ -1670,6 +1793,36 @@ mod workspace_tests {
                 assert!(t.contains(g), "{g} not in {t}");
             }
         }
+    }
+
+    /// Layer math of a cube and of its mean over time: the workspace file keeps it, with the aggregate in
+    /// it, and the layer math comes back when the file opens.
+    #[test]
+    fn layer_math_round_trip() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/time_grid.nc");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        let ready = |n: usize| move |a: &App| a.panes[0].layers.len() == n && a.panes[0].layers.iter().all(|l| !l.inputs.is_empty());
+        app.open(1, path.into(), false);
+        wait(&mut app, ready(1));
+        app.aggregate(1, eo_cache::Agg::Mean, (0, usize::MAX));
+        wait(&mut app, ready(2));
+        app.math = "mask(b - a, a < 0)".into();
+        app.math(1);
+        wait(&mut app, ready(3));
+        let m = &app.panes[0].layers[2];
+        assert!(matches!(&m.op, Some(OpSave::Math { inputs, .. }) if inputs.len() == 2 && matches!(inputs[0].op, Some(OpSave::Agg { .. }))), "{:?}", m.op);
+        let saved = m.save();
+        let ws = std::env::temp_dir().join(format!("eoview-math-{}.{WORKSPACE_EXT}", std::process::id())).to_string_lossy().into_owned();
+        app.save_workspace(&ws).unwrap();
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut b = App::new(e, rx, 1 << 20, None);
+        b.load_workspace(&ws);
+        wait(&mut b, ready(3));
+        std::fs::remove_file(&ws).ok();
+        let m = &b.panes[0].layers[2];
+        assert_eq!(m.save(), saved);
+        assert!(matches!(m.inputs[0].op.as_deref().map(|o| &o.kind), Some(eo_cache::OpKind::Math { inputs, .. }) if inputs.len() == 2));
     }
 
     /// Save a workspace with two views, then open it: the layout, the cameras, the layers and their
