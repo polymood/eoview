@@ -135,9 +135,23 @@ box = ev.layer("sst", region="Region 1")   # the pixels of a region: its box, Na
 line = ev.layer("sst", region="Transect 1")  # the values along a line: 1D, with distance, lon and lat
 ```
 
-- **Python panel** (Tools, then Python, or F7): type a script, then Run (Ctrl+Enter). The script runs in
-  an other process, with the Python of the preferences (Preferences, Python). Its output and its errors
-  show in the panel. `eoview --python script.py <products>` runs a script when the products show.
+- **Python panel** (Tools, then Python, or F7): an editor with tabs. Tab 1 is the script of the
+  workspace. **File** makes a new script or notebook, opens `.py` and `.ipynb` files, and saves them
+  (Ctrl+S). The code has the colors of the Python syntax. The panel shows the interpreter of the
+  preferences (Preferences, Python): its version, its path, and the versions of numpy, xarray, matplotlib
+  and scipy.
+- **Run** (Ctrl+Enter) runs a script in an other process, with the Python of the preferences. A script
+  with a file runs from its file (eoview saves it first), in its directory. Its output and its errors show
+  in the panel. `eoview --python script.py <products>` runs a script (or all the cells of a notebook) when
+  the products show.
+- **Notebooks in eoview**: a notebook has code cells and text cells (markdown). The cells run in one
+  Python process that keeps its variables: ▶ (or Ctrl+Enter in the cell) runs one cell, **Run all** runs
+  all. The last expression of a cell shows its value, and the matplotlib figures of a cell go to the Charts
+  window. **Restart** starts a new process. eoview writes the text outputs to the `.ipynb` file.
+- **Scripts in an other editor** (VS Code, ...): open the file in eoview too. When the other editor saves
+  it, the tab shows the new text (if the tab has no changes; else the panel asks which text stays).
+  **Run when the file changes** runs the script at each save. A script or a notebook outside eoview (a
+  terminal, VS Code, Jupyter) can also connect directly: `ev.connect()`.
 - **Notebooks**: `import eoview as ev`, then `ev.connect()`. It connects to the eoview that runs on the
   computer, or starts eoview (the program `eoview` on the search path, or `EOVIEW_EXE`). The module is in
   `python/` (`pip install ./python`), and eoview writes a copy of it in the configuration directory

@@ -42,9 +42,11 @@ pub struct Py {
     pub reads: std::collections::HashMap<u64, (Reply, Value, Option<Clip>)>,
     /// The directory of the module `eoview`.
     pub path: Option<std::path::PathBuf>,
-    /// The panel: open or not, the code, the script that runs, its output.
+    /// The panel: open or not, the tabs (tab 0: the script of the workspace) and the selected tab, the
+    /// script that runs and its output.
     pub open: bool,
-    pub code: String,
+    pub docs: Vec<crate::pyedit::Doc>,
+    pub cur: usize,
     pub child: Option<std::process::Child>,
     pub log: Arc<Mutex<String>>,
     pub charts: Vec<Chart>,
@@ -53,6 +55,23 @@ pub struct Py {
     pub used: bool,
     /// The script of a workspace file: the panel asks the user to run it.
     pub ask: bool,
+    /// The interpreter: the path of the preferences that it is for, and its text.
+    pub interp: Arc<Mutex<(String, String)>>,
+    /// The last check of the files of the tabs.
+    pub poll: std::time::Instant,
+    /// A tab with changes that the user closes: a second close closes it.
+    pub close_ask: Option<usize>,
+}
+
+impl Py {
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// The code of the script of the workspace (tab 0).
+    pub fn code(&mut self) -> &mut String {
+        &mut self.docs[0].cells[0].code
+    }
 }
 
 /// The values of a shape in an input (`region=` of `ev.layer`).
@@ -151,7 +170,26 @@ impl Py {
         let code = path.as_ref().and_then(|p| std::fs::read_to_string(p.join("script.py")).ok()).unwrap_or_else(|| {
             "import eoview as ev\n\nimg = ev.input()          # the selected layer of the active view\nev.output(img * 2, name=\"twice\")\n".into()
         });
-        Ok(Py { port, token: tok, rx, reads: Default::default(), path, open: false, code, child: None, log: Default::default(), charts: vec![], charts_open: false, used: false, ask: false })
+        let docs = vec![crate::pyedit::Doc::script("script.py", code)];
+        Ok(Py {
+            port,
+            token: tok,
+            rx,
+            reads: Default::default(),
+            path,
+            open: false,
+            docs,
+            cur: 0,
+            child: None,
+            log: Default::default(),
+            charts: vec![],
+            charts_open: false,
+            used: false,
+            ask: false,
+            interp: Default::default(),
+            poll: std::time::Instant::now(),
+            close_ask: None,
+        })
     }
 }
 
@@ -454,30 +492,54 @@ impl App {
         Ok(json!({ "ok": true }))
     }
 
-    /// Run the code of the panel in the Python of the preferences.
+    /// Run the script of the selected tab in the Python of the preferences: its file (saved first), or a
+    /// copy in the configuration directory for a script without a file.
     pub fn py_run(&mut self) {
-        let exe = if self.prefs.python.is_empty() { if cfg!(windows) { "python".to_string() } else { "python3".to_string() } } else { self.prefs.python.clone() };
+        let cmd = self.py_command();
         let Some(p) = &mut self.py else { return };
+        let cur = p.cur.min(p.docs.len() - 1);
+        // A notebook: all its code cells, in its Python process.
+        if p.docs[cur].nb {
+            let ids: Vec<u64> = p.docs[cur].cells.iter().filter(|c| !c.md).map(|c| c.id).collect();
+            if let Err(e) = p.docs[cur].run_cells(&ids, || cmd) {
+                self.error = Some(e);
+            }
+            return;
+        }
         if let Some(mut c) = p.child.take() {
             let _ = c.kill();
         }
         let Some(dir) = p.path.clone() else { return };
-        let file = dir.join("script.py");
-        if let Err(e) = std::fs::write(&file, &p.code) {
-            p.log.lock().unwrap().push_str(&format!("{}: {e}\n", file.display()));
-            return;
+        let d = &mut p.docs[cur];
+        let file = match d.path.clone() {
+            Some(f) => {
+                if d.dirty
+                    && let Err(e) = d.save(None)
+                {
+                    p.log.lock().unwrap().push_str(&format!("{e}\n"));
+                    return;
+                }
+                f
+            }
+            None => {
+                let f = dir.join(&d.name);
+                if let Err(e) = std::fs::write(&f, &d.cells[0].code) {
+                    p.log.lock().unwrap().push_str(&format!("{}: {e}\n", f.display()));
+                    return;
+                }
+                f
+            }
+        };
+        let Some(mut cmd) = cmd else { return };
+        cmd.arg("-u").arg(&file);
+        if let Some(d) = file.parent().filter(|_| d.path.is_some()) {
+            cmd.current_dir(d);
         }
-        let path = std::env::var_os("PYTHONPATH").map_or(dir.clone().into_os_string(), |old| {
-            let mut v = vec![dir.clone()];
-            v.extend(std::env::split_paths(&old));
-            std::env::join_paths(v).unwrap_or_default()
-        });
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.arg("-u").arg(&file).env("PYTHONPATH", path).env("EOVIEW_PORT", p.port.to_string()).env("EOVIEW_TOKEN", &p.token).env("MPLBACKEND", "Agg");
         cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-        #[cfg(windows)]
-        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
-        p.log.lock().unwrap().clear();
+        let mut log = p.log.lock().unwrap();
+        log.clear();
+        log.push_str(&format!("--- {}\n", file.display()));
+        drop(log);
         match cmd.spawn() {
             Ok(mut c) => {
                 // The output of the script goes to the log of the panel.
@@ -492,72 +554,7 @@ impl App {
                 }
                 p.child = Some(c);
             }
-            Err(e) => p.log.lock().unwrap().push_str(&format!("{exe}: {e}\n{}\n", t("Set the path of Python in the preferences."))),
-        }
-    }
-
-    /// The Python panel: the code, Run and Stop, the output of the script.
-    pub fn py_ui(&mut self, ctx: &egui::Context) {
-        let Some(p) = &mut self.py else { return };
-        let (mut run, mut open) = (false, p.open);
-        if p.open {
-            egui::Window::new(t("Python")).open(&mut open).default_size([640.0, 520.0]).show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let busy = p.child.is_some();
-                    run = ui.add_enabled(!busy, egui::Button::new(t("Run")).shortcut_text("Ctrl+Enter")).on_hover_text(t("Run the script in the Python of the preferences")).clicked();
-                    if ui.add_enabled(busy, egui::Button::new(t("Stop"))).clicked()
-                        && let Some(mut c) = p.child.take()
-                    {
-                        let _ = c.kill();
-                        p.log.lock().unwrap().push_str(&format!("--- {}\n", t("Stopped.")));
-                    }
-                    if busy {
-                        ui.spinner();
-                    }
-                });
-                if p.ask {
-                    ui.colored_label(ui.visuals().warn_fg_color, t("The workspace has this script: it makes some of its layers. Read the code, then Run."));
-                }
-                ui.label(egui::RichText::new(tf("Notebooks: import eoview, then eoview.connect(). Module: {}", &[&p.path.as_ref().map_or(String::new(), |d| d.display().to_string())])).small().weak());
-                let h = ui.available_height();
-                egui::ScrollArea::vertical().id_salt("code").max_height(h * 0.62).show(ui, |ui| {
-                    let r = ui.add(egui::TextEdit::multiline(&mut p.code).code_editor().desired_width(f32::INFINITY).desired_rows(18));
-                    run |= r.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
-                });
-                ui.separator();
-                egui::ScrollArea::vertical().id_salt("log").stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(p.log.lock().unwrap().as_str()).monospace()).wrap());
-                });
-            });
-        }
-        p.open = open;
-        if p.charts_open && !p.charts.is_empty() {
-            let mut open = true;
-            let mut remove = None;
-            egui::Window::new(t("Charts")).open(&mut open).default_size([520.0, 420.0]).show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (k, c) in p.charts.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.strong(&c.name);
-                            if ui.small_button(t("Remove")).clicked() {
-                                remove = Some(k);
-                            }
-                        });
-                        let s = c.tex.size_vec2();
-                        let w = ui.available_width().min(s.x);
-                        ui.image((c.tex.id(), egui::vec2(w, s.y * w / s.x)));
-                        ui.separator();
-                    }
-                });
-            });
-            if let Some(k) = remove {
-                p.charts.remove(k);
-            }
-            p.charts_open = open;
-        }
-        if run {
-            p.ask = false;
-            self.py_run();
+            Err(e) => p.log.lock().unwrap().push_str(&format!("{}: {e}\n{}\n", self.prefs.python, t("Set the path of Python in the preferences."))),
         }
     }
 }

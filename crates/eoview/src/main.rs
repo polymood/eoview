@@ -8,6 +8,7 @@ mod layer;
 mod outlines;
 mod prefs;
 mod py;
+mod pyedit;
 mod render;
 mod splash;
 mod theme;
@@ -301,7 +302,7 @@ impl App {
     /// `eoview --shot`: when the views are complete, run the next command, or write the frame and stop.
     fn shot_tick(&mut self, el: &ActiveEventLoop) {
         let Some(s) = &self.shot else { return };
-        let py = self.cli_python.is_some() || self.py.as_ref().is_some_and(|p| p.child.is_some() || !p.reads.is_empty());
+        let py = self.cli_python.is_some() || self.py.as_ref().is_some_and(|p| p.child.is_some() || !p.reads.is_empty() || p.docs.iter().any(|d| d.busy()));
         let busy = py || self.opens_pending() > 0 || self.panes.iter().any(|p| !self.floating.contains(&p.id) && p.painter.is_some() && !p.layers.is_empty() && (p.missing || p.v.fit));
         let (wait, next) = (s.wait, s.cmds.front().cloned());
         let cmd = next.as_ref().and_then(|n| ui::command(self, n));

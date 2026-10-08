@@ -365,6 +365,9 @@ pub enum Dialog {
     RenderOut,
     /// The GeoTIFF file of an export of the selected layer of a view.
     Export(u32),
+    /// Python scripts or notebooks to open in the editor, and the file of tab k of the editor.
+    PyOpen,
+    PySave(usize),
 }
 
 /// An export of a layer to a file (`Engine::export`).
@@ -1481,7 +1484,7 @@ impl App {
         // A workspace file does not keep the windows: the detached views are tabs of the dock.
         let mut dock = self.dock.clone();
         self.floating.iter().filter(|&&id| Some(id) != job).for_each(|&id| dock.push_to_focused_leaf(id));
-        let python = self.py.as_ref().filter(|p| p.used).map(|p| p.code.clone());
+        let python = self.py.as_ref().filter(|p| p.used).map(|p| p.docs[0].cells[0].code.clone());
         let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes, render: self.render_set.clone(), pins: self.pins.clone(), python };
         let mut v = serde_json::to_value(&ws).map_err(|e| e.to_string())?;
         finite(&mut v);
@@ -1506,7 +1509,8 @@ impl App {
         self.render_set = ws.render;
         self.pins = ws.pins;
         if let (Some(code), Some(p)) = (ws.python, &mut self.py) {
-            (p.code, p.open, p.ask) = (code, true, true);
+            *p.code() = code;
+            (p.open, p.ask, p.cur) = (true, true, 0);
         }
         // Paths relative to the workspace file.
         let dir = std::path::Path::new(path).parent().map(|d| d.to_path_buf()).unwrap_or_default();
