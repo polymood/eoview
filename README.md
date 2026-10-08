@@ -92,6 +92,21 @@ Limits of this version: one band (not band math or RGB), all steps on the same g
 most the steps that a quarter of the RAM budget permits. The workspace file keeps the operation of a
 computed layer: the layer is computed again when the workspace opens.
 
+### Layer math
+
+The part **Layer math** of the side panel makes a new layer from the layers of the view. The layers have
+the names a, b, c, and so on: the panel shows the name of each layer. The layers can come from different
+products, and a layer can be a computed layer (for example an aggregate over time).
+
+- `b - a`: the difference of two layers, for example a mean and one day.
+- `mask(a, b > 0.5)`: no data where the condition is true, for example a cloud mask or a quality flag.
+- The operators are `+ - * / ^`, the comparisons `< > <= >= == !=` (1 or 0), and the functions `abs`,
+  `sqrt`, `ln`, `log10`, `exp`, `sin`, `cos`, `min`, `max`, `pow`, `atan2`, `clamp` and `mask`.
+
+Each layer shows one band, and all layers are on the same grid. The engine computes the values from the
+exact (32-bit) values of the inputs. The workspace file keeps the expression and its inputs. The band math
+of one product (**Expression**) also has the comparisons and `mask`.
+
 ### Python scripts and notebooks
 
 A Python script or a Jupyter notebook uses the module `eoview` to get layers from the viewer and to give

@@ -2,8 +2,9 @@
 //! other layers (see DESIGN.md, section 3). The view does not know that a layer is computed: the
 //! priority, the cancel and the caches are the same as for a layer of a file.
 //!
-//! The operation of this version: an aggregate over time (mean, median, minimum, maximum, standard
-//! deviation, number of values) of the time steps of a variable. The engine reads the values of the
+//! The operations: an aggregate over time (mean, median, minimum, maximum, standard deviation, number of
+//! values) of the time steps of a variable, a function of the values of layers on the same grid (layer
+//! math, mask), and the values of an array (the output of a Python script). The engine reads the values of the
 //! inputs (f32, not the 16-bit display tiles) at the level of the tile: the mean of a coarse level is
 //! near the mean of the level 0, and equal if the overviews of the files are means.
 use super::*;
@@ -71,9 +72,14 @@ pub struct Op {
     key: String,
 }
 
+/// A function of the values of the inputs at one pixel (NaN: no data).
+pub type PixelFn = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
+
 pub enum OpKind {
     /// An aggregate over time of the layers of the time steps.
     Agg { how: Agg, inputs: Vec<Arc<Layer>> },
+    /// A function of the values of the inputs at the same pixel. The inputs are on the same grid.
+    Math { f: PixelFn, inputs: Vec<Arc<Layer>> },
     /// Values in memory (the output of a Python script): `w` columns, NaN for no data.
     Array { w: u64, data: Arc<Vec<f32>> },
 }
@@ -203,13 +209,7 @@ impl Inner {
                 inputs.push(g?);
             }
         }
-        // The steps must be on the same grid.
-        let g0 = self.georef(&inputs[0])?;
-        for l in &inputs[1..] {
-            if l.size() != inputs[0].size() || l.levels.len() != inputs[0].levels.len() || self.georef(l)? != g0 {
-                return Err(Error(format!("the time steps are not on the same grid: {} is not on the grid of {}", l.ds.product.name, inputs[0].ds.product.name)));
-            }
-        }
+        let g0 = self.same_grid(&inputs, "time steps")?;
         if inputs.iter().any(|l| l.op.is_some()) {
             return Err("an aggregate of computed layers is not possible in this version".into());
         }
@@ -261,6 +261,53 @@ impl Inner {
             op: Some(Arc::new(op)),
         };
         Ok(Arc::new(l))
+    }
+
+    /// The georeferencing of `inputs`: they must be on the same grid (`what`: their name in the message).
+    fn same_grid(&self, inputs: &[Arc<Layer>], what: &str) -> Result<Georef> {
+        let g0 = self.georef(&inputs[0])?;
+        for l in &inputs[1..] {
+            if l.size() != inputs[0].size() || l.levels.len() != inputs[0].levels.len() || self.georef(l)? != g0 {
+                return Err(Error(format!("the {what} are not on the same grid: {} is not on the grid of {}", l.ds.product.name, inputs[0].ds.product.name)));
+            }
+        }
+        Ok(g0)
+    }
+
+    /// A layer with the values `f` of the values of `inputs` (on the same grid) at each pixel.
+    fn make_math(&self, name: &str, units: &str, inputs: Vec<Arc<Layer>>, f: PixelFn, key: String) -> Result<Arc<Layer>> {
+        if inputs.is_empty() {
+            return Err("no input layer".into());
+        }
+        let g = self.same_grid(&inputs, "input layers")?;
+        let len = inputs.iter().map(|l| l.sample_at.len()).min().unwrap_or(0);
+        let mut v = vec![0f64; inputs.len()];
+        let sample_at: Vec<f32> = (0..len)
+            .map(|k| {
+                v.iter_mut().zip(&inputs).for_each(|(x, l)| *x = l.sample_at[k] as f64);
+                f(&v) as f32
+            })
+            .collect();
+        let mut sample: Vec<f32> = sample_at.iter().copied().filter(|v| v.is_finite()).collect();
+        sample.sort_unstable_by(f32::total_cmp);
+        let var = Variable {
+            name: name.into(),
+            group: String::new(),
+            levels: inputs[0].var().levels.iter().map(flat).collect(),
+            bands: vec![name.into()],
+            fill: None,
+            scale: 1.0,
+            offset: 0.0,
+            units: units.into(),
+            georef: g,
+            times: Default::default(),
+        };
+        let product = Product { name: name.into(), desc: format!("{name}: a function of {} layers", inputs.len()), vars: vec![var], valid: None };
+        let ds = Arc::new(Dataset { product, sources: inputs[0].ds.sources.clone() });
+        let (levels, enc) = (inputs[0].levels.clone(), choose_enc(DType::F32, Part::Real, &sample));
+        let op = Op { kind: OpKind::Math { f, inputs }, key };
+        let id = self.next.fetch_add(1, Relaxed);
+        Ok(Arc::new(Layer { id, ds, ds_id: self.next.fetch_add(1, Relaxed), var: 0, choice: 0, band: 0, time: 0, part: Part::Real, levels, enc, sample, sample_at, op: Some(Arc::new(op)) }))
     }
 
     /// The physical values (NaN: no data) of tile (tx, ty) of display level `lv` of layer `l`.
@@ -395,6 +442,33 @@ impl Inner {
                     })
                     .await)
             }
+            OpKind::Math { f, inputs } => {
+                let vals: Vec<Vec<f32>> = stream::iter(inputs.clone())
+                    .map(|inp| {
+                        let i = self.clone();
+                        async move { i.values(&inp, key.lv as usize, key.tx, key.ty, prio).await }
+                    })
+                    .buffered(4)
+                    .collect::<Vec<_>>()
+                    .await
+                    .into_iter()
+                    .collect::<Result<_>>()?;
+                if vals.iter().any(|v| v.len() != n) {
+                    return Err("the input layers are not on the same grid".into());
+                }
+                let f = f.clone();
+                Ok(self
+                    .on_pool(prio, move || {
+                        let mut v = vec![0f64; vals.len()];
+                        (0..n)
+                            .map(|i| {
+                                v.iter_mut().zip(&vals).for_each(|(x, a)| *x = a[i] as f64);
+                                f(&v) as f32
+                            })
+                            .collect()
+                    })
+                    .await)
+            }
             OpKind::Agg { how, inputs } => {
                 let how = *how;
                 // The median keeps the values of all steps.
@@ -435,13 +509,31 @@ impl Inner {
             OpKind::Agg { how, inputs } => {
                 let mut v = vec![];
                 for inp in inputs {
-                    let vals = self.probe_at(inp, x, y).await?;
-                    v.push(vals.get(inp.band as usize).copied().flatten().map_or(f32::NAN, |x| x as f32));
+                    v.push(self.probe_one(inp, x, y).await? as f32);
                 }
                 how.of(&mut v)
             }
+            OpKind::Math { f, inputs } => {
+                let mut v = vec![];
+                for inp in inputs {
+                    v.push(self.probe_one(inp, x, y).await?);
+                }
+                f(&v) as f32
+            }
         };
         Ok(vec![r.is_finite().then_some(r as f64)])
+    }
+
+    /// The exact value of layer `l` (a file or computed) at level-0 pixel (x, y). NaN: no data.
+    fn probe_one<'a>(&'a self, l: &'a Layer, x: u64, y: u64) -> BoxFuture<'a, Result<f64>> {
+        async move {
+            let v = match &l.op {
+                Some(op) => self.probe_op(op, x, y).await?.first().copied().flatten(),
+                None => self.probe_at(l, x, y).await?.get(l.band as usize).copied().flatten(),
+            };
+            Ok(v.unwrap_or(f64::NAN))
+        }
+        .boxed()
     }
 
     /// The values of window (x0, y0, w, h) of level `lv` of layer `l`, and its georeferencing.
@@ -514,6 +606,18 @@ impl Engine {
         req
     }
 
+    /// Make a layer with the values `f` of the values of `inputs` (on the same grid) at each pixel. `key`
+    /// names the function and its inputs. The result comes as `Event::Opened`.
+    pub fn math(&self, name: String, units: String, inputs: Vec<Arc<Layer>>, f: PixelFn, key: String) -> u64 {
+        let i = self.inner.clone();
+        let req = i.next.fetch_add(1, Relaxed);
+        self.rt.spawn_blocking(move || {
+            let res = i.make_math(&name, &units, inputs, f, key);
+            i.send(Event::Opened { req, res });
+        });
+        req
+    }
+
     /// Make a layer of the values `data` (`w` columns, NaN: no data). The result comes as `Event::Opened`.
     pub fn memory(&self, name: String, units: String, w: u64, data: Vec<f32>, g: Georef) -> u64 {
         let i = self.inner.clone();
@@ -558,6 +662,48 @@ mod tests {
         e.probe(l.clone(), 11, 7);
         let Event::Probe { values, .. } = next(&|e| matches!(e, Event::Probe { .. })) else { unreachable!() };
         assert!((values[0].unwrap() - 289.0625).abs() < 1e-4, "{values:?}");
+    }
+
+    /// Layer math of two steps of a cube: the tile and the inspector are the function of the input values.
+    #[test]
+    fn math_of_two_layers() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/time_grid.nc");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let next = |f: &dyn Fn(&Event) -> bool| loop {
+            let ev = rx.recv_timeout(Duration::from_secs(20)).expect("timeout");
+            if f(&ev) {
+                break ev;
+            }
+        };
+        let opened = || match next(&|e| matches!(e, Event::Opened { .. })) {
+            Event::Opened { res, .. } => res.unwrap(),
+            _ => unreachable!(),
+        };
+        let probe = |l: &Arc<Layer>| {
+            e.probe(l.clone(), 11, 7);
+            let Event::Probe { values, .. } = next(&|e| matches!(e, Event::Probe { .. })) else { unreachable!() };
+            values[l.band as usize].unwrap()
+        };
+        e.open(path.into());
+        let a = opened();
+        e.select(&a, a.var, a.choice, 2);
+        let b = opened();
+        // a - b where a > 285, else no data.
+        e.math("d".into(), "K".into(), vec![a.clone(), b.clone()], Arc::new(|v| if v[0] > 285.0 { v[0] - v[1] } else { f64::NAN }), "test".into());
+        let d = opened();
+        let (va, vb) = (probe(&a), probe(&b));
+        let want = if va > 285.0 { Some(va - vb) } else { None };
+        e.probe(d.clone(), 11, 7);
+        let Event::Probe { values, .. } = next(&|e| matches!(e, Event::Probe { .. })) else { unreachable!() };
+        assert_eq!(values[0].map(|x| (x * 1e3).round()), want.map(|x| (x * 1e3).round()));
+        e.want(1, vec![(d.clone(), TileKey { layer: d.id, lv: 0, tx: 0, ty: 0 })]);
+        let Event::Tile { px, w, .. } = next(&|e| matches!(e, Event::Tile { done: true, .. })) else { unreachable!() };
+        let (k, o) = d.texel_to_phys();
+        let t = px.texel(7 * w as usize + 11) * k + o;
+        match want {
+            Some(x) => assert!((t as f64 - x).abs() < 0.05, "{t} {x}"),
+            None => assert!(t.is_nan()),
+        }
     }
 
     #[test]

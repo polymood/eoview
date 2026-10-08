@@ -2,8 +2,9 @@
 //! The parser makes a tree. The tree gives WGSL for the composite shader (the GPU computes the values)
 //! and a CPU value for the inspector and the automatic stretch.
 //!
-//! Grammar: numbers, band names, + - * / ^ (power), unary -, parentheses, and the functions
-//! abs sqrt ln log10 exp sin cos min max pow atan2 clamp.
+//! Grammar: numbers, band names, + - * / ^ (power), unary -, parentheses, the comparisons < > <= >= == !=
+//! (1 if true, 0 if false), and the functions abs sqrt ln log10 exp sin cos min max pow atan2 clamp and
+//! mask (`mask(x, c)`: no data where c is not 0).
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
@@ -16,7 +17,10 @@ pub enum Node {
 }
 
 const FUNCS: &[(&str, usize)] =
-    &[("abs", 1), ("sqrt", 1), ("ln", 1), ("log10", 1), ("exp", 1), ("sin", 1), ("cos", 1), ("min", 2), ("max", 2), ("pow", 2), ("atan2", 2), ("clamp", 3)];
+    &[("abs", 1), ("sqrt", 1), ("ln", 1), ("log10", 1), ("exp", 1), ("sin", 1), ("cos", 1), ("min", 2), ("max", 2), ("pow", 2), ("atan2", 2), ("clamp", 3), ("mask", 2)];
+
+/// The comparisons: the character of `Tok::Op` and `Node::Bin`, and the text.
+const CMPS: [(char, &str); 6] = [('<', "<"), ('>', ">"), ('l', "<="), ('g', ">="), ('=', "=="), ('!', "!=")];
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
@@ -48,6 +52,9 @@ fn lex(s: &str) -> Result<Vec<Tok>, String> {
         } else if "+-*/^(),".contains(ch) {
             out.push(Tok::Op(ch));
             i += 1;
+        } else if let Some(&(op, text)) = CMPS.iter().filter(|k| k.1.len() <= c.len() - i && k.1.chars().zip(&c[i..]).all(|(a, &b)| a == b)).max_by_key(|k| k.1.len()) {
+            out.push(Tok::Op(op));
+            i += text.len();
         } else {
             return Err(format!("unexpected character '{ch}'"));
         }
@@ -76,7 +83,16 @@ impl P<'_> {
         }
     }
 
+    /// A comparison has the lowest priority: `a + 1 > b` is `(a + 1) > b`.
     fn expr(&mut self) -> Result<Node, String> {
+        let a = self.sum()?;
+        match CMPS.iter().find(|c| self.eat(c.0)) {
+            Some(&(op, _)) => Ok(Node::Bin(op, Box::new(a), Box::new(self.sum()?))),
+            None => Ok(a),
+        }
+    }
+
+    fn sum(&mut self) -> Result<Node, String> {
         let mut a = self.term()?;
         loop {
             let op = if self.eat('+') { '+' } else if self.eat('-') { '-' } else { return Ok(a) };
@@ -186,12 +202,18 @@ impl Node {
             Node::Var(j) => var(*j),
             Node::Neg(a) => format!("(-{})", a.wgsl_with(var)),
             Node::Bin('^', a, b) => format!("pow({}, {})", a.wgsl_with(var), b.wgsl_with(var)),
+            Node::Bin(op, a, b) if CMPS.iter().any(|c| c.0 == *op) => {
+                let text = CMPS.iter().find(|c| c.0 == *op).map_or("", |c| c.1);
+                format!("select(0.0, 1.0, {} {text} {})", a.wgsl_with(var), b.wgsl_with(var))
+            }
             Node::Bin(op, a, b) => format!("({} {op} {})", a.wgsl_with(var), b.wgsl_with(var)),
             Node::Call(f, a) => {
                 let a: Vec<String> = a.iter().map(|n| n.wgsl_with(var)).collect();
                 match f.as_str() {
                     "ln" => format!("log({})", a[0]),
                     "log10" => format!("(log({}) * 0.4342944819)", a[0]),
+                    // NaN at run time: the shader shows no data.
+                    "mask" => format!("select({0}, sqrt(-1.0 - abs({0})), {1} != 0.0)", a[0], a[1]),
                     _ => format!("{f}({})", a.join(", ")),
                 }
             }
@@ -211,7 +233,14 @@ impl Node {
                     '-' => a - b,
                     '*' => a * b,
                     '/' => a / b,
-                    _ => a.powf(b),
+                    '^' => a.powf(b),
+                    _ if a.is_nan() || b.is_nan() => f64::NAN,
+                    '<' => (a < b) as u8 as f64,
+                    '>' => (a > b) as u8 as f64,
+                    'l' => (a <= b) as u8 as f64,
+                    'g' => (a >= b) as u8 as f64,
+                    '=' => (a == b) as u8 as f64,
+                    _ => (a != b) as u8 as f64,
                 }
             }
             Node::Call(f, a) => {
@@ -228,6 +257,8 @@ impl Node {
                     "max" => a[0].max(a[1]),
                     "pow" => a[0].powf(a[1]),
                     "atan2" => a[0].atan2(a[1]),
+                    // A condition without data masks the value.
+                    "mask" => if a[1] == 0.0 { a[0] } else { f64::NAN },
                     _ => a[0].clamp(a[1].min(a[2]), a[2].max(a[1])),
                 }
             }
@@ -250,5 +281,16 @@ mod tests {
         assert!((t[0].eval(&[5.0]) - (-4.0 + 0.5)).abs() < 1e-12);
         assert!(parse(&["B05"], &names).is_err());
         assert!(parse(&["(B02"], &names).is_err());
+    }
+
+    #[test]
+    fn comparisons_and_mask() {
+        let names: Vec<String> = ["a", "q"].map(String::from).to_vec();
+        let (t, _) = parse(&["mask(a * 2, q + 1 >= 3)"], &names).unwrap();
+        assert_eq!(t[0].eval(&[5.0, 1.0]), 10.0);
+        assert!(t[0].eval(&[5.0, 2.0]).is_nan() && t[0].eval(&[5.0, f64::NAN]).is_nan());
+        assert_eq!(t[0].wgsl(), "select((v0 * 2.0), sqrt(-1.0 - abs((v0 * 2.0))), select(0.0, 1.0, (v1 + 1.0) >= 3.0) != 0.0)");
+        let (t, _) = parse(&["(a != q) + (a < q) + (a == 1)"], &names).unwrap();
+        assert_eq!(t[0].eval(&[1.0, 2.0]), 3.0);
     }
 }
