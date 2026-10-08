@@ -102,6 +102,28 @@ export computes and writes one tile after the other: its memory does not depend 
 The status bar shows the progress, with a Stop button. A file of more than 3.5 GB of values is a BigTIFF.
 A layer with a georeferencing of longitude and latitude arrays (a swath) exports without georeferencing.
 
+### Figures
+
+**Tools**, then **Figure** (F8), opens the Figure tab next to the active view: a page for a publication,
+drawn as it will print. The figure shows the active view (click a view to change it).
+
+- **Kinds**: a map of the view, the chart of the selected transect, or the histogram of the selected
+  layer.
+- **Size**: any width and height in millimeters. **Journal width** sets the width of a column of Nature,
+  Science or Elsevier. **Height from the view** gives the map the shape of the view. The text size is in
+  points, and the resolution (150, 300 or 600 dots for each inch) is the resolution of the image of the data
+  and of a PNG file.
+- **Parts of a map**: title, frame with the lines and the labels of longitude and latitude, color bar
+  (with the name and the unit of the layer, or your label), scale bar, coasts, country borders, caption.
+  The map is the area of the view at its center, with the layers, the stretch, the color maps and the
+  compare mode of the view.
+- **Export**: PDF and SVG (the lines and the texts are vectors, the data is an image in the file; the PDF
+  contains its font), PNG (with its resolution in the file), and CSV for the values of a chart.
+- `eoview --figure out.pdf [out.png ...] workspace.eoview` writes the figure of a workspace (its settings
+  are in the workspace file) without a window, then stops.
+
+The colors of the lines of a chart can be read with a color vision deficiency (Okabe and Ito).
+
 ### Layer math
 
 The part **Layer math** of the side panel makes a new layer from the layers of the view. The layers have
@@ -135,7 +157,8 @@ box = ev.layer("sst", region="Region 1")   # the pixels of a region: its box, Na
 line = ev.layer("sst", region="Transect 1")  # the values along a line: 1D, with distance, lon and lat
 ```
 
-- **Python panel** (Tools, then Python, or F7): an editor with tabs. Tab 1 is the script of the
+- **Python panel** (Tools, then Python, or F7): a tab of the main window, below the views (drag it to an
+  other place, as a view). The charts of `ev.plot` are in the Charts tab. The panel is an editor with tabs. Tab 1 is the script of the
   workspace. **File** makes a new script or notebook, opens `.py` and `.ipynb` files, and saves them
   (Ctrl+S). The code has the colors of the Python syntax. The panel shows the interpreter of the
   preferences (Preferences, Python): its version, its path, and the versions of numpy, xarray, matplotlib
@@ -385,7 +408,9 @@ eoview --render --out wind_globe.mp4 --steps 1095744:1096464:6 --sub 6 --bbox -2
 
 A view contains a stack of layers. The side panel shows the layers of the active view (the last view that
 you clicked), top layer first: show or hide, move up or down, remove. Each layer has its own composite,
-stretch, color map and opacity. The view draws the 4 lowest visible layers.
+stretch, color map and opacity. The view draws the 4 lowest visible layers. **Layer**, then **Same display
+for all layers**, gives all layers of the view the bands, the stretch and the color map of the selected
+layer (for example the orbits of one day: no seams between them).
 
 The compare modes use the two lowest visible layers: A and B.
 

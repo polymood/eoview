@@ -164,6 +164,8 @@ pub struct Pane {
     pub shapes: Vec<crate::tools::Shape>,
     /// The selected shape: the side panel shows its result.
     pub sel_shape: Option<usize>,
+    /// Draw the data only: no map overlays, no scale bar, no tools (the map of a figure).
+    pub bare: bool,
 }
 
 impl Pane {
@@ -209,6 +211,7 @@ impl Pane {
             coord_grid: false,
             shapes: vec![],
             sel_shape: None,
+            bare: false,
         }
     }
 
@@ -315,6 +318,16 @@ impl Pane {
     }
 }
 
+/// Dock tabs that are not views: the Python editor, the charts of the scripts, the figure.
+pub const PY_TAB: u32 = u32::MAX;
+pub const CHARTS_TAB: u32 = u32::MAX - 1;
+pub const FIGURE_TAB: u32 = u32::MAX - 2;
+
+/// True if dock tab `id` is a view (not `PY_TAB`, ...).
+pub fn is_view(id: u32) -> bool {
+    id < u32::MAX - 15
+}
+
 /// Target of an open request.
 struct Open {
     pane: u32,
@@ -365,6 +378,8 @@ pub enum Dialog {
     RenderOut,
     /// The GeoTIFF file of an export of the selected layer of a view.
     Export(u32),
+    /// The file of the figure of a view: PDF, SVG, PNG or CSV.
+    Figure(u32, &'static str),
     /// Python scripts or notebooks to open in the editor, and the file of tab k of the editor.
     PyOpen,
     PySave(usize),
@@ -432,6 +447,9 @@ struct Workspace {
     /// The Python script that makes layers of the project. It runs when the user says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     python: Option<String>,
+    /// The settings of the figure.
+    #[serde(default)]
+    figure: crate::figure::FigSet,
 }
 
 pub struct App {
@@ -536,6 +554,10 @@ pub struct App {
     pub agg: (eo_cache::Agg, Option<(usize, usize)>),
     /// The export of a layer that runs or that ended.
     pub export: Option<Export>,
+    /// The figure: its settings, its tab open or not, its state (the image of the map).
+    pub figure: crate::figure::FigSet,
+    pub figure_open: bool,
+    pub fig: crate::figure::FigState,
     /// The expression of the layer math of the side panel.
     pub math: String,
     /// Layer math of a workspace file that waits for its inputs.
@@ -613,6 +635,9 @@ impl App {
             shape_edit: Default::default(),
             agg: (eo_cache::Agg::Mean, None),
             export: None,
+            figure: Default::default(),
+            figure_open: false,
+            fig: Default::default(),
             math: String::new(),
             maths: HashMap::new(),
             py: None,
@@ -634,8 +659,49 @@ impl App {
         if !self.animate {
             return None;
         }
-        let tabs: Vec<u32> = self.dock.iter_all_tabs().map(|t| *t.1).collect();
+        let tabs = self.view_tabs();
         if tabs.contains(&self.active) { Some(self.active) } else { tabs.first().copied() }
+    }
+
+    /// The views of the dock.
+    pub fn view_tabs(&self) -> Vec<u32> {
+        self.dock.iter_all_tabs().map(|t| *t.1).filter(|&i| is_view(i)).collect()
+    }
+
+    /// The dock has a view: a new empty view if it has none (the dock can have only the other tabs).
+    fn ensure_view(&mut self) {
+        if !self.view_tabs().is_empty() {
+            return;
+        }
+        let n = self.new_pane();
+        if self.dock.iter_all_tabs().next().is_none() {
+            self.dock = DockState::new(vec![n]);
+        } else {
+            self.dock.main_surface_mut().split_left(NodeIndex::root(), 0.6, vec![n]);
+        }
+    }
+
+    /// Show or hide dock tab `tab` (not a view). The figure opens as a tab next to the active view (it
+    /// gets the area of the view), the Python editor below the views, the charts at the right of the editor.
+    pub fn show_tab(&mut self, tab: u32, on: bool) {
+        match (self.dock.find_tab(&tab), on) {
+            (Some(t), false) => drop(self.dock.remove_tab(t)),
+            (None, true) if tab == FIGURE_TAB => {
+                if let Some(t) = self.dock.find_tab(&self.active) {
+                    self.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: t.surface, node: t.node });
+                }
+                self.dock.push_to_focused_leaf(tab);
+            }
+            (None, true) => {
+                let py = self.dock.find_tab(&PY_TAB).filter(|t| tab == CHARTS_TAB && t.surface == egui_dock::SurfaceIndex::main());
+                let tree = self.dock.main_surface_mut();
+                match py {
+                    Some(t) => drop(tree.split_right(t.node, 0.55, vec![tab])),
+                    None => drop(tree.split_below(NodeIndex::root(), 0.62, vec![tab])),
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The step of the timeline of view `id` that is nearest to time `t` (seconds from 1970).
@@ -699,10 +765,7 @@ impl App {
             }
             self.floating.push(id);
             // The main window always has a view.
-            if self.dock.iter_all_tabs().next().is_none() {
-                let n = self.new_pane();
-                self.dock = DockState::new(vec![n]);
-            }
+            self.ensure_view();
         }
         self.active = id;
     }
@@ -711,14 +774,13 @@ impl App {
     pub fn closed(&mut self, id: u32) {
         self.engine.want(id, vec![]);
         self.panes.retain(|p| p.id != id);
-        if self.panes.is_empty() || self.dock.iter_all_tabs().next().is_none() {
+        if self.panes.is_empty() || self.view_tabs().is_empty() {
             let floating = &self.floating;
             self.panes.retain(|p| floating.contains(&p.id));
-            let n = self.new_pane();
-            self.dock = DockState::new(vec![n]);
+            self.ensure_view();
         }
         if self.pane(self.active).is_none() {
-            self.active = self.dock.iter_all_tabs().next().map_or(self.panes[0].id, |t| *t.1);
+            self.active = self.view_tabs().first().copied().unwrap_or(self.panes[0].id);
         }
     }
 
@@ -910,7 +972,9 @@ impl App {
         };
         let n = cols * rows;
         let mut ids: Vec<u32> = vec![self.active];
-        ids.extend(self.dock.iter_all_tabs().map(|t| *t.1).filter(|&i| i != self.active));
+        ids.extend(self.view_tabs().into_iter().filter(|&i| i != self.active));
+        // The other tabs (Python, charts, figure) stay, to the right of the views.
+        let others: Vec<u32> = self.dock.iter_all_tabs().map(|t| *t.1).filter(|&i| !is_view(i)).collect();
         ids.extend(self.panes.iter().map(|p| p.id).filter(|i| !ids.contains(i) && !self.floating.contains(i)).collect::<Vec<_>>());
         while ids.len() < n {
             let id = self.new_pane();
@@ -945,6 +1009,9 @@ impl App {
             }
         }
         self.dock = dock;
+        for t in others {
+            self.show_tab(t, true);
+        }
     }
 
     /// Make the inputs of view `id` again, and ask for the missing warps.
@@ -1483,9 +1550,10 @@ impl App {
             .collect();
         // A workspace file does not keep the windows: the detached views are tabs of the dock.
         let mut dock = self.dock.clone();
-        self.floating.iter().filter(|&&id| Some(id) != job).for_each(|&id| dock.push_to_focused_leaf(id));
+        let fig_job = self.fig.job.as_ref().map(|j| j.pane);
+        self.floating.iter().filter(|&&id| Some(id) != job && Some(id) != fig_job).for_each(|&id| dock.push_to_focused_leaf(id));
         let python = self.py.as_ref().filter(|p| p.used).map(|p| p.docs[0].cells[0].code.clone());
-        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes, render: self.render_set.clone(), pins: self.pins.clone(), python };
+        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes, render: self.render_set.clone(), pins: self.pins.clone(), python, figure: self.figure.clone() };
         let mut v = serde_json::to_value(&ws).map_err(|e| e.to_string())?;
         finite(&mut v);
         let s = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
@@ -1508,6 +1576,9 @@ impl App {
         self.floating.clear();
         self.render_set = ws.render;
         self.pins = ws.pins;
+        self.figure = ws.figure;
+        self.figure_open |= ws.dock.find_tab(&FIGURE_TAB).is_some();
+        self.fig = Default::default();
         if let (Some(code), Some(p)) = (ws.python, &mut self.py) {
             *p.code() = code;
             (p.open, p.ask, p.cur) = (true, true, 0);
@@ -1536,7 +1607,7 @@ impl App {
         self.dock = ws.dock;
         self.link_px = ws.link_px;
         self.error = None;
-        let mut ids: Vec<u32> = self.dock.iter_all_tabs().map(|t| *t.1).collect();
+        let mut ids: Vec<u32> = self.view_tabs();
         if ids.is_empty() {
             self.dock = DockState::new(vec![1]);
             ids = vec![1];
@@ -1860,6 +1931,23 @@ mod workspace_tests {
                 assert!(t.contains(g), "{g} not in {t}");
             }
         }
+    }
+
+    /// Same display for all layers: the stretch of the selected layer goes to the other layers.
+    #[test]
+    fn same_display_for_all_layers() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/u16_tiles.jp2");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, path.into(), false);
+        app.open(1, path.into(), true);
+        wait(&mut app, |a| a.panes[0].layers.len() == 2 && a.panes[0].layers.iter().all(|l| !l.inputs.is_empty()));
+        let p = &mut app.panes[0];
+        p.sel = 1;
+        (p.layers[1].st[0].lo, p.layers[1].st[0].hi, p.layers[1].opacity) = (123.0, 456.0, 0.5);
+        app.run(crate::ui::Cmd::SameDisplay, 1);
+        let l = &app.panes[0].layers;
+        assert_eq!((l[0].st[0].lo, l[0].st[0].hi, l[0].opacity), (123.0, 456.0, 1.0));
     }
 
     /// Layer math of a cube and of its mean over time: the workspace file keeps it, with the aggregate in

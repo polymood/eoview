@@ -38,6 +38,13 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
     large data.
   - Editor: the workspace file keeps the tabs (now: only the workspace script), completion, rendered
     markdown cells, an interrupt that keeps the variables (now: Stop ends the process).
+- `DESIGN.md` step 4 (figures), first version: the Figure tab (F8), a page in millimeters with journal
+  widths, a map (title, frame with longitude and latitude, color bar, scale bar, coasts, borders, caption)
+  or a chart (transect, histogram), export to PDF (embedded font), SVG, PNG and CSV, `eoview --figure`.
+  To do: the time profile of a point or a region, the scatter of two bands, time against latitude
+  (Hovmoller), the statistics of a region as a chart, the charts of Python as SVG in a figure, more than one
+  panel in a figure (a, b, c), a choice of fonts (now: the font of egui, Ubuntu Light), a north arrow.
+- Interface: the Python editor, the charts and the figure are tabs of the dock.
 - Example project: `examples/features.eoview` (`scripts/make_example.py` makes its data).
 
 ## In work

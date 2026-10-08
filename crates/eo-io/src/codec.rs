@@ -226,6 +226,15 @@ fn packbits(src: &[u8], out: &mut [u8]) -> usize {
     o
 }
 
+/// Zlib (Deflate) compression of `data`, for the writers of files (PDF streams).
+pub fn zlib(data: &[u8]) -> Vec<u8> {
+    let mut z = libdeflater::Compressor::new(libdeflater::CompressionLvl::default());
+    let mut out = vec![0u8; z.zlib_compress_bound(data.len())];
+    let n = z.zlib_compress(data, &mut out).unwrap_or(0);
+    out.truncate(n);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,7 @@ mod lang;
 mod layer;
 mod outlines;
 mod prefs;
+mod figure;
 mod py;
 mod pyedit;
 mod render;
@@ -38,7 +39,10 @@ pub enum Ev {
 /// `eoview --shot`: write the frame of the main window to a PNG file, then stop. For the tests of the
 /// interface without a person: the commands run first, one for each frame, by their name in the command palette.
 pub struct Shot {
+    /// The PNG file of the frame. Empty: no frame (`eoview --figure`).
     path: String,
+    /// The files of the figure to write at the end (`eoview --figure`).
+    figure: Vec<String>,
     cmds: std::collections::VecDeque<String>,
     /// Frames to draw before the capture.
     wait: u32,
@@ -303,7 +307,10 @@ impl App {
     fn shot_tick(&mut self, el: &ActiveEventLoop) {
         let Some(s) = &self.shot else { return };
         let py = self.cli_python.is_some() || self.py.as_ref().is_some_and(|p| p.child.is_some() || !p.reads.is_empty() || p.docs.iter().any(|d| d.busy()));
-        let busy = py || self.opens_pending() > 0 || self.panes.iter().any(|p| !self.floating.contains(&p.id) && p.painter.is_some() && !p.layers.is_empty() && (p.missing || p.v.fit));
+        // A figure waits for the image of its map.
+        let fig = !s.figure.is_empty() && self.figure_open && (self.fig.job.is_some() || self.figure_build(self.active, &self.figure.clone()).1.is_some());
+        let Some(s) = &self.shot else { return };
+        let busy = py || fig || self.opens_pending() > 0 || self.panes.iter().any(|p| !self.floating.contains(&p.id) && p.painter.is_some() && !p.layers.is_empty() && (p.missing || p.v.fit));
         let (wait, next) = (s.wait, s.cmds.front().cloned());
         let cmd = next.as_ref().and_then(|n| ui::command(self, n));
         let Some(s) = &mut self.shot else { return };
@@ -319,8 +326,16 @@ impl App {
         } else if wait > 0 {
             s.wait -= 1;
         } else {
-            let path = s.path.clone();
-            if let Err(e) = self.screenshot(&path) {
+            let (path, figure) = (s.path.clone(), s.figure.clone());
+            for f in figure {
+                match self.figure_export(self.active, &f) {
+                    Ok(p) => println!("{p}"),
+                    Err(e) => eprintln!("figure: {e}"),
+                }
+            }
+            if !path.is_empty()
+                && let Err(e) = self.screenshot(&path)
+            {
                 eprintln!("shot: {e}");
             }
             self.shot = None;
@@ -587,6 +602,7 @@ impl App {
                 return el.exit();
             }
         }
+        self.figure_tick();
         if self.render_tick() && self.cli_render.take().is_some() {
             println!("{}", self.render_msg.clone().unwrap_or_default());
             return el.exit();
@@ -621,7 +637,8 @@ impl App {
     fn reconcile(&mut self, el: &ActiveEventLoop) {
         // The temporary view of a render is in `floating`, and has no window.
         let job = self.job.as_ref().map(|j| j.pane);
-        let floating: Vec<u32> = self.floating.iter().copied().filter(|&f| Some(f) != job).collect();
+        let fig = self.fig.job.as_ref().map(|j| j.pane);
+        let floating: Vec<u32> = self.floating.iter().copied().filter(|&f| Some(f) != job && Some(f) != fig).collect();
         let n = self.wins.len();
         self.wins.retain(|d| floating.contains(&d.pane));
         let mut changed = self.wins.len() != n;
@@ -964,7 +981,17 @@ fn main() {
         while let Some(a) = it.next() {
             if a == "--do" { cmds.extend(it.next().cloned()) } else { files.push(a.clone()) }
         }
-        (app.shot, app.cli_files) = (Some(Shot { path: args[2].clone(), cmds, wait: 20 }), Some(files));
+        (app.shot, app.cli_files) = (Some(Shot { path: args[2].clone(), figure: vec![], cmds, wait: 20 }), Some(files));
+    }
+    // eoview --figure FILE.pdf|svg|png|csv... [products or workspace]: write the figure, then stop.
+    if args.get(1).map(String::as_str) == Some("--figure") {
+        let ext = |a: &str| [".pdf", ".svg", ".png", ".csv"].iter().any(|e| a.to_lowercase().ends_with(e));
+        let (figure, files): (Vec<String>, Vec<String>) = args[2..].iter().cloned().partition(|a| ext(a));
+        if figure.is_empty() {
+            return eprintln!("eoview --figure FILE.pdf|svg|png|csv... [products or workspace]");
+        }
+        app.figure_open = true;
+        (app.shot, app.cli_files) = (Some(Shot { path: String::new(), figure, cmds: Default::default(), wait: 20 }), Some(files));
     }
     if args.get(1).map(String::as_str) == Some("--render") {
         match render_args(&args[2..]) {
