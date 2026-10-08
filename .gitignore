@@ -4,3 +4,5 @@
 *.mp4
 examples/lst_europe/
 __pycache__/
+examples/live/
+examples/live.eoview
