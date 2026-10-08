@@ -128,9 +128,13 @@ pub struct Pane {
     /// CRS of the view, if it is not longitude and latitude (made at the first use).
     pub overlays: crate::outlines::Overlays,
     pub outline_pts: Option<(u32, Arc<Vec<Vec<[f64; 2]>>>)>,
-    /// Composite layers, and the layer index of each.
+    /// Composite layers of the first group (the compare modes use them), and the layer index of each.
     pub specs: Vec<LayerSpec>,
     pub spec_layer: Vec<usize>,
+    /// The other groups of layers (at most 4 layers and `MAX_INPUTS` inputs in a group): the index of the
+    /// first input of the group in the inputs of the view, the composite layers (input indices in the
+    /// group) and their layer indices. They draw over the first group in the stack mode.
+    pub more: Vec<(usize, Vec<LayerSpec>, Vec<usize>)>,
     /// Color map rows on the GPU.
     pub luts: Vec<Vec<[u8; 3]>>,
     /// View area in points, and its painter (set in the dock pass; None: not visible in this frame).
@@ -191,6 +195,7 @@ impl Pane {
             outline_pts: None,
             specs: vec![],
             spec_layer: vec![],
+            more: vec![],
             luts: vec![],
             rect: egui::Rect::NOTHING,
             painter: None,
@@ -252,14 +257,17 @@ impl Pane {
         self.v.inputs.iter().any(|i| i.warp.is_some())
     }
 
-    /// Make the view inputs and the composite layers from the visible layers (at most 4 layers and
-    /// `MAX_INPUTS` inputs; layers that use the same data share the inputs), and the inputs of the next time
-    /// steps. Return the inputs without a warp.
+    /// Make the view inputs and the composite layers from the visible layers, in groups of at most 4
+    /// layers and `MAX_INPUTS` inputs (layers that use the same data in a group share the inputs), and the
+    /// inputs of the next time steps. Return the inputs without a warp.
     pub fn rebuild(&mut self, warps: &HashMap<(u64, Option<u32>), (Arc<Warp>, u64)>) -> Vec<Arc<Layer>> {
         let mut inputs: Vec<Arc<Layer>> = vec![];
         self.specs.clear();
         self.spec_layer.clear();
+        self.more.clear();
         self.err = None;
+        let mut groups: Vec<(usize, Vec<LayerSpec>, Vec<usize>)> = vec![];
+        let (mut start, mut specs, mut idxs) = (0, vec![], vec![]);
         for (i, l) in self.layers.iter().enumerate() {
             if !l.visible || l.inputs.is_empty() {
                 continue;
@@ -267,25 +275,31 @@ impl Pane {
             // A layer that blends two time steps also has the inputs of the next step.
             let next = l.next_inputs();
             let all = l.inputs.iter().chain(next.iter().flatten());
-            let new = all.filter(|x| !inputs.iter().any(|y| y.id == x.id)).map(|x| x.id).collect::<HashSet<_>>().len();
-            if self.specs.len() == 4 || inputs.len() + new > eo_render::MAX_INPUTS {
-                self.err = Some(tf("The view shows the {} lowest layers only", &[&self.specs.len().to_string()]));
-                break;
+            let new = all.filter(|x| !inputs[start..].iter().any(|y| y.id == x.id)).map(|x| x.id).collect::<HashSet<_>>().len();
+            if specs.len() == 4 || inputs.len() - start + new > eo_render::MAX_INPUTS {
+                groups.push((start, std::mem::take(&mut specs), std::mem::take(&mut idxs)));
+                start = inputs.len();
             }
-            let mut slot = |x: &Arc<Layer>| match inputs.iter().position(|y| y.id == x.id) {
+            let mut slot = |x: &Arc<Layer>| match inputs[start..].iter().position(|y| y.id == x.id) {
                 Some(k) => k,
                 None => {
                     inputs.push(x.clone());
-                    inputs.len() - 1
+                    inputs.len() - 1 - start
                 }
             };
             let idx: Vec<usize> = l.inputs.iter().map(&mut slot).collect();
             let idx2: Option<Vec<usize>> = next.map(|n| n.iter().map(&mut slot).collect());
             if let Some(s) = l.spec(&idx, idx2.as_deref()) {
-                self.specs.push(s);
-                self.spec_layer.push(i);
+                specs.push(s);
+                idxs.push(i);
             }
         }
+        groups.push((start, specs, idxs));
+        let mut groups = groups.into_iter().filter(|g| !g.1.is_empty());
+        if let Some((_, s, l)) = groups.next() {
+            (self.specs, self.spec_layer) = (s, l);
+        }
+        self.more = groups.collect();
         let space = self.v.space;
         self.v.inputs = inputs.into_iter().map(|layer| Input { warp: warps.get(&(layer.id, space)).cloned(), layer }).collect();
         // The next time steps of the layers with a timeline, the nearest step first.

@@ -418,7 +418,6 @@
  "The tiles load.": "Les tuiles se chargent.",
  "The view as it is now": "La vue telle qu'elle est",
  "The view has no layer.": "La vue n'a pas de couche.",
- "The view shows the {} lowest layers only": "La vue n'affiche que les {} couches les plus basses",
  "The view workspace": "L'espace vue",
  "The views use the finest level of the data, not the level of the zoom. If the GPU memory does not have room for the tiles of a view, the view uses the finest level that has room.": "Les vues utilisent le niveau le plus fin des données, pas le niveau du zoom. Si la mémoire du GPU n'a pas de place pour les tuiles d'une vue, la vue utilise le niveau le plus fin qui tient.",
  "The workspace has this script: it makes some of its layers. Read the code, then Run.": "L'espace de travail contient ce script : il crée certaines de ses couches. Lisez le code, puis Exécuter.",

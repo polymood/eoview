@@ -2153,17 +2153,6 @@ impl App {
                 Cmp::Flicker if two => Compare::Flicker,
                 _ => Compare::Stack,
             };
-            // Color map rows: one for each layer, the last for the difference.
-            let mut rows: Vec<(Vec<[u8; 3]>, u32)> = p.spec_layer.iter().enumerate().map(|(k, &li)| (p.layers[li].stops.clone(), k as u32)).collect();
-            rows.push((CMAPS[p.dcmap].1.iter().map(|&c| layer::hex(c)).collect(), eo_render::LUT_ROWS - 1));
-            p.luts.resize(eo_render::LUT_ROWS as usize, vec![]);
-            let vg = p.v.gpu.as_mut().unwrap();
-            for (stops, row) in rows {
-                if p.luts[row as usize] != stops {
-                    vg.set_lut(&win.gpu, row, &layer::lut(&stops));
-                    p.luts[row as usize] = stops;
-                }
-            }
             let show_b = if cmp == Compare::Flicker {
                 let ph = t * p.flicker_hz as f64;
                 next_flip = Some(next_flip.map_or(f64::MAX, |n: f64| n).min((ph.floor() + 1.0 - ph) / p.flicker_hz as f64));
@@ -2171,40 +2160,62 @@ impl App {
             } else {
                 0
             };
-            let mut cu = CompositeUniforms {
-                vo: [p.v.px.min.x, p.v.px.min.y],
-                n: p.specs.len() as u32,
-                swipe: p.swipe * if p.vertical { p.v.px.width() } else { p.v.px.height() },
-                vertical: p.vertical as u32,
-                show_b: show_b as u32,
-                diff: p.diff,
-                dlo: p.dlo,
-                dhi: if p.dhi == p.dlo { p.dlo + 1e-6 } else { p.dhi },
-                dflags: (p.dinvert as u32) << 3,
-                tmix: p.tmix,
-                ..Default::default()
-            };
-            let mut wind = false;
-            for (k, &li) in p.spec_layer.iter().enumerate().take(4) {
-                cu.l[k] = p.layers[li].params();
-                if p.layers[li].kind == Kind::Wind {
-                    // An arrow for each 34 points. The pulse of the arrows goes from the tail to the head in 1.2 s.
-                    cu.l[k].pad = [34.0 * ppp, (t / 1.2).fract() as f32];
-                    wind = true;
-                }
-                if k == 1 && p.cmp == Cmp::Blend {
-                    cu.l[k].opacity = p.blend;
-                }
+            // The groups of layers: the first with the compare mode, the others over it in the stack mode.
+            let mut groups: Vec<(usize, &[eo_render::LayerSpec], &[usize], Compare)> = vec![(0, &p.specs, &p.spec_layer, cmp)];
+            if cmp == Compare::Stack {
+                groups.extend(p.more.iter().map(|(st, sp, l)| (*st, &sp[..], &l[..], Compare::Stack)));
             }
+            let rows_n = eo_render::LUT_ROWS as usize;
+            p.luts.resize(groups.len() * rows_n, vec![]);
+            let vg = p.v.gpu.as_mut().unwrap();
+            vg.keep_groups(&mut win.gpu, groups.len());
             // A weather model has large pixels: they are smooth in a view with a wind layer.
+            let wind = groups.iter().flat_map(|g| g.2.iter()).any(|&li| p.layers[li].kind == Kind::Wind);
             vg.smooth = p.smooth || wind;
             if wind {
                 next_flip = Some(next_flip.map_or(1.0 / 30.0, |n: f64| n.min(1.0 / 30.0)));
             }
-            match vg.paint(&mut win.gpu, &inputs, &p.specs, cmp, &cu, p.rect, (p.v.px.width() as u32, p.v.px.height() as u32)) {
-                Ok(Some(cb)) => drop(painter.add(cb)),
-                Ok(None) => {}
-                Err(e) => p.err = Some(e),
+            for (g, &(start, specs, lays, gcmp)) in groups.iter().enumerate() {
+                let end = groups.get(g + 1).map_or(inputs.len(), |x| x.0);
+                // Color map rows: one for each layer, the last for the difference.
+                let mut rows: Vec<(Vec<[u8; 3]>, u32)> = lays.iter().enumerate().map(|(k, &li)| (p.layers[li].stops.clone(), k as u32)).collect();
+                if g == 0 {
+                    rows.push((CMAPS[p.dcmap].1.iter().map(|&c| layer::hex(c)).collect(), eo_render::LUT_ROWS - 1));
+                }
+                for (stops, row) in rows {
+                    if p.luts[g * rows_n + row as usize] != stops {
+                        vg.set_lut(&win.gpu, g, row, &layer::lut(&stops));
+                        p.luts[g * rows_n + row as usize] = stops;
+                    }
+                }
+                let mut cu = CompositeUniforms {
+                    vo: [p.v.px.min.x, p.v.px.min.y],
+                    n: specs.len() as u32,
+                    swipe: p.swipe * if p.vertical { p.v.px.width() } else { p.v.px.height() },
+                    vertical: p.vertical as u32,
+                    show_b: show_b as u32,
+                    diff: p.diff,
+                    dlo: p.dlo,
+                    dhi: if p.dhi == p.dlo { p.dlo + 1e-6 } else { p.dhi },
+                    dflags: (p.dinvert as u32) << 3,
+                    tmix: p.tmix,
+                    ..Default::default()
+                };
+                for (k, &li) in lays.iter().enumerate().take(4) {
+                    cu.l[k] = p.layers[li].params();
+                    if p.layers[li].kind == Kind::Wind {
+                        // An arrow for each 34 points. The pulse of the arrows goes from the tail to the head in 1.2 s.
+                        cu.l[k].pad = [34.0 * ppp, (t / 1.2).fract() as f32];
+                    }
+                    if g == 0 && k == 1 && p.cmp == Cmp::Blend {
+                        cu.l[k].opacity = p.blend;
+                    }
+                }
+                match vg.paint(&mut win.gpu, g, start..end, &inputs, specs, gcmp, &cu, p.rect, (p.v.px.width() as u32, p.v.px.height() as u32)) {
+                    Ok(Some(cb)) => drop(painter.add(cb)),
+                    Ok(None) => {}
+                    Err(e) => p.err = Some(e),
+                }
             }
             if p.v.globe {
                 graticule(&p.v, &painter.with_clip_rect(p.rect), p.rect);
