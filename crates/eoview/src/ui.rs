@@ -860,14 +860,9 @@ impl App {
         // `eoview --python FILE`: the script runs when the layers of the view show.
         let shown = self.pane(self.active).is_some_and(|p| !p.layers.is_empty() && p.layers.iter().all(|l| !l.inputs.is_empty()) && p.v.inputs.iter().all(|i| i.warp.is_some()));
         if shown && self.opens_pending() == 0 && let Some(f) = self.cli_python.take() {
-            match std::fs::read_to_string(&f) {
-                Ok(code) => {
-                    if let Some(p) = &mut self.py {
-                        (p.code, p.open) = (code, true);
-                    }
-                    self.py_run();
-                }
-                Err(e) => self.error = Some(format!("{f}: {e}")),
+            self.py_open(&std::path::absolute(&f).unwrap_or(f.into()));
+            if self.error.is_none() {
+                self.py_run();
             }
         }
         self.render_ui(&ctx);
@@ -2417,6 +2412,18 @@ pub fn dialogs(app: &mut App) {
             let name = app.pane(pane).and_then(|p| p.layers.get(p.sel)).map_or("layer".into(), |l| l.comp_name().replace(['/', '\\', ':', ' '], "_"));
             if let Some(p) = rfd::FileDialog::new().set_title(t("Export data (GeoTIFF)")).add_filter("GeoTIFF", &["tif", "tiff"]).set_file_name(format!("{name}.tif")).save_file() {
                 app.export(pane, p.to_string_lossy().into_owned());
+            }
+        }
+        Dialog::PyOpen => {
+            if let Some(v) = rfd::FileDialog::new().set_title(t("Open Python scripts or notebooks")).add_filter(t("Python"), &["py", "ipynb"]).pick_files() {
+                v.iter().for_each(|f| app.py_open(f));
+            }
+        }
+        Dialog::PySave(k) => {
+            let (name, nb) = app.py.as_ref().and_then(|p| p.docs.get(k)).map_or(("script.py".into(), false), |d| (d.name.clone(), d.nb));
+            let ext: &[&str] = if nb { &["ipynb"] } else { &["py"] };
+            if let Some(f) = rfd::FileDialog::new().set_title(t("Save as")).add_filter(t("Python"), ext).set_file_name(name).save_file() {
+                app.py_save(k, Some(f));
             }
         }
         Dialog::RenderOut => {
