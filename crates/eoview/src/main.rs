@@ -962,6 +962,9 @@ fn main() {
     }
     let mut app = App::new(engine, events, budget("EOVIEW_GPU_MB", prefs.gpu_mb, 1 << 30), bench);
     app.prefs = prefs;
+    // The thread that checks the products of the views wakes the event loop (`App::watch_tick`).
+    let proxy = el.create_proxy();
+    app.waker = Some(Arc::new(move || drop(proxy.send_event(Ev::Wake))));
     // Python scripts and notebooks. Not in a benchmark and not in a render of the command line.
     let proxy = el.create_proxy();
     if !is_bench && args.get(1).map(String::as_str) != Some("--render") {

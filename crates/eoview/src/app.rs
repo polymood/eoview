@@ -361,11 +361,69 @@ struct Open {
     replace: Option<u64>,
 }
 
-/// A product of the views on the disk (`App::watch_tick`): its stamp (times and sizes of its files), and a
-/// new stamp that waits one check (the program that writes the product can still write it).
-pub struct Watch {
+/// A product of the views on the disk: its stamp (times and sizes of its files), and a new stamp that waits
+/// one check (the program that writes the product can still write it).
+struct Watch {
     stamp: u64,
     pending: Option<u64>,
+}
+
+/// The products of the views on the disk, and their stamps.
+#[derive(Default)]
+pub struct Watched(HashMap<String, Watch>);
+
+impl Watched {
+    /// One check of the products `paths`: the products that changed and have the same stamp as at the check
+    /// before (the program that writes them has ended).
+    pub fn check(&mut self, paths: &HashSet<String>) -> Vec<String> {
+        self.0.retain(|p, _| paths.contains(p));
+        let mut changed = vec![];
+        for p in paths {
+            // Not there now: a program replaces it. The check waits for the new product.
+            let Some(st) = stamp(p) else { continue };
+            match self.0.get_mut(p) {
+                None => drop(self.0.insert(p.clone(), Watch { stamp: st, pending: None })),
+                Some(w) if w.stamp == st => w.pending = None,
+                Some(w) if w.pending == Some(st) => {
+                    (w.stamp, w.pending) = (st, None);
+                    changed.push(p.clone());
+                }
+                Some(w) => w.pending = Some(st),
+            }
+        }
+        changed
+    }
+}
+
+/// The thread that checks the products of the views each second, also when the application draws no frame
+/// (an idle window): the products to check, and the products that changed (the thread wakes the application).
+pub struct Watcher {
+    paths: Arc<std::sync::Mutex<HashSet<String>>>,
+    changed: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Watcher {
+    fn start(ctx: egui::Context, wake: Option<crate::Wake>) -> Watcher {
+        let (paths, changed) = (Arc::new(std::sync::Mutex::new(HashSet::new())), Arc::new(std::sync::Mutex::new(vec![])));
+        let (p, c) = (paths.clone(), changed.clone());
+        let _ = std::thread::Builder::new().name("eoview-watch".into()).spawn(move || {
+            let mut w = Watched::default();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let list = p.lock().unwrap().clone();
+                let ch = w.check(&list);
+                if !ch.is_empty() {
+                    c.lock().unwrap().extend(ch);
+                    // An idle window draws no frame: the event loop wakes, then the frame opens the products.
+                    ctx.request_repaint();
+                    if let Some(w) = &wake {
+                        w();
+                    }
+                }
+            }
+        });
+        Watcher { paths, changed }
+    }
 }
 
 /// The stamp of a local product: the modification time and the size of the file, or of the files of a
@@ -610,8 +668,9 @@ pub struct App {
     /// The export of a layer that runs or that ended.
     pub export: Option<Export>,
     /// The local products of the views, and the time of the last check (`watch_tick`).
-    pub watched: HashMap<String, Watch>,
-    pub watch_at: std::time::Instant,
+    pub watcher: Option<Watcher>,
+    /// Wakes the event loop from an other thread (None in the tests).
+    pub waker: Option<crate::Wake>,
     /// The figure: its settings, its tab open or not, its state (the image of the map).
     pub figure: crate::figure::FigSet,
     pub figure_open: bool,
@@ -693,8 +752,8 @@ impl App {
             shape_edit: Default::default(),
             agg: (eo_cache::Agg::Mean, None),
             export: None,
-            watched: HashMap::new(),
-            watch_at: std::time::Instant::now(),
+            watcher: None,
+            waker: None,
             figure: Default::default(),
             figure_open: false,
             fig: Default::default(),
@@ -1799,30 +1858,27 @@ impl App {
         }
     }
 
-    /// Each second: the local products of the views that changed on the disk open again, with the
-    /// settings of their layers (the bands, the stretch, the colors, the time step). A product opens again
-    /// when its stamp is the same at two checks: the program that writes it has ended. Preference `no_reload`.
+    /// The local products of the views that changed on the disk open again, with the settings of their
+    /// layers (the bands, the stretch, the colors, the time step). A thread checks them each second
+    /// (`Watcher`): a product opens again when its stamp is the same at two checks, so the program that writes
+    /// it has ended. Preference `no_reload`.
     pub fn watch_tick(&mut self) {
-        if self.prefs.no_reload || self.watch_at.elapsed() < std::time::Duration::from_secs(1) {
+        let paths: HashSet<String> = if self.prefs.no_reload {
+            HashSet::new()
+        } else {
+            self.panes.iter().flat_map(|p| p.layers.iter()).filter(|l| l.op.is_none() && !l.path.contains("://")).map(|l| l.path.clone()).collect()
+        };
+        if self.watcher.is_none() && paths.is_empty() {
             return;
         }
-        self.watch_at = std::time::Instant::now();
-        let paths: HashSet<String> = self.panes.iter().flat_map(|p| p.layers.iter()).filter(|l| l.op.is_none() && !l.path.contains("://")).map(|l| l.path.clone()).collect();
-        self.watched.retain(|p, _| paths.contains(p));
-        let mut changed = vec![];
-        for p in paths {
-            // Not there now: a program replaces it. The check waits for the new product.
-            let Some(st) = stamp(&p) else { continue };
-            match self.watched.get_mut(&p) {
-                None => drop(self.watched.insert(p, Watch { stamp: st, pending: None })),
-                Some(w) if w.stamp == st => w.pending = None,
-                Some(w) if w.pending == Some(st) => {
-                    (w.stamp, w.pending) = (st, None);
-                    changed.push(p);
-                }
-                Some(w) => w.pending = Some(st),
+        let w = self.watcher.get_or_insert_with(|| Watcher::start(self.ctx.clone(), self.waker.clone()));
+        {
+            let mut cur = w.paths.lock().unwrap();
+            if *cur != paths {
+                *cur = paths;
             }
         }
+        let changed = std::mem::take(&mut *w.changed.lock().unwrap());
         for p in changed {
             self.reload(&p);
         }
@@ -1830,6 +1886,9 @@ impl App {
 
     /// Open the product `path` again for each layer that shows it: the new layer replaces the layer, with its settings.
     pub fn reload(&mut self, path: &str) {
+        if std::env::var_os("EOVIEW_DEBUG").is_some() {
+            eprintln!("reload: {path}");
+        }
         let mut todo = vec![];
         for p in &self.panes {
             for (i, l) in p.layers.iter().enumerate().filter(|(_, l)| l.path == path && l.op.is_none()) {
@@ -2159,15 +2218,15 @@ mod workspace_tests {
         wait(&mut app, |a| a.panes[0].layers.first().is_some_and(|l| !l.inputs.is_empty()));
         let size = app.panes[0].layers[0].inputs[0].size();
         (app.panes[0].layers[0].st[0].lo, app.panes[0].layers[0].st[0].hi) = (281.0, 289.0);
-        let check = |a: &mut App| {
-            a.watch_at = std::time::Instant::now() - std::time::Duration::from_secs(3);
-            a.watch_tick();
-        };
-        check(&mut app);
-        // The new product (an other grid), then two checks with the same stamp.
+        let mut w = Watched::default();
+        let paths: HashSet<String> = [f.to_string_lossy().into_owned()].into();
+        assert!(w.check(&paths).is_empty());
+        // The new product (an other grid): a change, then the same stamp at the next check.
         std::fs::copy(format!("{dir}time_grid.nc"), &f).unwrap();
-        check(&mut app);
-        check(&mut app);
+        assert!(w.check(&paths).is_empty());
+        let ch = w.check(&paths);
+        assert_eq!(ch.len(), 1);
+        app.reload(&ch[0]);
         wait(&mut app, |a| a.panes[0].layers.first().is_some_and(|l| l.inputs.first().is_some_and(|x| x.size() != size)));
         std::fs::remove_file(&f).ok();
         let l = &app.panes[0].layers[0];
