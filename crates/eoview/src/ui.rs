@@ -2239,6 +2239,12 @@ impl App {
                 draws.push(eo_render::GroupDraw { range: start..end, specs, cmp: gcmp, cu });
             }
             match vg.paint(&mut win.gpu, &draws, &inputs, p.rect, (p.v.px.width() as u32, p.v.px.height() as u32)) {
+                // Longitude and latitude in 2D: one world, the GPU does not draw out of -180 to 180 degrees.
+                Ok(Some(cb)) if p.v.space == Some(4326) && !p.v.globe => {
+                    let (a, b) = (p.v.to_screen([-180.0, 0.0], p.rect).x, p.v.to_screen([180.0, 0.0], p.rect).x);
+                    let world = Rect::from_x_y_ranges(a.min(b)..=a.max(b), p.rect.y_range());
+                    painter.with_clip_rect(painter.clip_rect().intersect(world)).add(cb);
+                }
                 Ok(Some(cb)) => drop(painter.add(cb)),
                 Ok(None) => {}
                 Err(e) => p.err = Some(e),

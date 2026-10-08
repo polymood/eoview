@@ -74,9 +74,9 @@ pub fn draw(p: &Pane, pt: &egui::Painter, ppp: f32, pts: Option<&[Vec<[f64; 2]>]
     }
     let pt = pt.with_clip_rect(rect);
     let view = p.v.rect();
-    // A flat view in longitude and latitude can show the world more than one time.
+    // A flat view in longitude and latitude shows one world (as the data, `View::draws`).
     let flat = pts.is_none() && !p.v.globe;
-    let shifts: &[f64] = if flat && (view[0] < -180.0 || view[2] > 180.0) { &[0.0, -360.0, 360.0] } else { &[0.0] };
+    let shifts: &[f64] = &[0.0];
     let big = rect.expand(64.0);
     let w = 1.0 / ppp.min(1.0);
     for (i, (kind, ll, bbox)) in d.lines.iter().enumerate() {
