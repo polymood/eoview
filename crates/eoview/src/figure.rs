@@ -1079,7 +1079,10 @@ impl App {
             if let Some(n) = note {
                 painter.text(page.left_top() + vec2(6.0, 6.0), egui::Align2::LEFT_TOP, n, FontId::proportional(13.0), Color32::from_rgb(200, 80, 0));
             }
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+            // The image of the map draws in the next frames. Else no frame: no work when nothing changes.
+            if self.fig.job.is_some() {
+                ui.ctx().request_repaint();
+            }
         });
     }
 }
