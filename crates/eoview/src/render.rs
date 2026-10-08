@@ -99,18 +99,18 @@ enum Sink {
 }
 
 /// Offscreen target of the frames, and the buffer that brings the pixels back from the GPU.
-struct Target {
-    view: wgpu::TextureView,
-    texture: wgpu::Texture,
-    buffer: wgpu::Buffer,
+pub(crate) struct Target {
+    pub view: wgpu::TextureView,
+    pub texture: wgpu::Texture,
+    pub buffer: wgpu::Buffer,
     /// Bytes of one row in the buffer (a multiple of 256).
-    row: u32,
+    pub row: u32,
     /// The pixels are B, G, R, A (else R, G, B, A).
-    bgra: bool,
+    pub bgra: bool,
 }
 
 /// An offscreen target of `w` x `h` pixels, with its buffer for the pixels.
-fn target(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32) -> Target {
+pub(crate) fn target(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32) -> Target {
     let row = (w * 4).div_ceil(256) * 256;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render"),
@@ -496,7 +496,7 @@ impl App {
 }
 
 /// Pixels of `texture` (`w` x `h`, 4 bytes for each pixel) from the GPU, through `buffer` (rows of `row` bytes).
-fn read_pixels(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, buffer: &wgpu::Buffer, row: u32, w: u32, h: u32) -> Result<Vec<u8>, String> {
+pub(crate) fn read_pixels(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, buffer: &wgpu::Buffer, row: u32, w: u32, h: u32) -> Result<Vec<u8>, String> {
     let mut enc = device.create_command_encoder(&Default::default());
     enc.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },

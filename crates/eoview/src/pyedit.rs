@@ -530,28 +530,32 @@ impl App {
         info.1.clone()
     }
 
-    /// The Python panel: the tabs, the code, Run and Stop, the outputs. The charts window.
-    pub fn py_ui(&mut self, ctx: &egui::Context) {
-        if !self.py.as_ref().is_some_and(|p| p.open) {
-            self.py_charts(ctx);
+    /// The work of the Python panel at each frame, also when its tab does not show: the files that changed on
+    /// the disk (one time each second), and the run of a script when its file changes.
+    pub fn py_frame(&mut self) {
+        let Some(p) = &mut self.py else { return };
+        if p.poll.elapsed().as_secs_f32() < 1.0 {
             return;
         }
+        p.poll = std::time::Instant::now();
+        let mut auto = false;
+        for (k, d) in p.docs.iter_mut().enumerate() {
+            if d.poll() && d.auto_run && k == p.cur && !d.nb {
+                auto = true;
+            }
+        }
+        if auto {
+            self.py_act(Act::Run);
+        }
+    }
+
+    /// The Python tab of the dock: the tabs of the editor, the code, Run and Stop, the outputs.
+    pub fn py_tab(&mut self, ui: &mut egui::Ui) {
         let info = self.py_info();
         let cmd_ok = self.py_command().is_some();
         let Some(p) = &mut self.py else { return };
-        // The files that changed on the disk, one time each second.
-        let mut auto = false;
-        if p.poll.elapsed().as_secs_f32() > 1.0 {
-            p.poll = std::time::Instant::now();
-            for (k, d) in p.docs.iter_mut().enumerate() {
-                if d.poll() && d.auto_run && k == p.cur && !d.nb {
-                    auto = true;
-                }
-            }
-        }
         let mut acts = vec![];
-        let mut open = p.open;
-        egui::Window::new(t("Python")).open(&mut open).default_size([720.0, 600.0]).show(ctx, |ui| {
+        {
             // The tabs.
             ui.horizontal_wrapped(|ui| {
                 for k in 0..p.docs.len() {
@@ -647,15 +651,10 @@ impl App {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
                 acts.push(Act::Save);
             }
-        });
-        p.open = open;
-        if auto {
-            acts.push(Act::Run);
         }
         for a in acts {
             self.py_act(a);
         }
-        self.py_charts(ctx);
     }
 
     fn py_act(&mut self, a: Act) {
@@ -710,34 +709,31 @@ impl App {
         }
     }
 
-    /// The charts of the scripts.
-    fn py_charts(&mut self, ctx: &egui::Context) {
+    /// The Charts tab of the dock: the charts of the scripts, the newest first.
+    pub fn charts_tab(&mut self, ui: &mut egui::Ui) {
         let Some(p) = &mut self.py else { return };
-        if !p.charts_open || p.charts.is_empty() {
+        if p.charts.is_empty() {
+            ui.weak(t("No chart. A script shows a matplotlib figure here with ev.plot(fig)."));
             return;
         }
-        let mut open = true;
         let mut remove = None;
-        egui::Window::new(t("Charts")).open(&mut open).default_size([520.0, 420.0]).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for (k, c) in p.charts.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.strong(&c.name);
-                        if ui.small_button(t("Remove")).clicked() {
-                            remove = Some(k);
-                        }
-                    });
-                    let s = c.tex.size_vec2();
-                    let w = ui.available_width().min(s.x);
-                    ui.image((c.tex.id(), egui::vec2(w, s.y * w / s.x)));
-                    ui.separator();
-                }
-            });
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for (k, c) in p.charts.iter().enumerate().rev() {
+                ui.horizontal(|ui| {
+                    ui.strong(&c.name);
+                    if ui.small_button(t("Remove")).clicked() {
+                        remove = Some(k);
+                    }
+                });
+                let s = c.tex.size_vec2();
+                let w = ui.available_width().min(s.x);
+                ui.image((c.tex.id(), egui::vec2(w, s.y * w / s.x)));
+                ui.separator();
+            }
         });
         if let Some(k) = remove {
             p.charts.remove(k);
         }
-        p.charts_open = open;
     }
 }
 

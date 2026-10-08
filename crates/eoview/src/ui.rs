@@ -34,6 +34,9 @@ pub enum Cmd {
     Load,
     /// Export the values of the selected layer to a GeoTIFF file.
     Export,
+    /// The Figure tab: open or close it. Export the figure to a file of this type (pdf, svg, png, csv).
+    Figure,
+    FigureExport(&'static str),
     NewView,
     Duplicate,
     CloseView,
@@ -41,6 +44,8 @@ pub enum Cmd {
     Fit,
     OneToOne,
     Auto,
+    /// The display of the selected layer (bands, stretch, color map) for all layers of the view.
+    SameDisplay,
     NextCmap,
     Invert,
     Panel,
@@ -149,6 +154,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Add layer: URL..."), "", Cmd::Open(true, What::Url)),
         (t("Save workspace..."), "Ctrl+S", Cmd::Save),
         (t("Export data (GeoTIFF)..."), "", Cmd::Export),
+        (t("Figure"), "F8", Cmd::Figure),
         (t("Open workspace..."), "", Cmd::Load),
         (t("New view"), "Ctrl+N", Cmd::NewView),
         (t("Duplicate view"), "Ctrl+D", Cmd::Duplicate),
@@ -162,6 +168,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Fit"), "F", Cmd::Fit),
         (t("Zoom 1:1"), "1", Cmd::OneToOne),
         (t("Automatic stretch"), "A", Cmd::Auto),
+        (t("Same display for all layers"), "", Cmd::SameDisplay),
         (t("Next color map"), "C", Cmd::NextCmap),
         (t("Invert color map"), "I", Cmd::Invert),
         (t("Show or hide side panel"), "H", Cmd::Panel),
@@ -262,6 +269,12 @@ impl TabViewer for Tabs<'_> {
     type Tab = u32;
 
     fn title(&mut self, tab: &mut u32) -> egui::WidgetText {
+        match *tab {
+            crate::app::PY_TAB => return t("Python").into(),
+            crate::app::CHARTS_TAB => return t("Charts").into(),
+            crate::app::FIGURE_TAB => return t("Figure").into(),
+            _ => {}
+        }
         let p = self.app.pane(*tab);
         let t = p.map_or(String::new(), |p| p.title());
         match p.map_or(0, |p| p.link) {
@@ -275,15 +288,27 @@ impl TabViewer for Tabs<'_> {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut u32) {
-        pane_ui(self.app, ui, *tab, self.screen, &mut self.cmds);
+        match *tab {
+            crate::app::PY_TAB => self.app.py_tab(ui),
+            crate::app::CHARTS_TAB => self.app.charts_tab(ui),
+            crate::app::FIGURE_TAB => self.app.figure_tab(ui, &mut self.cmds),
+            id => pane_ui(self.app, ui, id, self.screen, &mut self.cmds),
+        }
     }
 
     fn context_menu(&mut self, ui: &mut egui::Ui, tab: &mut u32, _: egui_dock::NodePath) {
-        view_menu(ui, *tab, false, &self.app.recent, &mut self.cmds);
+        if crate::app::is_view(*tab) {
+            view_menu(ui, *tab, false, &self.app.recent, &mut self.cmds);
+        }
     }
 
     fn on_close(&mut self, tab: &mut u32) -> OnCloseResponse {
-        self.closed.push(*tab);
+        match *tab {
+            crate::app::PY_TAB => self.app.py.iter_mut().for_each(|p| p.open = false),
+            crate::app::CHARTS_TAB => self.app.py.iter_mut().for_each(|p| p.charts_open = false),
+            crate::app::FIGURE_TAB => self.app.figure_open = false,
+            id => self.closed.push(id),
+        }
         OnCloseResponse::Close
     }
 
@@ -808,6 +833,11 @@ impl App {
                 });
             }
             let screen = self.win.as_ref().map_or([1, 1], |w| w.size());
+            // The tabs of the Python editor, of the charts and of the figure show when they are open.
+            let (py, charts) = self.py.as_ref().map_or((false, false), |p| (p.open, p.charts_open));
+            self.show_tab(crate::app::PY_TAB, py);
+            self.show_tab(crate::app::CHARTS_TAB, charts);
+            self.show_tab(crate::app::FIGURE_TAB, self.figure_open);
             let mut dock = std::mem::replace(&mut self.dock, DockState::new(vec![]));
             let mut tabs = Tabs { app: self, closed: vec![], cmds: vec![], screen };
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
@@ -856,7 +886,7 @@ impl App {
         self.url_ui(&ctx);
         self.help_ui(&ctx);
         self.prefs_ui(&ctx);
-        self.py_ui(&ctx);
+        self.py_frame();
         // `eoview --python FILE`: the script runs when the layers of the view show.
         let shown = self.pane(self.active).is_some_and(|p| !p.layers.is_empty() && p.layers.iter().all(|l| !l.inputs.is_empty()) && p.v.inputs.iter().all(|i| i.warp.is_some()));
         if shown && self.opens_pending() == 0 && let Some(f) = self.cli_python.take() {
@@ -1028,6 +1058,7 @@ impl App {
             (cmd, Key::R, Cmd::Render),
             (none, Key::F6, Cmd::Animate),
             (none, Key::F7, Cmd::Python),
+            (none, Key::F8, Cmd::Figure),
             (cmd, Key::Q, Cmd::Quit),
             (sh, Key::C, Cmd::CopyExtent),
             (none, Key::F1, Cmd::Help),
@@ -1091,6 +1122,8 @@ impl App {
             Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
             Cmd::Export => self.dialog = Some(Dialog::Export(id)),
+            Cmd::Figure => self.figure_open ^= true,
+            Cmd::FigureExport(ext) => self.dialog = Some(Dialog::Figure(id, ext)),
             Cmd::Load => self.dialog = Some(Dialog::Load),
             Cmd::NewView => drop(self.split(id)),
             Cmd::Duplicate => self.duplicate(id),
@@ -1222,6 +1255,20 @@ impl App {
                     }
                     Cmd::CoordGrid => {
                         p.coord_grid ^= true;
+                        false
+                    }
+                    Cmd::SameDisplay => {
+                        // The bands (by their names), the stretch and the colors of the selected layer, for
+                        // example for the orbits of a day: one stretch, no seams between them.
+                        let Some(src) = p.layers.get(sel).map(|l| l.save()) else { return };
+                        for l in p.layers.iter_mut().enumerate().filter(|(k, _)| *k != sel).map(|x| x.1) {
+                            let mut s = src.clone();
+                            (s.series, s.step, s.opacity, s.visible) = (vec![], l.step, l.opacity, l.visible);
+                            l.apply(&s);
+                        }
+                        for k in (0..p.layers.len()).filter(|&k| k != sel) {
+                            self.compile(id, k);
+                        }
                         false
                     }
                     Cmd::Overlay(k) => {
@@ -1437,6 +1484,7 @@ impl App {
                     entry(ui, cmds, id, t("Export data (GeoTIFF)..."), "", Cmd::Export);
                     ui.separator();
                     entry(ui, cmds, id, t("Automatic stretch"), "A", Cmd::Auto);
+                    entry(ui, cmds, id, t("Same display for all layers"), "", Cmd::SameDisplay);
                     ui.menu_button(t("Color map"), |ui| {
                         for (i, (n, _)) in CMAPS.iter().enumerate() {
                             check(ui, cmds, id, i == cmap, n, "", Cmd::Cmap(i));
@@ -2170,13 +2218,16 @@ impl App {
                     p.field_miss |= crate::wind::particles(p, li, &self.fields, &mut need, &painter, ppp, t);
                 }
             }
-            if p.v.space.is_some() || p.v.globe {
-                let labels = &crate::outlines::data().labels;
-                let at = |ll: [f64; 2]| if names.is_empty() { Some(ll) } else { labels.iter().position(|l| l.0 == ll).and_then(|k| names[k]) };
-                crate::outlines::draw(p, &painter, ppp, outline.as_ref().map(|v| &v[..]), &at);
+            // The map of a figure: the data only.
+            if !p.bare {
+                if p.v.space.is_some() || p.v.globe {
+                    let labels = &crate::outlines::data().labels;
+                    let at = |ll: [f64; 2]| if names.is_empty() { Some(ll) } else { labels.iter().position(|l| l.0 == ll).and_then(|k| names[k]) };
+                    crate::outlines::draw(p, &painter, ppp, outline.as_ref().map(|v| &v[..]), &at);
+                }
+                overlays(p, &painter, ppp, mpp, cross);
+                self.tools_paint(i, &painter, ppp, &mut need);
             }
-            overlays(p, &painter, ppp, mpp, cross);
-            self.tools_paint(i, &painter, ppp, &mut need);
             let p = &mut self.panes[i];
             let keys: Vec<eo_cache::TileKey> = need.iter().map(|n| n.1).collect();
             if keys != p.field_sent {
@@ -2412,6 +2463,19 @@ pub fn dialogs(app: &mut App) {
             let name = app.pane(pane).and_then(|p| p.layers.get(p.sel)).map_or("layer".into(), |l| l.comp_name().replace(['/', '\\', ':', ' '], "_"));
             if let Some(p) = rfd::FileDialog::new().set_title(t("Export data (GeoTIFF)")).add_filter("GeoTIFF", &["tif", "tiff"]).set_file_name(format!("{name}.tif")).save_file() {
                 app.export(pane, p.to_string_lossy().into_owned());
+            }
+        }
+        Dialog::Figure(pane, ext) => {
+            let name = format!("figure.{ext}");
+            if let Some(p) = rfd::FileDialog::new().set_title(t("Export the figure")).add_filter(ext.to_uppercase(), &[ext]).set_file_name(name).save_file() {
+                let mut path = p.to_string_lossy().into_owned();
+                if !path.to_lowercase().ends_with(&format!(".{ext}")) {
+                    path = format!("{path}.{ext}");
+                }
+                app.fig.msg = Some(match app.figure_export(pane, &path) {
+                    Ok(p) => tf("Written: {}", &[&p]),
+                    Err(e) => e,
+                });
             }
         }
         Dialog::PyOpen => {
