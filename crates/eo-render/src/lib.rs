@@ -501,6 +501,8 @@ pub struct Gpu {
     layer_bgl: wgpu::BindGroupLayout,
     comp_bgl: wgpu::BindGroupLayout,
     comp_pipes: HashMap<String, wgpu::RenderPipeline>,
+    /// The last pass of a view with more groups (`View2d`), made at the first use.
+    blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     sampler: wgpu::Sampler,
     /// Linear when magnified: smooth pixels (a view with `View2d::smooth`).
     smooth: wgpu::Sampler,
@@ -619,6 +621,7 @@ impl Gpu {
             layer_bgl,
             comp_bgl,
             comp_pipes: HashMap::new(),
+            blit: None,
             sampler,
             smooth,
             lut_sampler,
@@ -669,6 +672,38 @@ impl Gpu {
         (a.tex, a.view, a.cap) = (tex, view, cap);
         a.version += 1;
         a.free.splice(0..0, (old..cap).rev());
+    }
+
+    /// The pipeline of the last pass of a view with more groups, and its bind group layout.
+    fn blit(&mut self) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+        let (dev, format) = (&self.device, self.format);
+        self.blit
+            .get_or_insert_with(|| {
+                let bgl = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("accumulation"),
+                    entries: &[uniform_entry(0), tex_entry(1, wgpu::TextureViewDimension::D2, false, wgpu::ShaderStages::FRAGMENT)],
+                });
+                let shader = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("accumulation"), source: wgpu::ShaderSource::Wgsl(BLIT_SHADER.into()) });
+                let layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
+                let pipe = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("accumulation"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                    }),
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+                (pipe, bgl)
+            })
+            .clone()
     }
 
     /// Composite pipeline of layers and a compare mode. Errors come from the WGSL compiler (band math).
@@ -894,13 +929,10 @@ impl Input {
 }
 
 /// GPU resources of one 2D view: offscreen targets, color map and composite.
-/// The GPU resources of a group of layers of a view: the color maps, the composite uniforms and one
-/// offscreen target for each input of the group.
+/// The GPU resources of a group of layers of a view: the color maps and the composite uniforms.
 struct Group {
     lut: wgpu::Texture,
     cbuf: wgpu::Buffer,
-    targets: Vec<(wgpu::Texture, wgpu::TextureView)>,
-    size: (u32, u32),
 }
 
 impl Group {
@@ -921,43 +953,31 @@ impl Group {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        Group { lut, cbuf, targets: vec![], size: (0, 0) }
-    }
-
-    /// Offscreen targets: one for each input, of the view size. They change only when the size or the count changes.
-    fn targets(&mut self, gpu: &mut Gpu, w: u32, h: u32, n: usize) {
-        if self.size == (w, h) && self.targets.len() == n {
-            return;
-        }
-        gpu.target_bytes -= self.targets.len() * (self.size.0 * self.size.1 * 2) as usize;
-        self.targets = (0..n)
-            .map(|_| {
-                let t = gpu.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("input target"),
-                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: TARGET,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                });
-                let v = t.create_view(&Default::default());
-                (t, v)
-            })
-            .collect();
-        self.size = (w, h);
-        gpu.target_bytes += n * (w * h * 2) as usize;
+        Group { lut, cbuf }
     }
 }
 
+/// A group of layers to draw: its inputs (a range of the inputs of the view, at most `MAX_INPUTS`), its
+/// composite layers (input indices in the group), its compare mode and its uniforms.
+pub struct GroupDraw<'a> {
+    pub range: std::ops::Range<usize>,
+    pub specs: &'a [LayerSpec],
+    pub cmp: Compare,
+    pub cu: CompositeUniforms,
+}
+
 /// The GPU part of a 2D view. The layers of a view are in groups of at most 4 layers and `MAX_INPUTS`
-/// inputs: one composite for each group, each over the groups below it.
-// ponytail: each input has its own target of the view size (4 bytes for each pixel): 14 RGB layers are
-// 42 targets, about 330 MB for a 1920 x 1080 view. If it is too much: one set of `MAX_INPUTS` targets for
-// all groups, with the composite of each group into an accumulation texture in `prepare`.
+/// inputs. One group: its composite draws on the window. More groups: they use the same targets one
+/// after the other, each composite goes over the ones before it in an accumulation texture, and the view
+/// shows this texture (the memory of `MAX_INPUTS` targets and one texture, for any number of layers).
 pub struct View2d {
     groups: Vec<Group>,
+    /// The targets of the inputs of a group (one of the view size for each input), and their size.
+    targets: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    size: (u32, u32),
+    /// The accumulation texture of a view with more than one group, and the uniform of its last pass.
+    accum: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
+    ubuf: Option<wgpu::Buffer>,
     pub inputs: Vec<Input>,
     /// Magnified pixels are smooth (linear), not squares. Data at a low resolution, for example a
     /// weather model. The tiles do not have the pixels of the next tiles: their edges show.
@@ -966,7 +986,7 @@ pub struct View2d {
 
 impl View2d {
     pub fn new(_: &Gpu) -> View2d {
-        View2d { groups: vec![], inputs: vec![], smooth: false }
+        View2d { groups: vec![], targets: vec![], size: (0, 0), accum: None, ubuf: None, inputs: vec![], smooth: false }
     }
 
     fn group(&mut self, gpu: &Gpu, g: usize) -> &mut Group {
@@ -987,96 +1007,172 @@ impl View2d {
         );
     }
 
-    /// Write the buffers and make the paint callback for egui of group `g`, with the inputs `range` of the
-    /// view (at most `MAX_INPUTS`). `inputs[k]` are the uniforms and the u8 flag of input k of the view.
-    /// `specs` are the layers of the group (input indices in the group). `rect` is the view in points,
+    /// Offscreen targets: `n` of the view size. They change only when the size grows or the count grows.
+    fn targets(&mut self, gpu: &mut Gpu, w: u32, h: u32, n: usize) {
+        if self.size == (w, h) && self.targets.len() >= n {
+            return;
+        }
+        let n = n.max(if self.size == (w, h) { self.targets.len() } else { 0 });
+        gpu.target_bytes -= self.targets.len() * (self.size.0 * self.size.1 * 2) as usize;
+        self.targets = (0..n)
+            .map(|_| {
+                let t = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("input target"),
+                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: TARGET,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                });
+                let v = t.create_view(&Default::default());
+                (t, v)
+            })
+            .collect();
+        self.size = (w, h);
+        gpu.target_bytes += n * (w * h * 2) as usize;
+    }
+
+    /// The accumulation texture of the view size (in the format of the window).
+    fn accum(&mut self, gpu: &mut Gpu, w: u32, h: u32) -> wgpu::TextureView {
+        if let Some((_, v, sz)) = &self.accum
+            && *sz == (w, h)
+        {
+            return v.clone();
+        }
+        if let Some((_, _, sz)) = self.accum.take() {
+            gpu.target_bytes -= (sz.0 * sz.1 * 4) as usize;
+        }
+        let t = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("accumulation"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: gpu.format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let v = t.create_view(&Default::default());
+        gpu.target_bytes += (w * h * 4) as usize;
+        self.accum = Some((t, v.clone(), (w, h)));
+        v
+    }
+
+    /// Write the buffers and make the paint callback for egui of the groups `groups` of the view.
+    /// `inputs[k]` are the uniforms and the u8 flag of input k of the view. `rect` is the view in points,
     /// `px` its size in physical pixels.
-    #[allow(clippy::too_many_arguments)]
-    pub fn paint(
-        &mut self,
-        gpu: &mut Gpu,
-        g: usize,
-        range: std::ops::Range<usize>,
-        inputs: &[(LayerUniforms, bool)],
-        specs: &[LayerSpec],
-        cmp: Compare,
-        cu: &CompositeUniforms,
-        rect: egui::Rect,
-        px: (u32, u32),
-    ) -> Result<Option<egui::PaintCallback>, String> {
-        let start = range.start;
-        let layers = inputs.get(range.clone()).unwrap_or(&[]);
-        let n = layers.len().min(self.inputs.len().saturating_sub(start)).min(MAX_INPUTS);
-        if n == 0 || specs.is_empty() || px.0 == 0 || px.1 == 0 {
+    pub fn paint(&mut self, gpu: &mut Gpu, groups: &[GroupDraw], inputs: &[(LayerUniforms, bool)], rect: egui::Rect, px: (u32, u32)) -> Result<Option<egui::PaintCallback>, String> {
+        if px.0 == 0 || px.1 == 0 {
             return Ok(None);
         }
-        let pipe = gpu.composite(specs, cmp)?;
-        self.group(gpu, g).targets(gpu, px.0, px.1, n);
-        let grp = &self.groups[g];
-        let mut passes = vec![];
-        let mut cu = *cu;
-        for (k, (lu, u8)) in layers.iter().take(n).enumerate() {
-            // The target gets the raw value of the tile (8-bit tiles: 0 to 255), the composite the scale and
-            // the offset to the physical value.
-            let raw = if *u8 { 255.0 } else { 1.0 };
-            (cu.ia[k / 4][k % 4], cu.ib[k / 4][k % 4]) = (lu.a / raw, lu.b);
-            let lu = &LayerUniforms { a: raw, b: 0.0, ..*lu };
-            let inp = &mut self.inputs[start + k];
-            inp.insts.truncate(MAX_DRAWS);
-            let Some((warp, wid)) = &inp.warp else {
-                passes.push((grp.targets[k].1.clone(), None));
-                continue;
-            };
-            gpu.queue.write_buffer(&inp.ubuf, 0, bytemuck::bytes_of(lu));
-            if !inp.insts.is_empty() {
-                gpu.queue.write_buffer(&inp.ibuf, 0, bytemuck::cast_slice(&inp.insts));
+        let nv = self.inputs.len();
+        let count = |g: &GroupDraw| inputs.get(g.range.clone()).map_or(0, |x| x.len()).min(nv.saturating_sub(g.range.start)).min(MAX_INPUTS);
+        let groups: Vec<&GroupDraw> = groups.iter().filter(|g| count(g) > 0 && !g.specs.is_empty()).collect();
+        if groups.is_empty() {
+            return Ok(None);
+        }
+        let n = groups.iter().map(|g| count(g)).max().unwrap_or(0);
+        self.targets(gpu, px.0, px.1, n);
+        let many = groups.len() > 1;
+        let accum = if many { Some(self.accum(gpu, px.0, px.1)) } else {
+            if let Some((_, _, sz)) = self.accum.take() {
+                gpu.target_bytes -= (sz.0 * sz.1 * 4) as usize;
             }
-            let tv = gpu.array(*u8).view.clone();
-            let (smooth, version) = (self.smooth, gpu.array_version(*u8));
-            if inp.bind.as_ref().is_none_or(|b| b.1 != *u8 || b.2 != *wid || b.3 != smooth || b.4 != version) {
-                let wv = warp.create_view(&Default::default());
-                let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &gpu.layer_bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: inp.ubuf.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if smooth { &gpu.smooth } else { &gpu.sampler }) },
-                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tv) },
-                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&wv) },
-                    ],
+            None
+        };
+        let mut steps = vec![];
+        for (g, gd) in groups.iter().enumerate() {
+            let pipe = gpu.composite(gd.specs, gd.cmp)?;
+            self.group(gpu, g);
+            let (start, nk) = (gd.range.start, count(gd));
+            let mut passes = vec![];
+            let mut cu = gd.cu;
+            // In the accumulation texture, the view is at the origin.
+            if many {
+                cu.vo = [0.0, 0.0];
+            }
+            for (k, (lu, u8)) in inputs[start..].iter().take(nk).enumerate() {
+                // The target gets the raw value of the tile (8-bit tiles: 0 to 255), the composite the scale and
+                // the offset to the physical value.
+                let raw = if *u8 { 255.0 } else { 1.0 };
+                (cu.ia[k / 4][k % 4], cu.ib[k / 4][k % 4]) = (lu.a / raw, lu.b);
+                let lu = &LayerUniforms { a: raw, b: 0.0, ..*lu };
+                let inp = &mut self.inputs[start + k];
+                inp.insts.truncate(MAX_DRAWS);
+                let Some((warp, wid)) = &inp.warp else {
+                    passes.push((self.targets[k].1.clone(), None));
+                    continue;
+                };
+                gpu.queue.write_buffer(&inp.ubuf, 0, bytemuck::bytes_of(lu));
+                if !inp.insts.is_empty() {
+                    gpu.queue.write_buffer(&inp.ibuf, 0, bytemuck::cast_slice(&inp.insts));
+                }
+                let tv = gpu.array(*u8).view.clone();
+                let (smooth, version) = (self.smooth, gpu.array_version(*u8));
+                if inp.bind.as_ref().is_none_or(|b| b.1 != *u8 || b.2 != *wid || b.3 != smooth || b.4 != version) {
+                    let wv = warp.create_view(&Default::default());
+                    let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: None,
+                        layout: &gpu.layer_bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: inp.ubuf.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if smooth { &gpu.smooth } else { &gpu.sampler }) },
+                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tv) },
+                            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&wv) },
+                        ],
+                    });
+                    inp.bind = Some((bg, *u8, *wid, smooth, version));
+                }
+                let draw = (!inp.insts.is_empty()).then(|| LayerDraw {
+                    bind: inp.bind.as_ref().unwrap().0.clone(),
+                    ibuf: inp.ibuf.clone(),
+                    verts: 6 * lu.n * lu.n,
+                    insts: inp.insts.len() as u32,
                 });
-                inp.bind = Some((bg, *u8, *wid, smooth, version));
+                passes.push((self.targets[k].1.clone(), draw));
             }
-            let draw = (!inp.insts.is_empty()).then(|| LayerDraw {
-                bind: inp.bind.as_ref().unwrap().0.clone(),
-                ibuf: inp.ibuf.clone(),
-                verts: 6 * lu.n * lu.n,
-                insts: inp.insts.len() as u32,
-            });
-            passes.push((grp.targets[k].1.clone(), draw));
+            let grp = &self.groups[g];
+            gpu.queue.write_buffer(&grp.cbuf, 0, bytemuck::bytes_of(&cu));
+            let lv = grp.lut.create_view(&Default::default());
+            let mut entries = vec![
+                wgpu::BindGroupEntry { binding: 0, resource: grp.cbuf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&gpu.lut_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&lv) },
+            ];
+            for k in 0..MAX_INPUTS {
+                let v = self.targets.get(k).filter(|_| k < nk).map_or(&gpu.dummy, |t| &t.1);
+                entries.push(wgpu::BindGroupEntry { binding: 3 + k as u32, resource: wgpu::BindingResource::TextureView(v) });
+            }
+            // ponytail: a new composite bind group each frame. Keep it if profiles show the cost.
+            let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &gpu.comp_bgl, entries: &entries });
+            steps.push(Step { passes, pipe, bind });
         }
-        gpu.queue.write_buffer(&grp.cbuf, 0, bytemuck::bytes_of(&cu));
-        let lv = grp.lut.create_view(&Default::default());
-        let mut entries = vec![
-            wgpu::BindGroupEntry { binding: 0, resource: grp.cbuf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&gpu.lut_sampler) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&lv) },
-        ];
-        for k in 0..MAX_INPUTS {
-            let v = grp.targets.get(k).map_or(&gpu.dummy, |t| &t.1);
-            entries.push(wgpu::BindGroupEntry { binding: 3 + k as u32, resource: wgpu::BindingResource::TextureView(v) });
-        }
-        // ponytail: a new composite bind group each frame. Keep it if profiles show the cost.
-        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &gpu.comp_bgl, entries: &entries });
-        let cb = Draw { layer_pipe: gpu.layer_pipe.clone(), passes, pipe, bind };
+        // The last pass of more groups: the accumulation texture (premultiplied alpha) on the window.
+        let blit = match &accum {
+            Some(view) => {
+                let (pipe, bgl) = gpu.blit();
+                let ub = self.ubuf.get_or_insert_with(|| {
+                    gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("accumulation"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+                });
+                gpu.queue.write_buffer(ub, 0, bytemuck::cast_slice(&[groups[0].cu.vo[0], groups[0].cu.vo[1], 0.0, 0.0]));
+                let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &bgl,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) }],
+                });
+                Some((pipe, bind, view.clone()))
+            }
+            None => None,
+        };
+        let cb = Draw { layer_pipe: gpu.layer_pipe.clone(), steps, blit };
         Ok(Some(egui_wgpu::Callback::new_paint_callback(rect, cb)))
     }
 
-    /// Free the targets of the groups after `n` (the view has fewer groups now).
-    pub fn keep_groups(&mut self, gpu: &mut Gpu, n: usize) {
-        for g in self.groups.drain(n.min(self.groups.len())..) {
-            gpu.target_bytes -= g.targets.len() * (g.size.0 * g.size.1 * 2) as usize;
-        }
+    /// Free the resources of the groups after `n` (the view has fewer groups now).
+    pub fn keep_groups(&mut self, _: &mut Gpu, n: usize) {
+        self.groups.truncate(n.max(1));
     }
 }
 
@@ -1092,24 +1188,24 @@ struct LayerDraw {
     insts: u32,
 }
 
-struct Draw {
-    layer_pipe: wgpu::RenderPipeline,
+/// The passes of a group: one for each input, then the composite.
+struct Step {
     passes: Vec<(wgpu::TextureView, Option<LayerDraw>)>,
     pipe: wgpu::RenderPipeline,
     bind: wgpu::BindGroup,
 }
 
-impl egui_wgpu::CallbackTrait for Draw {
-    fn prepare(
-        &self,
-        _: &wgpu::Device,
-        _: &wgpu::Queue,
-        _: &egui_wgpu::ScreenDescriptor,
-        enc: &mut wgpu::CommandEncoder,
-        _: &mut egui_wgpu::CallbackResources,
-    ) -> Vec<wgpu::CommandBuffer> {
-        // One pass for each input: clear to NO_DATA, then all visible tiles in one instanced draw.
-        for (target, draw) in &self.passes {
+struct Draw {
+    layer_pipe: wgpu::RenderPipeline,
+    steps: Vec<Step>,
+    /// More groups: the pipeline and the bind group of the last pass, and the accumulation texture.
+    blit: Option<(wgpu::RenderPipeline, wgpu::BindGroup, wgpu::TextureView)>,
+}
+
+impl Draw {
+    /// The input passes of a group: clear to no data, then all visible tiles in one instanced draw.
+    fn inputs(&self, enc: &mut wgpu::CommandEncoder, step: &Step) {
+        for (target, draw) in &step.passes {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("layer"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1134,15 +1230,73 @@ impl egui_wgpu::CallbackTrait for Draw {
                 pass.draw(0..d.verts, 0..d.insts);
             }
         }
+    }
+}
+
+impl egui_wgpu::CallbackTrait for Draw {
+    fn prepare(
+        &self,
+        _: &wgpu::Device,
+        _: &wgpu::Queue,
+        _: &egui_wgpu::ScreenDescriptor,
+        enc: &mut wgpu::CommandEncoder,
+        _: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let Some((_, _, accum)) = &self.blit else {
+            // One group: its inputs now, its composite in `paint`.
+            self.inputs(enc, &self.steps[0]);
+            return vec![];
+        };
+        // More groups: the inputs of each group, then its composite over the accumulation texture.
+        for (g, step) in self.steps.iter().enumerate() {
+            self.inputs(enc, step);
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("composite of a group"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: accum,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: if g == 0 { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&step.pipe);
+            pass.set_bind_group(0, &step.bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
         vec![]
     }
 
     fn paint(&self, _: egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>, _: &egui_wgpu::CallbackResources) {
-        pass.set_pipeline(&self.pipe);
-        pass.set_bind_group(0, &self.bind, &[]);
+        let (pipe, bind) = match &self.blit {
+            Some((p, b, _)) => (p, b),
+            None => (&self.steps[0].pipe, &self.steps[0].bind),
+        };
+        pass.set_pipeline(pipe);
+        pass.set_bind_group(0, bind, &[]);
         pass.draw(0..3, 0..1);
     }
 }
+
+/// The last pass of a view with more groups: the accumulation texture (premultiplied alpha) on the window.
+const BLIT_SHADER: &str = r#"
+@group(0) @binding(0) var<uniform> vo: vec4f;
+@group(0) @binding(1) var acc: texture_2d<f32>;
+
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+
+@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let c = textureLoad(acc, vec2i(pos.xy - vo.xy), 0);
+    if (c.a <= 0.0) { discard; }
+    return c;
+}
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -1165,6 +1319,9 @@ mod tests {
             }
         }
         assert_eq!(std::mem::size_of::<CompositeUniforms>(), 48 + 4 * 64 + 64);
+        // The last pass of a view with more groups.
+        let m = naga::front::wgsl::parse_str(BLIT_SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(BLIT_SHADER)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default()).validate(&m).unwrap();
         // The layer shader (2D and globe).
         let m = naga::front::wgsl::parse_str(LAYER_SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(LAYER_SHADER)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default()).validate(&m).unwrap();

@@ -2175,6 +2175,7 @@ impl App {
             if wind {
                 next_flip = Some(next_flip.map_or(1.0 / 30.0, |n: f64| n.min(1.0 / 30.0)));
             }
+            let mut draws: Vec<eo_render::GroupDraw> = vec![];
             for (g, &(start, specs, lays, gcmp)) in groups.iter().enumerate() {
                 let end = groups.get(g + 1).map_or(inputs.len(), |x| x.0);
                 // Color map rows: one for each layer, the last for the difference.
@@ -2211,11 +2212,12 @@ impl App {
                         cu.l[k].opacity = p.blend;
                     }
                 }
-                match vg.paint(&mut win.gpu, g, start..end, &inputs, specs, gcmp, &cu, p.rect, (p.v.px.width() as u32, p.v.px.height() as u32)) {
-                    Ok(Some(cb)) => drop(painter.add(cb)),
-                    Ok(None) => {}
-                    Err(e) => p.err = Some(e),
-                }
+                draws.push(eo_render::GroupDraw { range: start..end, specs, cmp: gcmp, cu });
+            }
+            match vg.paint(&mut win.gpu, &draws, &inputs, p.rect, (p.v.px.width() as u32, p.v.px.height() as u32)) {
+                Ok(Some(cb)) => drop(painter.add(cb)),
+                Ok(None) => {}
+                Err(e) => p.err = Some(e),
             }
             if p.v.globe {
                 graticule(&p.v, &painter.with_clip_rect(p.rect), p.rect);
