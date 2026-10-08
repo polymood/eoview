@@ -19,6 +19,10 @@ pub const MAX_DRAWS: usize = 8192;
 pub const MAX_INPUTS: usize = 8;
 /// Value of an offscreen target where no layer pixel is. The composite discards it.
 pub const NO_DATA: f32 = -3.0e38;
+
+/// The format of the targets of the inputs: the raw value of a tile (16-bit float tiles are exact in it,
+/// and 8-bit tiles are integers from 0 to 255). The composite applies the scale and the offset.
+const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// Rows of the color map texture: one for each layer (4) and one for the difference.
 pub const LUT_ROWS: u32 = 5;
 /// Subdivisions of each side of a tile when the warp is not affine.
@@ -142,6 +146,7 @@ struct C {
     swipe: f32, vertical: u32, show_b: u32, diff: u32,
     dlo: f32, dhi: f32, dflags: u32, tmix: f32,
     l: array<L, 4>,
+    ia: array<vec4f, 2>, ib: array<vec4f, 2>,
 };
 @group(0) @binding(0) var<uniform> u: C;
 @group(0) @binding(1) var smp: sampler;
@@ -177,6 +182,11 @@ fn nd(x: f32) -> bool {
     return x <= -1.0e38;
 }
 
+// The value of input j from its raw value in its target (no data: NO_DATA).
+fn val(r: f32, j: u32) -> f32 {
+    return select(r * u.ia[j / 4u][j % 4u] + u.ib[j / 4u][j % 4u], -3.0e38, r <= -1.0e38);
+}
+
 fn finite(x: f32) -> bool {
     let b = bitcast<u32>(x) & 0x7fffffffu;
     return b < 0x7f800000u;
@@ -196,14 +206,6 @@ fn over(dst: vec4f, src: vec4f) -> vec4f {
 @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     let pf = pos.xy - u.vo;
     let p = vec2i(pf);
-    let v0 = textureLoad(i0, p, 0).r;
-    let v1 = textureLoad(i1, p, 0).r;
-    let v2 = textureLoad(i2, p, 0).r;
-    let v3 = textureLoad(i3, p, 0).r;
-    let v4 = textureLoad(i4, p, 0).r;
-    let v5 = textureLoad(i5, p, 0).r;
-    let v6 = textureLoad(i6, p, 0).r;
-    let v7 = textureLoad(i7, p, 0).r;
     var col = vec4f(0.0);
     LAYERS
     if (col.a <= 0.0) { discard; }
@@ -240,8 +242,8 @@ impl Mode {
 /// `p0` of the layer is the size of a cell in pixels, and `p1` the phase of a light pulse that goes from
 /// the tail to the head (0 to 1). The view has north up: the code does not turn the arrows for the
 /// convergence of a projection, or on the globe.
-fn arrows(k: usize, cu: &str, cv: &str, nd: &str) -> String {
-    let loads: String = (0..MAX_INPUTS).map(|j| format!("let c{j} = textureLoad(i{j}, q, 0).r;\n            ")).collect();
+fn arrows(k: usize, cu: &str, cv: &str, nd: &str, inputs: &[usize]) -> String {
+    let loads: String = inputs.iter().map(|j| format!("let c{j} = val(textureLoad(i{j}, q, 0).r, {j}u);\n            ")).collect();
     format!(
         "let cell = max(u.l[{k}].p0, 8.0);
             let ctr = (floor(pf / cell) + 0.5) * cell;
@@ -296,6 +298,17 @@ pub enum Compare {
 
 /// Fragment code of a composite.
 fn program(layers: &[LayerSpec], cmp: Compare) -> String {
+    // The values of the inputs that the layers use, and only them: a texture read for each input at each
+    // pixel costs memory bandwidth (on an integrated GPU, the memory of the system).
+    let n = if cmp == Compare::Difference { 2 } else { 4 };
+    let mut used: Vec<usize> = layers.iter().take(n).flat_map(|l| l.inputs.iter().copied()).collect();
+    used.sort_unstable();
+    used.dedup();
+    let loads: String = used.iter().map(|j| format!("let v{j} = val(textureLoad(i{j}, p, 0).r, {j}u);\n    ")).collect();
+    loads + &program_body(layers, cmp)
+}
+
+fn program_body(layers: &[LayerSpec], cmp: Compare) -> String {
     let nd = |ins: &[usize]| if ins.is_empty() { "false".to_string() } else { ins.iter().map(|k| format!("nd(v{k})")).collect::<Vec<_>>().join(" || ") };
     if cmp == Compare::Difference && layers.len() >= 2 {
         let (a, b) = (&layers[0], &layers[1]);
@@ -347,7 +360,7 @@ fn program(layers: &[LayerSpec], cmp: Compare) -> String {
             if ((u.l[{k}].flags & 32u) == 0u) {{
             {}
             }}",
-                    arrows(k, &center(u), &center(v), if ndc.is_empty() { "false" } else { &ndc })
+                    arrows(k, &center(u), &center(v), if ndc.is_empty() { "false" } else { &ndc }, &l.inputs)
                 )
             }
         };
@@ -399,6 +412,10 @@ pub struct CompositeUniforms {
     /// Blend of two time steps: 0 is the selected step, 1 is the next step (see `MapLayer::spec`).
     pub tmix: f32,
     pub l: [LayerParams; 4],
+    /// The scale and the offset of input j of the group: value = raw value in its target * ia + ib (`View2d::paint`
+    /// sets them).
+    pub ia: [[f32; 4]; 2],
+    pub ib: [[f32; 4]; 2],
 }
 
 #[repr(C)]
@@ -442,13 +459,37 @@ struct Slot {
     used: u64,
 }
 
-/// One texture array: one layer for each tile.
+/// One texture array: one layer for each tile. It starts small and doubles when it is full, up to the
+/// budget (`Gpu::layers`): a view of a small image does not take the memory of the budget (on an integrated
+/// GPU, it is the memory of the system).
 struct TileArray {
     tex: wgpu::Texture,
     view: wgpu::TextureView,
     bpp: u32,
+    /// Layers of the texture now.
+    cap: u32,
+    /// Changes when the texture changes (the bind groups that use it are made again).
+    version: u64,
     map: HashMap<TileKey, Slot>,
     free: Vec<u32>,
+}
+
+/// Layers of a new tile array.
+const FIRST_LAYERS: u32 = 64;
+
+fn tile_texture(dev: &wgpu::Device, u8: bool, layers: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = dev.create_texture(&wgpu::TextureDescriptor {
+        label: Some(if u8 { "tiles u8" } else { "tiles f16" }),
+        size: wgpu::Extent3d { width: T, height: T, depth_or_array_layers: layers },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: if u8 { wgpu::TextureFormat::R8Unorm } else { wgpu::TextureFormat::R16Float },
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+    (tex, view)
 }
 
 /// Shared GPU state: pipelines and the tile arrays (one for u8 tiles, one for f16 tiles).
@@ -540,7 +581,7 @@ impl Gpu {
                 module: &shader,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::TextureFormat::R32Float.into())],
+                targets: &[Some(TARGET.into())],
             }),
             primitive: Default::default(),
             depth_stencil: None,
@@ -563,7 +604,7 @@ impl Gpu {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R32Float,
+                format: TARGET,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
@@ -591,21 +632,43 @@ impl Gpu {
     }
 
     fn array(&mut self, u8: bool) -> &mut TileArray {
-        let (i, layers, dev) = (u8 as usize, self.layers, &self.device);
+        let (i, cap, dev) = (u8 as usize, FIRST_LAYERS.min(self.layers), &self.device);
         self.arrays[i].get_or_insert_with(|| {
-            let tex = dev.create_texture(&wgpu::TextureDescriptor {
-                label: Some(if u8 { "tiles u8" } else { "tiles f16" }),
-                size: wgpu::Extent3d { width: T, height: T, depth_or_array_layers: layers },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: if u8 { wgpu::TextureFormat::R8Unorm } else { wgpu::TextureFormat::R16Float },
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            let view = tex.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
-            TileArray { tex, view, bpp: if u8 { 1 } else { 2 }, map: HashMap::new(), free: (0..layers).rev().collect() }
+            let (tex, view) = tile_texture(dev, u8, cap);
+            TileArray { tex, view, bpp: if u8 { 1 } else { 2 }, cap, version: 0, map: HashMap::new(), free: (0..cap).rev().collect() }
         })
+    }
+
+    /// The generation of a tile array (see `TileArray::version`).
+    fn array_version(&self, u8: bool) -> u64 {
+        self.arrays[u8 as usize].as_ref().map_or(0, |a| a.version)
+    }
+
+    /// Room for `n` new tiles in a tile array: the array doubles (a copy on the GPU) while it has fewer free
+    /// layers and is under the budget.
+    fn reserve(&mut self, u8: bool, n: usize) {
+        let max = self.layers;
+        let a = self.array(u8);
+        if a.free.len() >= n || a.cap >= max {
+            return;
+        }
+        let mut cap = a.cap;
+        while (cap - a.cap) as usize + a.free.len() < n && cap < max {
+            cap = (cap * 2).min(max);
+        }
+        let old = a.cap;
+        let (tex, view) = tile_texture(&self.device, u8, cap);
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        let a = self.arrays[u8 as usize].as_mut().unwrap();
+        enc.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo { texture: &a.tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::Extent3d { width: T, height: T, depth_or_array_layers: old },
+        );
+        self.queue.submit([enc.finish()]);
+        (a.tex, a.view, a.cap) = (tex, view, cap);
+        a.version += 1;
+        a.free.splice(0..0, (old..cap).rev());
     }
 
     /// Composite pipeline of layers and a compare mode. Errors come from the WGSL compiler (band math).
@@ -660,7 +723,7 @@ impl Gpu {
         Some(self.arrays[u8 as usize].as_ref()?.map.get(key)?.layer)
     }
 
-    /// Number of tiles that each tile array can hold.
+    /// Number of tiles that each tile array can hold (at the budget).
     pub fn capacity(&self) -> usize {
         self.layers as usize
     }
@@ -738,6 +801,13 @@ impl Gpu {
             }
         }
         buf.unmap();
+        // The arrays grow before the copies: a copy goes to the texture that stays.
+        for u8 in [false, true] {
+            let new = placed.iter().filter(|p| p.1 == u8 && self.arrays[u8 as usize].as_ref().is_none_or(|a| !a.map.contains_key(&p.0))).count();
+            if new > 0 {
+                self.reserve(u8, new);
+            }
+        }
         let mut enc = self.device.create_command_encoder(&Default::default());
         for &(key, u8, done, w, h, prow, off) in &placed {
             let Some(layer) = self.slot(key, u8, done) else { continue };
@@ -762,7 +832,7 @@ impl Gpu {
         let t = (T * T) as usize;
         self.arrays.iter().flatten().fold((self.target_bytes, 0), |(a, r), x| {
             let b = t * x.bpp as usize;
-            (a + b * self.layers as usize, r + b * x.map.len())
+            (a + b * x.cap as usize, r + b * x.map.len())
         })
     }
 
@@ -776,8 +846,8 @@ pub struct Input {
     ubuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     warp: Option<(wgpu::Texture, u64)>,
-    /// Bind group, with its tile array (u8), warp and sampler (smooth).
-    bind: Option<(wgpu::BindGroup, bool, u64, bool)>,
+    /// Bind group, with its tile array (u8) and its generation, warp and sampler (smooth).
+    bind: Option<(wgpu::BindGroup, bool, u64, bool, u64)>,
     /// Instances of the next draw, coarse tiles first. The application fills it.
     pub insts: Vec<Inst>,
 }
@@ -859,7 +929,7 @@ impl Group {
         if self.size == (w, h) && self.targets.len() == n {
             return;
         }
-        gpu.target_bytes -= self.targets.len() * (self.size.0 * self.size.1 * 4) as usize;
+        gpu.target_bytes -= self.targets.len() * (self.size.0 * self.size.1 * 2) as usize;
         self.targets = (0..n)
             .map(|_| {
                 let t = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -868,7 +938,7 @@ impl Group {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::R32Float,
+                    format: TARGET,
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
                 });
@@ -877,7 +947,7 @@ impl Group {
             })
             .collect();
         self.size = (w, h);
-        gpu.target_bytes += n * (w * h * 4) as usize;
+        gpu.target_bytes += n * (w * h * 2) as usize;
     }
 }
 
@@ -944,7 +1014,13 @@ impl View2d {
         self.group(gpu, g).targets(gpu, px.0, px.1, n);
         let grp = &self.groups[g];
         let mut passes = vec![];
+        let mut cu = *cu;
         for (k, (lu, u8)) in layers.iter().take(n).enumerate() {
+            // The target gets the raw value of the tile (8-bit tiles: 0 to 255), the composite the scale and
+            // the offset to the physical value.
+            let raw = if *u8 { 255.0 } else { 1.0 };
+            (cu.ia[k / 4][k % 4], cu.ib[k / 4][k % 4]) = (lu.a / raw, lu.b);
+            let lu = &LayerUniforms { a: raw, b: 0.0, ..*lu };
             let inp = &mut self.inputs[start + k];
             inp.insts.truncate(MAX_DRAWS);
             let Some((warp, wid)) = &inp.warp else {
@@ -956,8 +1032,8 @@ impl View2d {
                 gpu.queue.write_buffer(&inp.ibuf, 0, bytemuck::cast_slice(&inp.insts));
             }
             let tv = gpu.array(*u8).view.clone();
-            let smooth = self.smooth;
-            if inp.bind.as_ref().is_none_or(|b| b.1 != *u8 || b.2 != *wid || b.3 != smooth) {
+            let (smooth, version) = (self.smooth, gpu.array_version(*u8));
+            if inp.bind.as_ref().is_none_or(|b| b.1 != *u8 || b.2 != *wid || b.3 != smooth || b.4 != version) {
                 let wv = warp.create_view(&Default::default());
                 let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: None,
@@ -969,7 +1045,7 @@ impl View2d {
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&wv) },
                     ],
                 });
-                inp.bind = Some((bg, *u8, *wid, smooth));
+                inp.bind = Some((bg, *u8, *wid, smooth, version));
             }
             let draw = (!inp.insts.is_empty()).then(|| LayerDraw {
                 bind: inp.bind.as_ref().unwrap().0.clone(),
@@ -979,7 +1055,7 @@ impl View2d {
             });
             passes.push((grp.targets[k].1.clone(), draw));
         }
-        gpu.queue.write_buffer(&grp.cbuf, 0, bytemuck::bytes_of(cu));
+        gpu.queue.write_buffer(&grp.cbuf, 0, bytemuck::bytes_of(&cu));
         let lv = grp.lut.create_view(&Default::default());
         let mut entries = vec![
             wgpu::BindGroupEntry { binding: 0, resource: grp.cbuf.as_entire_binding() },
@@ -999,7 +1075,7 @@ impl View2d {
     /// Free the targets of the groups after `n` (the view has fewer groups now).
     pub fn keep_groups(&mut self, gpu: &mut Gpu, n: usize) {
         for g in self.groups.drain(n.min(self.groups.len())..) {
-            gpu.target_bytes -= g.targets.len() * (g.size.0 * g.size.1 * 4) as usize;
+            gpu.target_bytes -= g.targets.len() * (g.size.0 * g.size.1 * 2) as usize;
         }
     }
 }
@@ -1041,7 +1117,8 @@ impl egui_wgpu::CallbackTrait for Draw {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: NO_DATA as f64, g: 0.0, b: 0.0, a: 1.0 }),
+                        // -inf in a 16-bit float target (the composite tests r <= -1e38).
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: f64::NEG_INFINITY, g: 0.0, b: 0.0, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1087,7 +1164,7 @@ mod tests {
                     .unwrap_or_else(|e| panic!("{cmp:?}: {e:?}"));
             }
         }
-        assert_eq!(std::mem::size_of::<CompositeUniforms>(), 48 + 4 * 64);
+        assert_eq!(std::mem::size_of::<CompositeUniforms>(), 48 + 4 * 64 + 64);
         // The layer shader (2D and globe).
         let m = naga::front::wgsl::parse_str(LAYER_SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(LAYER_SHADER)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default()).validate(&m).unwrap();

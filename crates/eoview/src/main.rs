@@ -380,9 +380,11 @@ fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: boo
         ..Default::default()
     }))
     .expect("no GPU adapter");
-    // The views draw the data to 32-bit float targets. An adapter without this (for example OpenGL ES
-    // without the float buffer extension, as on some WSL systems) is not usable: use an other adapter of
-    // the system that can do it, a GPU before a software adapter.
+    // The views draw the data to 16-bit float targets. The test is on 32-bit float targets, as before:
+    // the Mesa d3d12 OpenGL adapter of WSL can draw to 16-bit float targets but not to 32-bit ones, and the
+    // viewer on it removed the D3D12 device (the screen of Windows went black). With this test, WSL uses
+    // its software adapter. A GPU of a native system (D3D12, Vulkan, Metal) passes the test. Use an other
+    // adapter of the system that can do it, a GPU before a software adapter.
     let float = |a: &wgpu::Adapter| a.get_texture_format_features(wgpu::TextureFormat::R32Float).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
     let adapter = if float(&adapter) {
         adapter
@@ -405,6 +407,8 @@ fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: boo
     let name = format!("{} ({:?})", info.name, info.backend);
     if bench {
         println!("{:<40} {name}", "GPU adapter");
+    } else if std::env::var_os("EOVIEW_DEBUG").is_some() {
+        eprintln!("GPU adapter: {name}");
     }
     let limits = adapter.limits();
     let desc = wgpu::DeviceDescriptor { required_limits: limits.clone(), ..Default::default() };
@@ -702,7 +706,9 @@ impl App {
     /// Start the GPU, make the main window and open the products of the command line. This blocks the
     /// thread. With a splash window, the main window stays hidden (see `boot_tick`).
     fn boot(&mut self, el: &ActiveEventLoop) {
-        self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some(), self.splash.is_none() && self.cli_render.is_none() && self.shot.is_none(), self.shot.is_some()));
+        // EOVIEW_HIDDEN: no window on the screen (a benchmark with EOVIEW_BENCH_SIZE draws offscreen).
+        let visible = self.splash.is_none() && self.cli_render.is_none() && self.shot.is_none() && std::env::var_os("EOVIEW_HIDDEN").is_none();
+        self.win = Some(init_gpu(el, &self.ctx, self.gpu_budget, self.bench.is_some(), visible, self.shot.is_some()));
         if self.bench.is_none() {
             self.load_recent();
             // The messages of `--render` are in English.
