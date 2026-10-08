@@ -1835,7 +1835,9 @@ fn lists(paths: Vec<String>) -> Vec<String> {
     for p in paths {
         let dir = std::path::Path::new(&p).parent().map(|d| d.to_path_buf()).unwrap_or_default();
         let fix = |l: &str| if l.contains("://") || std::path::Path::new(l).is_absolute() { l.to_string() } else { dir.join(l).to_string_lossy().into_owned() };
-        match std::fs::read_to_string(&p).ok().filter(|_| p.to_lowercase().ends_with(".txt")) {
+        // The extension first: a product is not read here (this read a whole file of 1 GB before).
+        let list = p.to_lowercase().ends_with(".txt").then(|| std::fs::read_to_string(&p).ok()).flatten();
+        match list {
             Some(s) => out.extend(s.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(fix)),
             None => out.push(p),
         }
