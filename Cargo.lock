@@ -1003,6 +1003,7 @@ dependencies = [
  "eo-core",
  "eo-io",
  "eo-render",
+ "epaint_default_fonts",
  "png",
  "pollster 1.0.1",
  "rfd",
