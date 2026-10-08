@@ -97,6 +97,18 @@ fn warped(p: vec2f) -> vec2f {
     let t = (vec2f(f32(q % u.n), f32(q / u.n)) + corner[k]) / f32(u.n);
     // uvl.w: the tile is at this distance to the east, in display units (a layer that repeats in longitude).
     let w = warped(mix(rect.xy, rect.zw, t)) + u.off + vec2f(uvl.w, 0.0);
+    if ((u.flags & 16u) != 0u) {
+        // Longitude and latitude: a quad over more than 180 degrees of longitude goes around a pole (its
+        // longitudes are not continuous). It is not drawn: it would stretch over the map.
+        let qi = vec2f(f32(q % u.n), f32(q / u.n));
+        let a = warped(mix(rect.xy, rect.zw, qi / f32(u.n))).x;
+        let b = warped(mix(rect.xy, rect.zw, (qi + vec2f(1.0, 0.0)) / f32(u.n))).x;
+        let c = warped(mix(rect.xy, rect.zw, (qi + vec2f(0.0, 1.0)) / f32(u.n))).x;
+        let d = warped(mix(rect.xy, rect.zw, (qi + vec2f(1.0, 1.0)) / f32(u.n))).x;
+        if (max(max(a, b), max(c, d)) - min(min(a, b), min(c, d)) > 180.0) {
+            return VO(vec4f(2.0, 2.0, 0.0, 1.0), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), -1.0);
+        }
+    }
     if ((u.flags & 8u) != 0u) {
         // A point outside the domain of the projection is not on the globe.
         if (abs(w.x) > 1.0e4 || abs(w.y) > 1.0e4) {

@@ -275,7 +275,7 @@ impl Georef {
         match self {
             Georef::None | Georef::Arrays { .. } => None,
             Georef::Affine { gt, .. } => Some((gt[0] + col * gt[1] + row * gt[2], gt[3] + col * gt[4] + row * gt[5])),
-            Georef::Grid { cols, rows, lon, lat } => Some((bilinear(cols, rows, lon, col, row), bilinear(cols, rows, lat, col, row))),
+            Georef::Grid { cols, rows, lon, lat } => Some((bilinear_lon(cols, rows, lon, col, row), bilinear(cols, rows, lat, col, row))),
         }
     }
 
@@ -309,6 +309,17 @@ impl Crs {
 /// Bilinear interpolation of grid values `v` at position (x, y). Outside the grid: linear extrapolation
 /// from the edge cell.
 pub fn bilinear(xs: &[f64], ys: &[f64], v: &[f64], x: f64, y: f64) -> f64 {
+    interp(xs, ys, v, x, y, false)
+}
+
+/// `bilinear` for longitudes (degrees): the nodes of the cell are first within 180 degrees of its first
+/// node, so that a cell on the 180 degree meridian (179 and -179) gives 180, not 0. The result can be out
+/// of -180 to 180.
+pub fn bilinear_lon(xs: &[f64], ys: &[f64], v: &[f64], x: f64, y: f64) -> f64 {
+    interp(xs, ys, v, x, y, true)
+}
+
+fn interp(xs: &[f64], ys: &[f64], v: &[f64], x: f64, y: f64, lon: bool) -> f64 {
     let cell = |a: &[f64], p: f64| {
         let i = a.partition_point(|&q| q <= p).clamp(1, a.len().max(2) - 1) - 1;
         let t = if a.len() > 1 { (p - a[i]) / (a[i + 1] - a[i]) } else { 0.0 };
@@ -316,7 +327,11 @@ pub fn bilinear(xs: &[f64], ys: &[f64], v: &[f64], x: f64, y: f64) -> f64 {
     };
     let ((i, tx), (j, ty)) = (cell(xs, x), cell(ys, y));
     let n = xs.len();
-    let at = |i: usize, j: usize| v[j.min(ys.len() - 1) * n + i.min(n - 1)];
+    let v0 = v[j.min(ys.len() - 1) * n + i.min(n - 1)];
+    let at = |i: usize, j: usize| {
+        let a = v[j.min(ys.len() - 1) * n + i.min(n - 1)];
+        if lon { a - 360.0 * ((a - v0) / 360.0).round() } else { a }
+    };
     let top = at(i, j) * (1.0 - tx) + at(i + 1, j) * tx;
     let bot = at(i, j + 1) * (1.0 - tx) + at(i + 1, j + 1) * tx;
     top * (1.0 - ty) + bot * ty

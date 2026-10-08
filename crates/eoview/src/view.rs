@@ -235,9 +235,9 @@ impl View {
             gi.set_warp(gpu, *wid, warp.nx, warp.ny, &warp.pts);
             let l = &inp.layer;
             // A layer of the full globe in longitude and latitude (360 degrees) repeats to the east and to
-            // the west: a grid from 0 to 360 degrees also shows at the longitudes below 0.
-            let span = warp.at(warp.w, warp.h / 2.0)[0] - warp.at(0.0, warp.h / 2.0)[0];
-            let wrap = self.space == Some(4326) && (span.abs() - 360.0).abs() < 1.0;
+            // the west: a grid from 0 to 360 degrees also shows at the longitudes below 0. So does a swath
+            // that goes over the 180 degree meridian (its longitudes are continuous: 170 to 190 degrees).
+            let wrap = self.space == Some(4326) && warp.repeats();
             self.wraps[k] = wrap;
             for &shift in if wrap { &[0.0, -360.0, 360.0][..] } else { &[0.0][..] } {
             let Some(pb) = warp.pixel_bbox([view[0] - shift, view[1], view[2] - shift, view[3]]) else { continue };
@@ -388,7 +388,8 @@ impl View {
                         b,
                         wsize: [lw as f32, lh as f32],
                         fill: fill.unwrap_or(-1.0),
-                        flags: (fill.is_some() as u32) << 2 | (self.globe as u32) << 3,
+                        // 16: the display is in longitude and latitude (2D or globe).
+                        flags: (fill.is_some() as u32) << 2 | (self.globe as u32) << 3 | ((self.space == Some(4326) || self.globe) as u32) << 4,
                         grid: [wp.nx as u32, wp.ny as u32],
                         lat0: self.center[1].to_radians() as f32,
                         dist: self.globe_cam().dist as f32,
