@@ -546,10 +546,10 @@ impl App {
                 for out in [c.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>), c.stderr.take().map(|o| Box::new(o) as Box<dyn Read + Send>)].into_iter().flatten() {
                     let (log, ctx) = (p.log.clone(), self.ctx.clone());
                     std::thread::spawn(move || {
-                        for line in BufReader::new(out).lines().map_while(Result::ok) {
+                        crate::pyedit::each_line(out, |line| {
                             log.lock().unwrap().push_str(&format!("{line}\n"));
                             ctx.request_repaint();
-                        }
+                        });
                     });
                 }
                 p.child = Some(c);
