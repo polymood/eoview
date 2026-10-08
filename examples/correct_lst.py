@@ -2,7 +2,7 @@
 
 The mean of 30 days of land surface temperature still has some gaps where clouds were there each day. The
 script fills them with the mean of the valid pixels around them, converts kelvin to degrees Celsius, and
-makes a chart: the mean temperature of each latitude.
+makes a chart: the mean temperature of each latitude. Then it reads the values of the shapes of the views.
 """
 import eoview as ev
 import matplotlib.pyplot as plt
@@ -44,3 +44,9 @@ ax.set_ylabel("LST, July 2023 (°C)")
 ax.legend()
 ax.grid(alpha=0.3)
 ev.plot(fig, name="Mean temperature by latitude")
+
+# The shapes of the views: the pixels of the region "France", and the values along the transect.
+fr = ev.layer(name, region="France")
+print("France: %d pixels, mean %.2f °C" % (np.isfinite(fr).sum(), np.nanmean(fr) - 273.15))
+line = ev.layer(name, region="Lisbon to Stockholm")
+print("Lisbon to Stockholm: %d points on %.0f km" % (line.size, line["distance"][-1] / 1000))

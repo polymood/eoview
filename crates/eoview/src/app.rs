@@ -159,8 +159,11 @@ pub struct Pane {
     /// Lines at the edges of the pixels, and lines of longitude and latitude.
     pub pixel_grid: bool,
     pub coord_grid: bool,
-    /// The shape of a tool (measure, transect, region) in the display coordinates of the view.
-    pub shape: Option<crate::tools::Shape>,
+    /// The shapes of the tools (measure, transect, region) in the display coordinates of the view. The
+    /// last can be a shape that the user draws now (not done).
+    pub shapes: Vec<crate::tools::Shape>,
+    /// The selected shape: the side panel shows its result.
+    pub sel_shape: Option<usize>,
 }
 
 impl Pane {
@@ -204,7 +207,8 @@ impl Pane {
             next_step: 0.0,
             pixel_grid: false,
             coord_grid: false,
-            shape: None,
+            shapes: vec![],
+            sel_shape: None,
         }
     }
 
@@ -390,6 +394,9 @@ struct PaneSave {
     #[serde(default)]
     coord_grid: bool,
     #[serde(default)]
+    shapes: Vec<crate::tools::Shape>,
+    /// One shape (the files of the first versions).
+    #[serde(default, skip_serializing)]
     shape: Option<crate::tools::Shape>,
 }
 
@@ -506,6 +513,10 @@ pub struct App {
     pub pins: Vec<Cam>,
     /// The start of the drag of a rectangle (region tool), in display coordinates.
     pub drag_from: Option<[f64; 2]>,
+    /// A drag of a shape with no tool: the view, the shape, and its point (None: the whole shape).
+    pub shape_drag: Option<(u32, usize, Option<usize>)>,
+    /// The texts of the side panel for the shapes.
+    pub shape_edit: crate::tools::ShapeEdit,
     /// The aggregate over time of the side panel: the aggregate, and the first and last steps (None: all).
     pub agg: (eo_cache::Agg, Option<(usize, usize)>),
     /// The expression of the layer math of the side panel.
@@ -581,6 +592,8 @@ impl App {
             tool: Default::default(),
             pins: vec![],
             drag_from: None,
+            shape_drag: None,
+            shape_edit: Default::default(),
             agg: (eo_cache::Agg::Mean, None),
             math: String::new(),
             maths: HashMap::new(),
@@ -1020,10 +1033,11 @@ impl App {
         if p.v.space == s || p.v.globe {
             return;
         }
+        let old = p.v.space;
         p.v.space = s;
         p.v.fit = true;
-        // The points of a shape are in the display coordinates of the view.
-        p.shape = None;
+        // The points of the shapes are in the display coordinates of the view.
+        self.move_shapes(id, old, s);
         self.rebuild(id);
     }
 
@@ -1041,7 +1055,9 @@ impl App {
         } else {
             p.flat_space.take().unwrap_or(p.v.space)
         };
-        (p.v.globe, p.v.space, p.v.fit, p.shape) = (on, to, true, None);
+        let old = p.v.space;
+        (p.v.globe, p.v.space, p.v.fit) = (on, to, true);
+        self.move_shapes(id, old, to);
         if let Some((c, s)) = cam.and_then(|c| self.uncam(i, c)) {
             let p = &mut self.panes[i];
             (p.v.center, p.v.scale, p.v.fit) = (c, s, false);
@@ -1384,6 +1400,11 @@ impl App {
     /// Longitude and latitude of display point `c` of view `id`.
     pub fn lonlat(&mut self, id: u32, c: [f64; 2]) -> Option<(f64, f64)> {
         let e = self.pane(id)?.v.space?;
+        self.lonlat_in(e, c)
+    }
+
+    /// Longitude and latitude of position `c` in CRS `e`.
+    pub fn lonlat_in(&mut self, e: u32, c: [f64; 2]) -> Option<(f64, f64)> {
         self.proj(e)?;
         self.proj(4326)?;
         self.projs[&e].as_ref()?.to(self.projs[&4326].as_ref()?, c[0], c[1])
@@ -1429,7 +1450,8 @@ impl App {
                 overlays: p.overlays,
                 pixel_grid: p.pixel_grid,
                 coord_grid: p.coord_grid,
-                shape: p.shape.clone().filter(|s| s.done),
+                shapes: p.shapes.iter().filter(|s| s.done).cloned().collect(),
+                shape: None,
             })
             .collect();
         // A workspace file does not keep the windows: the detached views are tabs of the dock.
@@ -1496,7 +1518,10 @@ impl App {
             let mut p = Pane::new(id);
             if let Some(s) = ws_panes.iter().find(|s| s.id == id) {
                 (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe, p.smooth) = (s.space, s.center, s.scale, s.link, s.globe, s.smooth);
-                (p.overlays, p.pixel_grid, p.coord_grid, p.shape) = (s.overlays, s.pixel_grid, s.coord_grid, s.shape.clone());
+                (p.overlays, p.pixel_grid, p.coord_grid) = (s.overlays, s.pixel_grid, s.coord_grid);
+                p.shapes = s.shapes.iter().chain(&s.shape).cloned().collect();
+                crate::tools::name_shapes(&mut p);
+                p.sel_shape = p.shapes.len().checked_sub(1);
                 (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz) = (s.cmp, s.swipe, s.vertical, s.blend, s.flicker_hz);
                 (p.diff, p.dlo, p.dhi, p.dinvert) = (s.diff, s.dlo, s.dhi, s.dinvert);
                 p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);

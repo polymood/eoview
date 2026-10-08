@@ -505,28 +505,31 @@
    },
    "pixel_grid": false,
    "coord_grid": true,
-   "shape": {
-    "tool": "Region",
-    "pts": [
-     [
-      -2.0,
-      51.0
+   "shapes": [
+    {
+     "tool": "Region",
+     "name": "France",
+     "pts": [
+      [
+       -2.0,
+       51.0
+      ],
+      [
+       8.0,
+       51.0
+      ],
+      [
+       8.0,
+       43.0
+      ],
+      [
+       -2.0,
+       43.0
+      ]
      ],
-     [
-      8.0,
-      51.0
-     ],
-     [
-      8.0,
-      43.0
-     ],
-     [
-      -2.0,
-      43.0
-     ]
-    ],
-    "done": true
-   }
+     "done": true
+    }
+   ]
   },
   {
    "id": 2,
@@ -772,20 +775,23 @@
    },
    "pixel_grid": false,
    "coord_grid": false,
-   "shape": {
-    "tool": "Transect",
-    "pts": [
-     [
-      -8.0,
-      38.0
+   "shapes": [
+    {
+     "tool": "Transect",
+     "name": "Lisbon to Stockholm",
+     "pts": [
+      [
+       -8.0,
+       38.0
+      ],
+      [
+       24.0,
+       60.0
+      ]
      ],
-     [
-      24.0,
-      60.0
-     ]
-    ],
-    "done": true
-   }
+     "done": true
+    }
+   ]
   }
  ],
  "pins": [
@@ -804,5 +810,5 @@
    }
   }
  ],
- "python": "\"\"\"Script of the example project features.eoview (the Python panel of eoview, F7).\n\nThe mean of 30 days of land surface temperature still has some gaps where clouds were there each day. The\nscript fills them with the mean of the valid pixels around them, converts kelvin to degrees Celsius, and\nmakes a chart: the mean temperature of each latitude.\n\"\"\"\nimport eoview as ev\nimport matplotlib.pyplot as plt\nimport numpy as np\n\n# The aggregate layer of the left view, at the full resolution.\nname = next(l[\"name\"] for l in ev.layers() if \"mean\" in l[\"name\"])\nmean = ev.layer(name, extent=\"all\", level=0)\na = np.asarray(mean, dtype=np.float64)\nprint(name, a.shape, \"gaps:\", int(np.isnan(a).sum()))\n\n\ndef box(x, k):\n    \"\"\"Sum of each (2k+1) x (2k+1) window.\"\"\"\n    c = np.pad(np.pad(x, k).cumsum(0).cumsum(1), ((1, 0), (1, 0)))\n    n = 2 * k + 1\n    return c[n:, n:] - c[:-n, n:] - c[n:, :-n] + c[:-n, :-n]\n\n\nfilled = a.copy()\nfor _ in range(3):\n    gaps = np.isnan(filled)\n    valid = (~gaps).astype(np.float64)\n    near = box(np.where(gaps, 0.0, filled), 3) / np.maximum(box(valid, 3), 1)\n    # Fill only the gaps with enough valid pixels around them: the sea stays empty.\n    filled[gaps & (box(valid, 3) >= 12)] = near[gaps & (box(valid, 3) >= 12)]\nprint(\"gaps after the fill:\", int(np.isnan(filled).sum()))\n\nev.output(filled - 273.15, name=\"lst mean filled\", units=\"\u00b0C\")\n\n# A chart that eoview does not have: the mean temperature of each latitude, with its spread.\nlat = mean[\"y\"].values if hasattr(mean, \"coords\") and \"y\" in mean.coords else np.arange(a.shape[0])\nc = filled - 273.15\nfig, ax = plt.subplots(figsize=(6, 3.2))\nax.fill_between(lat, np.nanpercentile(c, 10, axis=1), np.nanpercentile(c, 90, axis=1), alpha=0.3, label=\"10 to 90 %\")\nax.plot(lat, np.nanmean(c, axis=1), label=\"mean\")\nax.set_xlabel(\"Latitude (degrees)\")\nax.set_ylabel(\"LST, July 2023 (\u00b0C)\")\nax.legend()\nax.grid(alpha=0.3)\nev.plot(fig, name=\"Mean temperature by latitude\")\n"
+ "python": "\"\"\"Script of the example project features.eoview (the Python panel of eoview, F7).\n\nThe mean of 30 days of land surface temperature still has some gaps where clouds were there each day. The\nscript fills them with the mean of the valid pixels around them, converts kelvin to degrees Celsius, and\nmakes a chart: the mean temperature of each latitude. Then it reads the values of the shapes of the views.\n\"\"\"\nimport eoview as ev\nimport matplotlib.pyplot as plt\nimport numpy as np\n\n# The aggregate layer of the left view, at the full resolution.\nname = next(l[\"name\"] for l in ev.layers() if \"mean\" in l[\"name\"])\nmean = ev.layer(name, extent=\"all\", level=0)\na = np.asarray(mean, dtype=np.float64)\nprint(name, a.shape, \"gaps:\", int(np.isnan(a).sum()))\n\n\ndef box(x, k):\n    \"\"\"Sum of each (2k+1) x (2k+1) window.\"\"\"\n    c = np.pad(np.pad(x, k).cumsum(0).cumsum(1), ((1, 0), (1, 0)))\n    n = 2 * k + 1\n    return c[n:, n:] - c[:-n, n:] - c[n:, :-n] + c[:-n, :-n]\n\n\nfilled = a.copy()\nfor _ in range(3):\n    gaps = np.isnan(filled)\n    valid = (~gaps).astype(np.float64)\n    near = box(np.where(gaps, 0.0, filled), 3) / np.maximum(box(valid, 3), 1)\n    # Fill only the gaps with enough valid pixels around them: the sea stays empty.\n    filled[gaps & (box(valid, 3) >= 12)] = near[gaps & (box(valid, 3) >= 12)]\nprint(\"gaps after the fill:\", int(np.isnan(filled).sum()))\n\nev.output(filled - 273.15, name=\"lst mean filled\", units=\"\u00b0C\")\n\n# A chart that eoview does not have: the mean temperature of each latitude, with its spread.\nlat = mean[\"y\"].values if hasattr(mean, \"coords\") and \"y\" in mean.coords else np.arange(a.shape[0])\nc = filled - 273.15\nfig, ax = plt.subplots(figsize=(6, 3.2))\nax.fill_between(lat, np.nanpercentile(c, 10, axis=1), np.nanpercentile(c, 90, axis=1), alpha=0.3, label=\"10 to 90 %\")\nax.plot(lat, np.nanmean(c, axis=1), label=\"mean\")\nax.set_xlabel(\"Latitude (degrees)\")\nax.set_ylabel(\"LST, July 2023 (\u00b0C)\")\nax.legend()\nax.grid(alpha=0.3)\nev.plot(fig, name=\"Mean temperature by latitude\")\n\n# The shapes of the views: the pixels of the region \"France\", and the values along the transect.\nfr = ev.layer(name, region=\"France\")\nprint(\"France: %d pixels, mean %.2f \u00b0C\" % (np.isfinite(fr).sum(), np.nanmean(fr) - 273.15))\nline = ev.layer(name, region=\"Lisbon to Stockholm\")\nprint(\"Lisbon to Stockholm: %d points on %.0f km\" % (line.size, line[\"distance\"][-1] / 1000))\n"
 }
