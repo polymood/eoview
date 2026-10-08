@@ -871,6 +871,9 @@ impl Group {
 
 /// The GPU part of a 2D view. The layers of a view are in groups of at most 4 layers and `MAX_INPUTS`
 /// inputs: one composite for each group, each over the groups below it.
+// ponytail: each input has its own target of the view size (4 bytes for each pixel): 14 RGB layers are
+// 42 targets, about 330 MB for a 1920 x 1080 view. If it is too much: one set of `MAX_INPUTS` targets for
+// all groups, with the composite of each group into an accumulation texture in `prepare`.
 pub struct View2d {
     groups: Vec<Group>,
     pub inputs: Vec<Input>,
