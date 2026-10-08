@@ -106,6 +106,17 @@ pub struct Doc {
     outs: Arc<Mutex<HashMap<u64, String>>>,
 }
 
+/// Call `f` with each line of `r`, until its end. A text that is not UTF-8 does not stop the reading: a
+/// reader that stops closes the pipe, and the next `print` of the script fails (Windows: OSError 22).
+pub fn each_line(r: impl Read, mut f: impl FnMut(&str)) {
+    let mut r = BufReader::new(r);
+    let mut buf = vec![];
+    while r.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+        f(String::from_utf8_lossy(&buf).trim_end_matches(['\n', '\r']));
+        buf.clear();
+    }
+}
+
 fn cell_id() -> u64 {
     static NEXT: AtomicUsize = AtomicUsize::new(1);
     NEXT.fetch_add(1, Relaxed) as u64
@@ -265,7 +276,7 @@ impl Doc {
             if let Some(out) = child.stdout.take() {
                 let (outs, pending, running) = (self.outs.clone(), pending.clone(), running.clone());
                 std::thread::spawn(move || {
-                    for line in BufReader::new(out).lines().map_while(Result::ok) {
+                    each_line(out, |line| {
                         if let Some(id) = line.strip_prefix("\x1eCELL ").and_then(|v| v.parse().ok()) {
                             *running.lock().unwrap() = Some(id);
                             outs.lock().unwrap().insert(id, String::new());
@@ -276,7 +287,7 @@ impl Doc {
                             let id = running.lock().unwrap().unwrap_or(u64::MAX);
                             outs.lock().unwrap().entry(id).or_default().push_str(&format!("{line}\n"));
                         }
-                    }
+                    });
                     // The process ended: no cell waits.
                     pending.store(0, Relaxed);
                 });
@@ -284,8 +295,9 @@ impl Doc {
             if let Some(err) = child.stderr.take() {
                 let outs = self.outs.clone();
                 std::thread::spawn(move || {
-                    let mut s = String::new();
-                    let _ = BufReader::new(err).read_to_string(&mut s);
+                    let mut b = vec![];
+                    let _ = BufReader::new(err).read_to_end(&mut b);
+                    let s = String::from_utf8_lossy(&b);
                     if !s.is_empty() {
                         outs.lock().unwrap().entry(u64::MAX).or_default().push_str(&s);
                     }
@@ -455,6 +467,8 @@ impl App {
         });
         let mut cmd = std::process::Command::new(&exe);
         cmd.env("PYTHONPATH", path).env("EOVIEW_PORT", p.port.to_string()).env("EOVIEW_TOKEN", p.token()).env("MPLBACKEND", "Agg");
+        // UTF-8 on the pipes: on Windows, Python writes the ANSI code page to a pipe by default.
+        cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
         #[cfg(windows)]
         std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
         Some(cmd)
@@ -839,6 +853,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "a = 2\nb = 3\n");
         assert!(!d.conflict && !d.dirty && !d.poll());
         std::fs::remove_file(&f).ok();
+    }
+
+    /// A line in cp1252 (Windows) does not stop the reading of the next lines.
+    #[test]
+    fn lines_that_are_not_utf8() {
+        let mut v = vec![];
+        each_line(&b"France: 37.3 \xb0C\r\nnext line\nend"[..], |l| v.push(l.to_string()));
+        assert_eq!(v, ["France: 37.3 \u{fffd}C", "next line", "end"]);
     }
 
     #[test]
