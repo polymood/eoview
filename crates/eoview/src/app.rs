@@ -2215,6 +2215,9 @@ mod workspace_tests {
     /// A product that a program writes again opens again, with the settings of its layer.
     #[test]
     fn reload_a_product_that_changes() {
+        // Windows does not permit a program to rewrite a mapped file: the preference of the products that
+        // other programs rewrite (positional reads). The other tests also pass without the map.
+        eo_io::source::set_no_map(true);
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
         let f = std::env::temp_dir().join(format!("eoview-reload-{}.nc", std::process::id()));
         std::fs::copy(format!("{dir}nc4_grid.nc"), &f).unwrap();
@@ -2326,7 +2329,9 @@ mod workspace_tests {
         let tabs: Vec<u32> = app.dock.iter_all_tabs().map(|t| *t.1).collect();
 
         // The URL layer does not open: put the file path back to open the workspace.
-        std::fs::write(&path, text.replace("https://example.com/a.jp2", &format!("{dir}u16_tiles.jp2"))).unwrap();
+        // A JSON string: the backslashes of a Windows path are escaped.
+        let local = serde_json::to_string(&format!("{dir}u16_tiles.jp2")).unwrap();
+        std::fs::write(&path, text.replace("\"https://example.com/a.jp2\"", &local)).unwrap();
         let (e, rx) = Engine::new(64 << 20, || {});
         let mut b = App::new(e, rx, 1 << 20, None);
         b.load_workspace(&path);
