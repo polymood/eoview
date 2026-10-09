@@ -36,6 +36,24 @@ that is not done.
 | Sentinel-3 SAFE (OLCI, SLSTR) | All NetCDF variables. Georeferencing from the geolocation arrays |
 | Pixel types | 8, 16, 32 and 64-bit integers, 32 and 64-bit floats, complex integers and floats |
 
+## Install
+
+- Windows: download and start `eoview-setup-windows-x86_64.exe` of the
+  [latest release](https://github.com/polymood/eoview/releases/latest). The installer puts eoview in your
+  user directory (`%LOCALAPPDATA%\Programs\eoview`), with no administrator rights. It adds eoview to the
+  Start menu and opens the workspace files (`.eoview`) in eoview.
+- Linux (x86_64) and macOS (Apple silicon): the script puts eoview in `~/.local/bin`. On Linux, it also
+  adds eoview to the menu of applications.
+
+  ```
+  curl -fsSL https://github.com/polymood/eoview/releases/latest/download/install.sh | sh
+  ```
+
+eoview updates itself. At each start, it reads the version of the latest release. If that version is
+newer, eoview downloads it, checks its signature and replaces its executable. The new version runs at the
+next start. Preferences, General: **Automatic updates** (on by default). A build from the source does not
+update itself. The executables need a CPU with AVX2 (x86_64, see Build).
+
 ## Use
 
 ```
@@ -528,6 +546,18 @@ On x86_64, the build uses `target-cpu=x86-64-v3` (AVX2). To run on older CPUs, r
 
 The icon files and the banner are in `crates/eoview/assets`. `scripts/make_icons.py` writes them: it is the source of the icon.
 On Windows, the build puts the icon in the executable (`crates/eoview/build.rs`).
+
+### Release
+
+1. Set the new version in `Cargo.toml` (`[workspace.package]`), then commit it on `develop`.
+2. Merge `develop` into `main`.
+3. Push the tag of the version, for example `git tag v0.2.0 && git push origin v0.2.0`.
+
+The workflow `.github/workflows/release.yml` then builds the executables of Windows, Linux and macOS and
+the Windows installer (`packaging/eoview.iss`, Inno Setup). It signs the executables with the key in the
+secret `EOVIEW_SIGNING_KEY` of the repository (ed25519, PEM), and publishes the release. The public key
+of this secret is `KEY` in `crates/eoview/src/update.rs`: eoview installs only the executables that this
+key signed. If you change the key, change `KEY` in the same release.
 
 ## Test
 

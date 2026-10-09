@@ -38,6 +38,8 @@ pub struct Prefs {
     /// Local files without a memory map: an other program can rewrite or replace a product that a view
     /// shows (Windows does not permit this for a mapped file). Slower reads.
     pub no_map: bool,
+    /// No automatic update (`update`).
+    pub no_update: bool,
 }
 
 /// The configuration directory of eoview: `%APPDATA%\eoview` on Windows, `$XDG_CONFIG_HOME/eoview` or
@@ -89,6 +91,7 @@ enum Item {
     Stretch,
     SameStretch,
     Reload,
+    Update,
     NoMap,
     FullRes,
     Ram,
@@ -101,13 +104,14 @@ enum Item {
     About,
 }
 
-const ITEMS: [(Item, Section, &str, &str); 16] = [
+const ITEMS: [(Item, Section, &str, &str); 17] = [
     (Item::Lang, Section::General, "Language", "The language of the interface."),
     (Item::Recent, Section::General, "Recent products", "The list of the recent products and workspaces of the File menu."),
     (Item::Theme, Section::Appearance, "Theme", "Colors, corners, spacing and size of the text. To add a theme, put a JSON file in the themes directory."),
     (Item::Stretch, Section::Appearance, "Range of a new layer", "The automatic stretch of a new layer, and of the Auto button (A). Minimum to maximum: all the values of the data. Clip: without a part of the values at each end, for more contrast. Data type: 0 to 255 for 8-bit data, 0 to 65535 for 16-bit data (with the scale and the offset of the file)."),
     (Item::SameStretch, Section::Appearance, "Same range for the layers of a view", "The layers of a view that show the same bands (for example the orbits of a day, or the tiles of an area) get the same range: no visible edge between them. The range is the union of their automatic ranges, or the range that you set on one of them."),
     (Item::Reload, Section::General, "Reload the products that change", "A product of a view that a program writes again (for example the output of a processing) opens again in the view, with the same settings. eoview checks the local products each second."),
+    (Item::Update, Section::General, "Automatic updates", "At the start, eoview downloads and installs its latest version. The new version runs at the next start. For the next start."),
     (Item::NoMap, Section::Performance, "Other programs can rewrite open products", "eoview reads the local files without a memory map. On Windows, a program can then rewrite or replace a product that a view shows. The products load slower. For the products that open after the change."),
     (Item::FullRes, Section::Performance, "Full resolution at all zoom levels", "The views use the finest level of the data, not the level of the zoom. If the GPU memory does not have room for the tiles of a view, the view uses the finest level that has room."),
     (Item::Ram, Section::Performance, "Memory budget (MB)", "Memory for the data in RAM. 0: a quarter of the RAM of the system. For the next start."),
@@ -279,6 +283,12 @@ impl App {
                 p.no_reload = !on;
                 c
             }
+            Item::Update => {
+                let mut on = !p.no_update;
+                let c = ui.checkbox(&mut on, t("On")).changed();
+                p.no_update = !on;
+                c
+            }
             Item::NoMap => ui.checkbox(&mut p.no_map, t("On")).changed(),
             Item::SameStretch => {
                 let mut on = !p.own_stretch;
@@ -321,6 +331,11 @@ impl App {
                     ui.label(format!("{} {}", t("GPU:"), w.name));
                 }
                 ui.label(format!("{} MIT OR Apache-2.0", t("License:")));
+                match self.update.as_ref().and_then(|s| s.lock().unwrap().clone()) {
+                    Some(Ok(v)) => drop(ui.label(tf("eoview {} is installed. It runs at the next start.", &[&v]))),
+                    Some(Err(e)) => drop(ui.label(format!("{} {e}", t("Update:")))),
+                    None => {}
+                }
                 ui.hyperlink("https://github.com/polymood/eoview");
                 false
             }

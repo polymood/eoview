@@ -15,6 +15,7 @@ mod splash;
 mod theme;
 mod tools;
 mod ui;
+mod update;
 mod view;
 mod wind;
 
@@ -972,6 +973,12 @@ fn main() {
             Ok(p) => app.py = Some(p),
             Err(e) => eprintln!("no Python server: {e}"),
         }
+    }
+    // Automatic update of a release. Not in the modes of the command line that write a file and stop.
+    let batch = ["--bench", "--render", "--shot", "--figure"].contains(&args.get(1).map_or("", String::as_str));
+    if update::enabled() && !batch && !app.prefs.no_update {
+        let proxy = el.create_proxy();
+        app.update = Some(update::start(Arc::new(move || drop(proxy.send_event(Ev::Wake)))));
     }
     // eoview [--shot ...] --python FILE [products]: run the script when the products show.
     let mut args = args;

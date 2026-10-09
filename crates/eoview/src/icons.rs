@@ -219,8 +219,8 @@ pub fn draw(p: &Painter, icon: Icon, r: Rect, c: Color32) {
         }
         Icon::Ruler => {
             // A ruler at 45 degrees with its marks.
-            let (a, d) = (pos2(l, b - 0.3 * w), vec2(0.7071, -0.7071));
-            let n = vec2(0.7071, 0.7071) * 0.3 * w;
+            let (a, d) = (pos2(l, b - 0.3 * w), vec2(std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2));
+            let n = vec2(std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2) * 0.3 * w;
             poly(vec![a, a + d * 1.0 * w, a + d * 1.0 * w + n, a + n]);
             for k in 1..5 {
                 let q = a + d * (k as f32 * 0.2 * w);
