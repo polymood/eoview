@@ -51,11 +51,14 @@ pub struct Settings {
     /// Camera: the center of the view and the width of the view, in display units. It does not depend on
     /// the size of the frames. None: the frame shows all the data.
     pub view: Option<([f64; 2], f64)>,
+    /// Degrees of longitude that the camera goes to the west for each frame: the globe turns as the Earth
+    /// does. 0: the camera does not move.
+    pub spin: f64,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, legend: String::new(), keep: false, fit: false, view: None }
+        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, legend: String::new(), keep: false, fit: false, view: None, spin: 0.0 }
     }
 }
 
@@ -164,6 +167,8 @@ pub struct Job {
     preview: Option<egui::TextureId>,
     /// The output is not the one of the settings (no `ffmpeg`): where the frames go, and why.
     pub note: Option<String>,
+    /// The center of the camera at the first frame (`Settings::spin`).
+    center0: [f64; 2],
 }
 
 impl Job {
@@ -273,6 +278,7 @@ impl App {
                 _ => p.v.fit = true,
             }
         }
+        let center0 = self.pane(pane).map_or([0.0; 2], |p| p.v.center);
         // The main window does not draw this view, and no window opens for it (`reconcile`).
         self.floating.push(pane);
         let set = Settings { width: w, height: h, ..set };
@@ -281,7 +287,7 @@ impl App {
             Sink::Images(dir, _) if set.keep => frames_done(dir).min(frames(steps.len(), set.sub)),
             _ => 0,
         };
-        self.job = Some(Job { pane, set, steps, done, stepped: false, target, ctx: egui::Context::default(), egui, sink, t0: Instant::now(), said: Instant::now(), preview: None, note });
+        self.job = Some(Job { pane, set, steps, done, stepped: false, target, ctx: egui::Context::default(), egui, sink, t0: Instant::now(), said: Instant::now(), preview: None, note, center0 });
         self.render_msg = None;
         Ok(())
     }
@@ -357,11 +363,15 @@ impl App {
                 let sub = job.set.sub.max(1);
                 let (s, f) = (job.steps[job.done / sub], job.done % sub);
                 job.stepped = true;
+                let (spin, c0, done) = (job.set.spin, job.center0, job.done);
                 if f == 0 {
                     self.set_time(pane, s);
                 }
                 if let Some(p) = self.pane_mut(pane) {
                     p.tmix = f as f32 / sub as f32;
+                    if spin != 0.0 {
+                        p.v.center = [(c0[0] - spin * done as f64 + 180.0).rem_euclid(360.0) - 180.0, c0[1]];
+                    }
                 }
             }
             self.draw_frame();
