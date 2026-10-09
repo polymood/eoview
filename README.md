@@ -100,9 +100,12 @@ each second (a product directory: the files in it), and opens a product again wh
 for one check: the program that writes it has ended. Preferences, General: **Reload the products that
 change** (on by default). A workspace file (File, Save workspace) keeps the views of a project.
 
-On Windows, eoview reads the local files without a memory map, so that an other program can replace or
-rewrite a file that a view shows (Windows does not permit this for a mapped file). On Linux and macOS the
-files are memory-mapped: replace a product (write a new file, then rename it), do not rewrite it in place.
+eoview reads the local files through a memory map: this is the fastest load. Windows does not permit an
+other program to rewrite or replace a mapped file. If a program must rewrite the products that a view
+shows, set Preferences, Performance: **Other programs can rewrite open products**. Then eoview reads the
+local files without a memory map, and the products load slower (an uncompressed file without overviews:
+7 times slower on Linux). On Linux and macOS, replace a product (write a new file, then rename it), do not
+rewrite it in place.
 
 ### Export data
 

@@ -35,9 +35,10 @@ pub struct Source {
 
 enum Inner {
     File { map: Bytes, mmap: Option<Arc<memmap2::Mmap>> },
-    /// A local file read with positional reads, without a memory map (Windows, or EOVIEW_NO_MMAP): an
+    /// A local file read with positional reads, without a memory map (`set_no_map`, or EOVIEW_NO_MMAP): an
     /// other program can replace or rewrite the file while eoview shows it (Windows does not permit this
-    /// for a mapped file), and eoview opens it again (`App::watch`).
+    /// for a mapped file), and eoview opens it again (`App::watch`). The reads are slower: a copy and a
+    /// system call for each range, and on Windows the reads of one file wait for each other.
     Handle { file: std::fs::File, len: u64 },
     /// A local file that does not exist. For a chunk, this means: all values are the fill value.
     Missing,
@@ -51,6 +52,14 @@ impl AsRef<[u8]> for Map {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
+}
+
+/// The local files that open from now on are read without a memory map (see `Inner::Handle`).
+static NO_MAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read the local files that open from now on without a memory map (a preference of the application).
+pub fn set_no_map(on: bool) {
+    NO_MAP.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// One store for each host. All requests to a host share the same request limit.
@@ -240,7 +249,7 @@ impl Source {
                     if len == 0 {
                         return Ok(Inner::File { map: Bytes::new(), mmap: None });
                     }
-                    if cfg!(windows) || std::env::var_os("EOVIEW_NO_MMAP").is_some() {
+                    if NO_MAP.load(std::sync::atomic::Ordering::Relaxed) || std::env::var_os("EOVIEW_NO_MMAP").is_some() {
                         return Ok(Inner::Handle { file: f, len });
                     }
                     // SAFETY: read-only map. If another process truncates the file, access fails with SIGBUS.
