@@ -674,6 +674,10 @@ pub struct App {
     pub watcher: Option<Watcher>,
     /// Wakes the event loop from an other thread (None in the tests).
     pub waker: Option<crate::Wake>,
+    /// The information window (metadata of the product), its search text, and the values window.
+    pub info_open: bool,
+    pub info_filter: String,
+    pub values: crate::info::Values,
     /// The automatic update (`update::start`).
     pub update: Option<crate::update::Status>,
     /// The figure: its settings, its tab open or not, its state (the image of the map).
@@ -760,6 +764,9 @@ impl App {
             watcher: None,
             waker: None,
             update: None,
+            info_open: false,
+            info_filter: String::new(),
+            values: Default::default(),
             figure: Default::default(),
             figure_open: false,
             fig: Default::default(),
@@ -1429,6 +1436,7 @@ impl App {
                         self.request_probe(layer, x, y);
                     }
                 }
+                Event::Read { req, res } if self.values.req.is_some_and(|r| r.0 == req) => self.values_read(res),
                 Event::Read { req, res } => self.py_read(req, res),
                 Event::Export { req, done, total, res } => {
                     if let Some(x) = self.export.as_mut().filter(|x| x.req == req) {

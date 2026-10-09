@@ -9,14 +9,17 @@ use crate::{Source, codec};
 use eo_core::*;
 
 /// Variables of one file. `idx` is the index of `src` in the dataset sources. The 1D datasets come back too
-/// (coordinates).
-pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>)> {
-    let ds = hdf5::datasets(src, 1)?;
+/// (coordinates), and the metadata of the file for the user (`info`).
+pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>, Info)> {
+    let (ds, groups) = hdf5::file(src, 0)?;
+    let info = info(&ds, &groups);
     let mut vars = vec![];
     let mut one_d = vec![];
     for d in ds {
         if d.shape.len() < 2 {
-            one_d.push(d);
+            if d.shape.len() == 1 {
+                one_d.push(d);
+            }
             continue;
         }
         let a = match d.array(idx) {
@@ -55,7 +58,53 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>)> {
             v.times = std::sync::Arc::new(vals.into_iter().map(|x| t0 + x * unit).collect());
         }
     }
-    Ok((vars, one_d))
+    Ok((vars, one_d, info))
+}
+
+/// Attributes that the NetCDF-4 library writes for itself: not for the user.
+fn internal(k: &str) -> bool {
+    k.starts_with("_Netcdf4") || k.starts_with("_NC") || ["DIMENSION_LIST", "REFERENCE_LIST", "CLASS", "NAME", "_nc3_strict", "_SuperblockVersion", "_IsNetcdf4"].contains(&k)
+}
+
+fn attrs(a: &std::collections::HashMap<String, hdf5::Attr>) -> Attrs {
+    let mut v: Attrs = a.iter().filter(|(k, _)| !internal(k)).map(|(k, x)| (k.clone(), x.text())).collect();
+    v.sort();
+    v
+}
+
+/// The metadata of a NetCDF-4 or HDF5 file: the attributes of the root group, the dimensions (the dimension
+/// scales of NetCDF-4) and all the datasets. The reader does not read the dimension lists of HDF5: the name
+/// of a dimension of a dataset is the dimension scale of the same length in its group or a parent group
+/// (if more have this length, in the order of their dimension ids).
+pub fn info(ds: &[H5], groups: &[hdf5::Group]) -> Info {
+    let dir = |p: &str| p.rsplit_once('/').map_or(String::new(), |d| d.0.to_string());
+    let leaf = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
+    let scale = |d: &H5| d.shape.len() == 1 && d.text("CLASS") == Some("DIMENSION_SCALE");
+    // Dimensions: (group, name, size, id).
+    let mut dims: Vec<(String, String, u64, f64)> = ds.iter().filter(|d| scale(d)).map(|d| (dir(&d.path), leaf(&d.path), d.shape[0], d.num("_Netcdf4Dimid").unwrap_or(f64::MAX))).collect();
+    dims.sort_by(|a, b| a.3.total_cmp(&b.3));
+    let mut vars = vec![];
+    for d in ds {
+        // A dimension without a coordinate variable is a dataset that is not a variable for the user.
+        if scale(d) && d.text("NAME").is_some_and(|n| n.starts_with("This is a netCDF dimension")) {
+            continue;
+        }
+        let g = dir(&d.path);
+        let mut used = vec![false; dims.len()];
+        let names = d.shape.iter().enumerate().map(|(k, &n)| {
+            let hit = dims.iter().enumerate().find(|(i, x)| !used[*i] && x.2 == n && g.starts_with(&x.0));
+            match hit {
+                Some((i, x)) => {
+                    used[i] = true;
+                    (x.1.clone(), n)
+                }
+                None => (format!("dim_{k}"), n),
+            }
+        });
+        vars.push(Meta { name: d.path.clone(), dims: names.collect(), dtype: format!("{:?}", d.dtype).to_lowercase(), attrs: attrs(&d.attrs) });
+    }
+    let global = groups.iter().find(|g| g.0.is_empty()).map(|g| attrs(&g.1)).unwrap_or_default();
+    Info { attrs: global, dims: dims.into_iter().map(|d| (d.1, d.2)).collect(), vars }
 }
 
 /// Values of a 1D dataset (small: coordinates), with scale and offset.

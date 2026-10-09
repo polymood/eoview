@@ -144,7 +144,7 @@ fn s2(dir: &Path, rt: &Handle) -> Result<Dataset> {
     }
     let pname = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into());
     let desc = format!("Sentinel-2 {} SAFE, {} bands, {}", if l2a { "L2A" } else { "L1C" }, vars.len(), crs.name);
-    Ok(Dataset { product: Product { name: pname, desc, vars, valid: None }, sources })
+    Ok(Dataset { product: Product { name: pname, desc, vars, valid: None, info: Default::default() }, sources })
 }
 
 /// Sentinel-1 Level 1 (GRD, SLC): one variable for each measurement file (polarisation, and swath for SLC).
@@ -204,7 +204,7 @@ fn s1(dir: &Path, rt: &Handle) -> Result<Dataset> {
     let pname = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into());
     let kind = pname.split('_').filter(|s| !s.is_empty()).skip(1).take(2).collect::<Vec<_>>().join(" ");
     let desc = format!("Sentinel-1 {kind} SAFE, {} measurement(s), {:?}", vars.len(), vars[0].levels[0].dtype);
-    Ok(Dataset { product: Product { name: pname, desc, vars, valid: None }, sources })
+    Ok(Dataset { product: Product { name: pname, desc, vars, valid: None, info: Default::default() }, sources })
 }
 
 /// Sentinel-3: the variables of all NetCDF files. A name that is in two files gets the file name first.
@@ -220,12 +220,14 @@ fn s3(dir: &Path, rt: &Handle) -> Result<Dataset> {
     let mut sources = vec![];
     let mut vars: Vec<Variable> = vec![];
     let mut per_file = vec![];
+    let mut info = Info::default();
     for f in files {
         let src = Source::new(&f.to_string_lossy(), rt);
         let idx = sources.len() as u32;
         match netcdf::variables(&src, idx) {
-            Ok((mut v, one_d)) => {
+            Ok((mut v, one_d, mut inf)) => {
                 let stem = f.file_stem().map_or(String::new(), |s| s.to_string_lossy().into());
+                let orig: Vec<String> = v.iter().map(|x| x.name.clone()).collect();
                 // Product tree: one group for each file. The files of the bands (Oa01_radiance,
                 // S7_BT_in, F1_BT_fn) go in one group for each measurement (radiance, BT_in, BT_fn).
                 let band = stem.split_once('_').filter(|(b, _)| {
@@ -239,6 +241,22 @@ fn s3(dir: &Path, rt: &Handle) -> Result<Dataset> {
                         x.name = format!("{stem}/{}", x.name);
                     }
                 }
+                // Metadata: a variable of the viewer has its name in the product; the others get the file name.
+                for m in &mut inf.vars {
+                    m.name = match orig.iter().position(|o| *o == m.name) {
+                        Some(k) => v[k].name.clone(),
+                        None => format!("{stem}/{}", m.name),
+                    };
+                }
+                if info.attrs.is_empty() {
+                    info.attrs = inf.attrs;
+                }
+                for d in inf.dims {
+                    if !info.dims.contains(&d) {
+                        info.dims.push(d);
+                    }
+                }
+                info.vars.extend(inf.vars);
                 per_file.push((idx, vars.len(), v.len(), one_d));
                 vars.extend(v);
                 sources.push(std::sync::Arc::new(src));
@@ -271,5 +289,5 @@ fn s3(dir: &Path, rt: &Handle) -> Result<Dataset> {
     let pname = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into());
     let kind = pname.split('_').filter(|s| !s.is_empty()).skip(1).take(3).collect::<Vec<_>>().join(" ");
     let desc = format!("Sentinel-3 {kind} SAFE, {} variables", vars.len());
-    Ok(Dataset { product: Product { name: pname, desc, vars, valid: None }, sources })
+    Ok(Dataset { product: Product { name: pname, desc, vars, valid: None, info }, sources })
 }

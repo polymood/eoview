@@ -109,6 +109,9 @@ pub enum Cmd {
     /// Open or close the Python panel, run its script.
     Python,
     PythonRun,
+    /// The information window (metadata of the product) and the values window: open or close.
+    Info,
+    Values,
 }
 
 #[derive(Default)]
@@ -167,6 +170,8 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Layout: 2 views"), "Alt+2", Cmd::Layout(2)),
         (t("Layout: 2 x 2 views"), "Alt+3", Cmd::Layout(4)),
         (t("Layout: 3 x 3 views"), "Alt+4", Cmd::Layout(9)),
+        (t("Information: dimensions and attributes of the product"), "Ctrl+I", Cmd::Info),
+        (t("Values: a table of the values around the cursor"), "Ctrl+Shift+I", Cmd::Values),
         (t("Fit"), "F", Cmd::Fit),
         (t("Zoom 1:1"), "1", Cmd::OneToOne),
         (t("Automatic stretch"), "A", Cmd::Auto),
@@ -696,6 +701,8 @@ enum Pick {
     Color([usize; 3]),
     /// Show a variable in a new view (true), or as a new layer of the view.
     Show(usize, bool),
+    /// Open the information window.
+    Info,
 }
 
 /// Product tree of a layer: the groups and the variables of the product, with a filter.
@@ -703,6 +710,9 @@ fn contents_ui(ui: &mut egui::Ui, l: &mut MapLayer) -> Option<Pick> {
     let mut pick = None;
     ui.horizontal(|ui| {
         ui.strong(t("Product"));
+        if ui.small_button(t("Information")).on_hover_text(t("Dimensions, attributes and all the variables of the product")).clicked() {
+            pick = Some(Pick::Info);
+        }
         ui.add(egui::TextEdit::singleline(&mut l.filter).hint_text(tf("Filter {} variables", &[&l.chans.len().to_string()])).desired_width(f32::INFINITY));
     });
     let l = &*l;
@@ -902,6 +912,8 @@ impl App {
         self.url_ui(&ctx);
         self.help_ui(&ctx);
         self.prefs_ui(&ctx);
+        self.info_ui(&ctx);
+        self.values_ui(&ctx);
         self.py_frame();
         self.watch_tick();
         // `eoview --python FILE`: the script runs when the layers of the view show.
@@ -1034,7 +1046,7 @@ impl App {
             match c {
                 Cmd::Panel => self.wins[k].panel ^= true,
                 // The dialogs of these commands are in the main window.
-                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Render | Cmd::Open(..) | Cmd::Save | Cmd::Load | Cmd::Export => {
+                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Info | Cmd::Values | Cmd::Render | Cmd::Open(..) | Cmd::Save | Cmd::Load | Cmd::Export => {
                     self.run(c, i);
                     if let Some(w) = &self.win {
                         w.window.focus_window();
@@ -1072,6 +1084,8 @@ impl App {
             (cmd, Key::L, Cmd::Open(false, What::Url)),
             (cmd, Key::S, Cmd::Save),
             (cmd, Key::K, Cmd::Palette),
+            (sh, Key::I, Cmd::Values),
+            (cmd, Key::I, Cmd::Info),
             (cmd, Key::Comma, Cmd::Prefs),
             (cmd, Key::R, Cmd::Render),
             (none, Key::F6, Cmd::Animate),
@@ -1200,6 +1214,8 @@ impl App {
             }
             Cmd::LinkMode => self.link_px ^= true,
             Cmd::Palette => self.palette = Some(Palette::default()),
+            Cmd::Info => self.info_open = !self.info_open,
+            Cmd::Values => self.values.open = !self.values.open,
             Cmd::Space(s) => self.set_space(id, s),
             Cmd::Globe => {
                 let on = self.pane(id).is_some_and(|p| !p.v.globe);
@@ -1500,6 +1516,8 @@ impl App {
                             }
                         });
                     });
+                    entry(ui, cmds, id, t("Information..."), "Ctrl+I", Cmd::Info);
+                    entry(ui, cmds, id, t("Values..."), "Ctrl+Shift+I", Cmd::Values);
                     entry(ui, cmds, id, t("Export data (GeoTIFF)..."), "", Cmd::Export);
                     ui.separator();
                     entry(ui, cmds, id, t("Automatic stretch"), "A", Cmd::Auto);
@@ -1907,6 +1925,7 @@ impl App {
                 changed = true;
             }
             Some(Pick::Show(c, new)) => cmds.push((Cmd::ShowVar(sel, c, new), id)),
+            Some(Pick::Info) => cmds.push((Cmd::Info, id)),
             None => {}
         }
 

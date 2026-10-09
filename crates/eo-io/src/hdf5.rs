@@ -286,6 +286,12 @@ fn filters(b: &[u8], size: usize) -> Result<Vec<Codec>> {
 
 /// All datasets of the file (recursive), with at least `min_rank` dimensions.
 pub fn datasets(src: &Source, min_rank: usize) -> Result<Vec<Dataset>> {
+    Ok(file(src, min_rank)?.0)
+}
+
+/// The datasets of rank `min_rank` or more, and the groups with their attributes (the root group, path "",
+/// has the global attributes of a NetCDF-4 file).
+pub fn file(src: &Source, min_rank: usize) -> Result<(Vec<Dataset>, Vec<Group>)> {
     let len = src.len()?;
     let mut base = 0;
     let sig = [0x89, b'H', b'D', b'F', b'\r', b'\n', 0x1a, b'\n'];
@@ -314,12 +320,15 @@ pub fn datasets(src: &Source, min_rank: usize) -> Result<Vec<Dataset>> {
         c.skip(r.so);
         c.u(r.so)?
     };
-    let mut out = vec![];
-    group(&r, root + base, "", min_rank, &mut out, 0)?;
-    Ok(out)
+    let (mut out, mut groups) = (vec![], vec![]);
+    group(&r, root + base, "", min_rank, &mut out, &mut groups, 0)?;
+    Ok((out, groups))
 }
 
-fn group(r: &Rd, addr: u64, path: &str, min_rank: usize, out: &mut Vec<Dataset>, depth: usize) -> Result<()> {
+/// A group: its path and its attributes.
+pub type Group = (String, HashMap<String, Attr>);
+
+fn group(r: &Rd, addr: u64, path: &str, min_rank: usize, out: &mut Vec<Dataset>, groups: &mut Vec<Group>, depth: usize) -> Result<()> {
     if depth > 16 {
         return Ok(());
     }
@@ -355,9 +364,10 @@ fn group(r: &Rd, addr: u64, path: &str, min_rank: usize, out: &mut Vec<Dataset>,
         }
         return Ok(());
     }
+    groups.push((path.to_string(), attributes(r, &msgs).unwrap_or_default()));
     for (name, a) in links {
         let p = if path.is_empty() { name } else { format!("{path}/{name}") };
-        if let Err(e) = group(r, a, &p, min_rank, out, depth + 1) {
+        if let Err(e) = group(r, a, &p, min_rank, out, groups, depth + 1) {
             eprintln!("HDF5 {p}: {e}");
         }
     }
@@ -553,16 +563,10 @@ fn symbol_table(r: &Rd, bt: u64, heap: u64, links: &mut Vec<(String, u64)>) -> R
     Ok(())
 }
 
-fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset>> {
-    let get = |t: u16| msgs.iter().find(|m| m.0 == t).map(|m| &m.1[..]);
-    let Some(shape) = get(0x01).and_then(dataspace) else { return Ok(None) };
-    let Some((Some(dtype), le, size)) = get(0x03).and_then(datatype) else { return Ok(None) };
-    let lay = get(0x08).ok_or("dataset without layout")?;
-    let rank = shape.len();
-    let codecs = get(0x0B).map(|f| filters(f, size)).transpose().map_err(|e| Error(format!("filter pipeline: {e}")))?.unwrap_or_default();
+/// The attributes of an object header: compact (attribute messages) and dense (attribute info message).
+fn attributes(r: &Rd, msgs: &[(u16, Vec<u8>)]) -> Result<HashMap<String, Attr>> {
     let mut attrs: HashMap<String, Attr> = msgs.iter().filter(|m| m.0 == 0x0C).filter_map(|m| attribute(&m.1)).collect();
-    // Dense attribute storage (attribute info message).
-    if let Some(d) = get(0x15) {
+    if let Some(d) = msgs.iter().find(|m| m.0 == 0x15).map(|m| &m.1[..]) {
         let mut c = Cur { b: d, p: 1 };
         let flags = c.u(1)?;
         if flags & 1 != 0 {
@@ -573,6 +577,17 @@ fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset
             attrs.extend(dense(r, heap, bt, 8)?.iter().filter_map(|m| attribute(m)));
         }
     }
+    Ok(attrs)
+}
+
+fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset>> {
+    let get = |t: u16| msgs.iter().find(|m| m.0 == t).map(|m| &m.1[..]);
+    let Some(shape) = get(0x01).and_then(dataspace) else { return Ok(None) };
+    let Some((Some(dtype), le, size)) = get(0x03).and_then(datatype) else { return Ok(None) };
+    let lay = get(0x08).ok_or("dataset without layout")?;
+    let rank = shape.len();
+    let codecs = get(0x0B).map(|f| filters(f, size)).transpose().map_err(|e| Error(format!("filter pipeline: {e}")))?.unwrap_or_default();
+    let attrs = attributes(r, msgs)?;
     let (ver, class) = (lay[0], lay[1]);
     let lay_err = |e: Error| Error(format!("layout {ver}/{class}: {e}"));
     let mut c = Cur { b: lay, p: 2 };
@@ -612,6 +627,23 @@ fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset
         _ => return Err(format!("HDF5 data layout {ver}/{class} is not supported").into()),
     }) })().map_err(lay_err)?;
     Ok(Some(Dataset { path: path.to_string(), shape, dtype, le, chunk, chunks, codecs, attrs }))
+}
+
+impl Attr {
+    /// The value as text: numbers separated by commas (at most 64), a 32-bit float without extra digits.
+    pub fn text(&self) -> String {
+        match self {
+            Attr::Text(t) => t.clone(),
+            Attr::Num(v) => {
+                let one = |x: &f64| if *x == (*x as f32) as f64 { (*x as f32).to_string() } else { x.to_string() };
+                let mut t = v.iter().take(64).map(one).collect::<Vec<_>>().join(", ");
+                if v.len() > 64 {
+                    t += &format!(", ... ({} values)", v.len());
+                }
+                t
+            }
+        }
+    }
 }
 
 impl Dataset {

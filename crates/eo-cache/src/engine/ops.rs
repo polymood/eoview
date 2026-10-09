@@ -238,7 +238,7 @@ impl Inner {
             times: Default::default(),
         };
         let desc = format!("{} of {} time steps of {name}", how.name(), inputs.len());
-        let product = Product { name: format!("{name} {}", how.name().to_lowercase()), desc, vars: vec![var], valid: None };
+        let product = Product { name: format!("{name} {}", how.name().to_lowercase()), desc, vars: vec![var], valid: None, info: Default::default() };
         let ds = Arc::new(Dataset { product, sources: inputs[0].ds.sources.clone() });
         let src = |l: &Layer| l.var().levels[0].chunks.iter().next().and_then(|c| l.ds.sources.get(c.src as usize)).map_or(String::new(), |s| s.name().to_string());
         let key = format!("{how:?} {:?}", inputs.iter().map(|l| (src(l), l.var().name.clone(), l.choice, l.time)).collect::<Vec<_>>());
@@ -302,7 +302,7 @@ impl Inner {
             georef: g,
             times: Default::default(),
         };
-        let product = Product { name: name.into(), desc: format!("{name}: a function of {} layers", inputs.len()), vars: vec![var], valid: None };
+        let product = Product { name: name.into(), desc: format!("{name}: a function of {} layers", inputs.len()), vars: vec![var], valid: None, info: Default::default() };
         let ds = Arc::new(Dataset { product, sources: inputs[0].ds.sources.clone() });
         let (levels, enc) = (inputs[0].levels.clone(), choose_enc(DType::F32, Part::Real, &sample));
         let op = Op { kind: OpKind::Math { f, inputs }, key };
@@ -627,7 +627,7 @@ impl Inner {
         let mut sample: Vec<f32> = sample_at.iter().copied().filter(|v| v.is_finite()).collect();
         sample.sort_unstable_by(f32::total_cmp);
         let enc = choose_enc(DType::F32, Part::Real, &sample);
-        let product = Product { name: name.into(), desc: "Output of a Python script".into(), vars: vec![var], valid: None };
+        let product = Product { name: name.into(), desc: "Output of a Python script".into(), vars: vec![var], valid: None, info: Default::default() };
         let id = self.next.fetch_add(1, Relaxed);
         let op = Op { kind: OpKind::Array { w, data: Arc::new(data) }, key: format!("array {id}") };
         let ds = Arc::new(Dataset { product, sources: vec![] });

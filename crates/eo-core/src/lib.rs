@@ -373,12 +373,43 @@ impl Variable {
     }
 }
 
+/// Attributes (metadata) of a product or of a variable: name and value as text, in the order of the file
+/// or sorted by name.
+pub type Attrs = Vec<(String, String)>;
+
+/// Description of a variable of the file, also of a variable that the viewer does not show (a coordinate,
+/// a scalar, a 1D array): its dimensions with their names and sizes, its data type and its attributes.
+#[derive(Clone, Debug, Default)]
+pub struct Meta {
+    pub name: String,
+    pub dims: Vec<(String, u64)>,
+    pub dtype: String,
+    pub attrs: Attrs,
+}
+
+/// The metadata of a product for the user: global attributes, dimensions and all variables.
+#[derive(Clone, Debug, Default)]
+pub struct Info {
+    pub attrs: Attrs,
+    pub dims: Vec<(String, u64)>,
+    pub vars: Vec<Meta>,
+}
+
+impl Info {
+    /// The description of variable `name` (a `Variable::name` of the product).
+    pub fn var(&self, name: &str) -> Option<&Meta> {
+        self.vars.iter().find(|m| m.name == name)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Product {
     pub name: String,
     /// Short format description for the user.
     pub desc: String,
     pub vars: Vec<Variable>,
+    /// Metadata for the user (attributes, dimensions, all variables). Empty when the format has none.
+    pub info: Info,
     /// The first time and the last time with data (see `time`), if the product gives them. A data cube
     /// can have a time axis that is longer than its data (ERA5: from 1900 to 2050, with data from 1940).
     pub valid: Option<(f64, f64)>,
