@@ -35,12 +35,12 @@
     <p class="lead">Open satellite images from your computer or from the internet, and see them in seconds.</p>
     <p>eoview only reads the part of a file that you are looking at. A rough version shows up first and gets sharper as the details arrive. You can move around images of many gigabytes, and the window never freezes while it waits for the disk or the network.</p>
     <p>Your graphics card does the drawing, so satellite swaths, map projections and the 3D globe are all just as smooth.</p>
-    <p>eoview is written in Rust, from the file readers to the interface. It is a single program with nothing else to install, and it uses Direct3D 12 on Windows, Vulkan on Linux and Metal on macOS.</p>
+    <p>eoview is written in <a href="https://www.rust-lang.org/">Rust</a>, from the file readers to the interface. It is a single program with nothing else to install, and it draws with <a href="https://wgpu.rs/">wgpu</a>: Direct3D 12 on Windows, Vulkan on Linux and Metal on macOS.</p>
   </section>
 
   <figure>
     <img src="img/olci-orbits.webp" width="1600" height="1000" loading="lazy" alt="eoview with fourteen Sentinel-3 OLCI orbits as a true-color layer, in a 2D map at the left and on a 3D globe at the right.">
-    <figcaption>One day of Sentinel-3 OLCI: fourteen orbits, on a flat map and on the globe.</figcaption>
+    <figcaption>One day of <a href="https://sentiwiki.copernicus.eu/web/s3-olci-instrument">Sentinel-3 OLCI</a>: fourteen orbits, on a flat map and on the globe.</figcaption>
   </figure>
 
   <section>
@@ -48,8 +48,8 @@
     <dl class="pairs">
       <dt>GeoTIFF and COG</dt><dd>Including very large files, tiled files and files with overviews.</dd>
       <dt>NetCDF and HDF5</dt><dd>Including files with latitude and longitude grids, like most climate and ocean data.</dd>
-      <dt>Zarr</dt><dd>Including the new EOPF products from ESA, and GeoZarr.</dd>
-      <dt>Sentinel SAFE</dt><dd>Sentinel-1, Sentinel-2 and Sentinel-3 products, as they come from the Copernicus archive.</dd>
+      <dt>Zarr</dt><dd>Including the new <a href="https://zarr.eopf.copernicus.eu/">EOPF products</a> from ESA, and <a href="https://github.com/zarr-developers/geozarr-spec">GeoZarr</a>.</dd>
+      <dt>Sentinel SAFE</dt><dd><a href="https://sentiwiki.copernicus.eu/web/s1-mission">Sentinel-1</a>, <a href="https://sentiwiki.copernicus.eu/web/s2-mission">Sentinel-2</a> and <a href="https://sentiwiki.copernicus.eu/web/s3-mission">Sentinel-3</a> products, as they come from the <a href="https://dataspace.copernicus.eu/">Copernicus archive</a>.</dd>
       <dt>JPEG 2000</dt><dd>Including Sentinel-2 images in their original format.</dd>
       <dt>NITF</dt><dd>Radar products in SICD and SIDD.</dd>
       <dt>From where</dt><dd>Your disk, a web server or a cloud bucket. eoview keeps downloaded data in a cache.</dd>
@@ -79,7 +79,7 @@
 
   <section>
     <h2>A season in 21 images</h2>
-    <p class="prose">Give eoview a list of dates and it plays them like a film. These are 21 Sentinel-2 images of the Écrins mountains in the French Alps, from March to August 2025. eoview read them straight from the public archive in Amazon's cloud.</p>
+    <p class="prose">Give eoview a list of dates and it plays them like a film. These are 21 Sentinel-2 images of the <a href="https://en.wikipedia.org/wiki/Massif_des_%C3%89crins">Écrins mountains</a> in the French Alps, from March to August 2025. eoview read them straight from the <a href="https://registry.opendata.aws/sentinel-2-l2a-cogs/">public Sentinel-2 archive</a> in Amazon's cloud.</p>
     <figure>
       <video data-lazy poster="img/alps-snow.webp" width="1280" height="800" muted loop playsinline preload="none" aria-label="The snow of the Écrins massif melts from March to August 2025, and the valleys turn green."><source data-src="img/alps-snow.mp4" type="video/mp4"></video>
       <figcaption>The snow melts and the valleys turn green. eoview blends each image into the next one.</figcaption>
@@ -93,7 +93,7 @@
       <dt>Time series</dt><dd>Play many dates on a timeline, and compute averages and other statistics over time.</dd>
       <dt>Measure</dt><dd>Read pixel values, draw lines and areas, and pin points.</dd>
       <dt>Calculate</dt><dd>Combine bands or whole images with formulas, even from different products.</dd>
-      <dt>Python</dt><dd>Run your own scripts and Jupyter notebooks, and show the results as new layers and charts.</dd>
+      <dt>Python</dt><dd>Run your own scripts and <a href="https://jupyter.org/">Jupyter</a> notebooks, and show the results as new layers and charts.</dd>
       <dt>Wind</dt><dd>Show wind and currents as arrows or as moving particles.</dd>
       <dt>Share</dt><dd>Export to GeoTIFF, make figures for papers and slides, and make videos.</dd>
       <dt>Projects</dt><dd>Save a whole project in one file. When a file changes on disk, eoview reloads it.</dd>
@@ -107,7 +107,7 @@
         <video data-lazy poster="img/globe-ocean.webp" width="1080" height="1080" muted loop playsinline preload="none" aria-label="The Earth turns on a globe for a month. The oceans have the colors of their temperature, and white particles follow the wind. Typhoons and hurricanes turn in spirals."><source data-src="img/globe-ocean-av1.mp4" type='video/mp4; codecs="av01.0.08M.08"'><source data-src="img/globe-ocean.mp4" type="video/mp4"></video>
       </figure>
       <div class="prose">
-        <p>Sea temperature and ocean winds from NOAA, from 10 September to 9 October 2025, on top of NASA's Blue Marble. Watch typhoon Ragasa cross the Philippine Sea, and hurricanes Humberto and Imelda spin between the Bahamas and Bermuda.</p>
+        <p><a href="https://www.ncei.noaa.gov/products/optimum-interpolation-sst">Sea temperature</a> and <a href="https://www.ncei.noaa.gov/products/blended-sea-winds">ocean winds</a> from NOAA, from 10 September to 9 October 2025, on top of NASA's <a href="https://visibleearth.nasa.gov/collection/1484/blue-marble">Blue Marble</a>. Watch <a href="https://en.wikipedia.org/wiki/Typhoon_Ragasa">typhoon Ragasa</a> cross the Philippine Sea, and hurricanes <a href="https://en.wikipedia.org/wiki/Hurricane_Humberto_(2025)">Humberto</a> and <a href="https://en.wikipedia.org/wiki/Hurricane_Imelda">Imelda</a> spin between the Bahamas and Bermuda.</p>
         <p>The wind is drawn as particles that drift with it, and the globe turns while the days go by.</p>
       </div>
     </div>
@@ -120,7 +120,7 @@
         <video data-lazy poster="img/arctic-ice.webp" width="1080" height="1080" muted loop playsinline preload="none" aria-label="The Arctic sea ice grows to its maximum in March, melts to its minimum in September, and freezes again."><source data-src="img/arctic-ice.mp4" type="video/mp4"></video>
       </figure>
       <div class="prose">
-        <p>Daily sea ice maps from EUMETSAT OSI SAF for 2025. The ice grows until March, shrinks to its smallest in September, then freezes again.</p>
+        <p>Daily <a href="https://osi-saf.eumetsat.int/products/sea-ice-products">sea ice maps</a> from EUMETSAT OSI SAF for 2025. The ice grows until March, shrinks to its smallest in September, then freezes again.</p>
         <p>The files use a polar grid, and eoview puts them on the globe as they are, with no conversion. A simple formula hides the open water, and the few days with missing satellite data are left out.</p>
       </div>
     </div>
@@ -128,7 +128,7 @@
 
   <figure>
     <img src="img/sar-mine.webp" width="1600" height="1000" loading="lazy" alt="eoview with a radar image of the terraces of the Bingham Canyon copper mine, Utah.">
-    <figcaption>The Bingham Canyon copper mine in Utah, seen by an Umbra radar satellite with pixels smaller than one meter. eoview opened it straight from Umbra's open data on the internet, reading only what is on screen.</figcaption>
+    <figcaption>The <a href="https://en.wikipedia.org/wiki/Bingham_Canyon_Mine">Bingham Canyon copper mine</a> in Utah, seen by an <a href="https://umbra.space/">Umbra</a> radar satellite with pixels smaller than one meter. eoview opened it straight from <a href="https://umbra.space/open-data/">Umbra's open data</a> on the internet, reading only what is on screen.</figcaption>
   </figure>
 
   <figure>
@@ -149,7 +149,7 @@
     <a href="https://github.com/polymood/eoview">Source code</a>
     <a href="https://github.com/polymood/eoview/issues">Report a problem</a>
     <a href="privacy.html">Privacy policy</a>
-    <p>Images: contains modified Copernicus Sentinel data (2025, 2026). Umbra SAR: Umbra Open Data Program (CC BY 4.0). Sea ice: EUMETSAT OSI SAF. Sea surface temperature and wind: NOAA OISST v2.1 and NOAA Blended Sea Winds. Blue Marble: NASA Earth Observatory.</p>
+    <p>Images: contains modified <a href="https://www.copernicus.eu/en">Copernicus</a> Sentinel data (2025, 2026). Radar: <a href="https://umbra.space/open-data/">Umbra Open Data Program</a> (CC BY 4.0). Sea ice: <a href="https://osi-saf.eumetsat.int/products/sea-ice-products">EUMETSAT OSI SAF</a>. Sea temperature and wind: <a href="https://www.ncei.noaa.gov/products/optimum-interpolation-sst">NOAA OISST</a> and <a href="https://www.ncei.noaa.gov/products/blended-sea-winds">NOAA Blended Sea Winds</a>. Land: <a href="https://visibleearth.nasa.gov/collection/1484/blue-marble">NASA Blue Marble</a> and <a href="https://www.naturalearthdata.com/">Natural Earth</a>.</p>
   </div>
 </footer>
 
