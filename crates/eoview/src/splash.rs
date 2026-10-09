@@ -11,8 +11,8 @@ use winit::window::{Window, WindowId};
 /// Inner rectangle of the progress bar in `assets/splash.png`: x, y, width, height.
 /// `SPLASH_BAR` in `scripts/make_icons.py` has the same values.
 const BAR: [u32; 4] = [210, 198, 292, 16];
-/// Color of the progress bar (0x00RRGGBB).
-const BAR_COLOR: u32 = 0x003f_7be0;
+/// Color of the progress bar (0x00RRGGBB): `PAPER` of `scripts/make_icons.py`.
+const BAR_COLOR: u32 = 0x00f1_f4f3;
 
 pub struct Splash {
     window: Arc<Window>,
