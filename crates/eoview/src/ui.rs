@@ -944,6 +944,7 @@ impl App {
         p.rect = rect;
         p.painter = Some(ui.painter().clone());
         p.v.cursor = None;
+        p.no_scale = !stamp;
         // The time of the frame: between the times of two steps for a frame that is a blend of them.
         let label = p.timed().filter(|_| stamp).map(|l| {
             let (a, b) = (l.steps[l.shown].t, l.steps[(l.shown + l.stride.max(1)) % l.steps.len()].t);
@@ -2452,6 +2453,7 @@ fn overlays(p: &Pane, pt: &egui::Painter, ppp: f32, mpp: Option<f64>, cross: Opt
     }
     // Scale bar: a length of 1, 2 or 5 times a power of 10, at most 120 points.
     let per_pt = match (mpp, p.v.space) {
+        _ if p.no_scale => None,
         (Some(m), _) => Some((m * ppp as f64, "m")),
         (None, None) => Some((ppp as f64 / p.v.scale, "px")),
         _ => None,

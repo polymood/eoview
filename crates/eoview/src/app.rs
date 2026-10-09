@@ -170,6 +170,8 @@ pub struct Pane {
     pub sel_shape: Option<usize>,
     /// Draw the data only: no map overlays, no scale bar, no tools (the map of a figure).
     pub bare: bool,
+    /// No scale bar: a frame of a render without text (`--no-stamp`).
+    pub no_scale: bool,
 }
 
 impl Pane {
@@ -217,6 +219,7 @@ impl Pane {
             shapes: vec![],
             sel_shape: None,
             bare: false,
+            no_scale: false,
         }
     }
 
