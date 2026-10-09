@@ -53,25 +53,21 @@ pre code { background: none; padding: 0; }
 .bar nav a { color: var(--ink); text-decoration: none; }
 .bar nav a:hover, .bar nav a[aria-current] { text-decoration: underline; }
 
-/* The home page: the globe with the wind of ERA5 fills the first screen, the name is on the ocean. */
-.hero {
-  position: relative; min-height: min(86vh, 52rem); display: flex; flex-direction: column; justify-content: flex-end;
-  background: #04101c url(img/globe-wind.webp) center 40% / cover no-repeat; color: #f4f8fa;
-}
-.hero::before {
-  content: ""; position: absolute; inset: 0;
-  background:
-    linear-gradient(180deg, rgba(2, 10, 20, 0.7) 0, rgba(2, 10, 20, 0) 7rem),
-    linear-gradient(90deg, rgba(2, 10, 20, 0.86) 0%, rgba(2, 10, 20, 0.55) 38%, rgba(2, 10, 20, 0) 70%);
-}
-.hero .bar { position: absolute; top: 0; left: 0; right: 0; }
+/* The home page: one day of Sentinel-3 orbits turns on the globe at the right of the name. The page and the
+   frames of the video have the same background, so the globe floats on it. */
+.hero { background: #05070c; color: #f4f8fa; }
 .hero .bar .name, .hero .bar nav a { color: #f4f8fa; }
-.hero-text { position: relative; width: 100%; max-width: var(--wide); margin: 0 auto; padding: 6rem 1.25rem 4.5rem; }
-.hero h1 {
-  margin: 0; font-size: clamp(4rem, 13vw, 9.5rem); line-height: 0.9; font-weight: 800; letter-spacing: -0.035em;
+.hero-in {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 40rem); align-items: center; gap: 2rem;
+  max-width: var(--wide); margin: 0 auto; padding: 1rem 1.25rem 3rem; min-height: min(80vh, 46rem);
 }
-.hero p { margin: 1.1rem 0 2rem; font-size: clamp(1.2rem, 2.4vw, 1.55rem); max-width: 26ch; line-height: 1.35; }
-.hero .credit { position: absolute; right: 1.25rem; bottom: 0.9rem; margin: 0; font-size: 0.78rem; max-width: none; padding: 0.15rem 0.45rem; background: rgba(2, 10, 20, 0.55); border-radius: 3px; }
+.hero h1 {
+  margin: 0; font-size: clamp(4rem, 11vw, 8.5rem); line-height: 0.9; font-weight: 800; letter-spacing: -0.035em;
+}
+.hero p { margin: 1.1rem 0 2rem; font-size: clamp(1.2rem, 2.2vw, 1.5rem); max-width: 24ch; line-height: 1.35; }
+.hero figure { margin: 0; }
+.hero video, .hero figure img { width: 100%; height: auto; aspect-ratio: 1; border: 0; border-radius: 0; }
+.hero figcaption { color: #93a3ad; font-size: 0.85rem; margin: 0.25rem auto 0; text-align: center; max-width: 34ch; }
 .hero .other { color: #f4f8fa; margin-left: 1.25rem; }
 
 .button {
@@ -91,7 +87,7 @@ h3 { font-size: 1.15rem; margin: 2rem 0 0.4rem; }
 .muted { color: var(--muted); }
 
 figure { margin: 2.25rem 0 0; }
-figure img { border: 1px solid var(--line); border-radius: 4px; }
+figure img, figure video { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; }
 figcaption { color: var(--muted); font-size: 0.95rem; margin-top: 0.6rem; max-width: var(--measure); }
 
 /* Formats and functions: a term at the left, what eoview does with it at the right. */
@@ -103,6 +99,12 @@ dl.pairs dt { font-weight: 700; padding-right: 1.5rem; }
   dl.pairs dt { border-bottom: 0; padding-bottom: 0; }
   dl.pairs dd { padding-top: 0.15rem; }
 }
+
+/* A figure at the left of its text. */
+.side { display: grid; grid-template-columns: minmax(0, 30rem) minmax(0, 1fr); gap: 2.5rem; align-items: center; }
+.side figure { margin: 0; }
+.side figure video { border: 0; background: #05070c; }
+@media (max-width: 48rem) { .side { grid-template-columns: 1fr; gap: 1rem; } }
 
 ol.steps { padding-left: 1.3rem; }
 ol.steps li { margin: 0.35rem 0; }
@@ -118,10 +120,9 @@ footer { border-top: 1px solid var(--line); }
 footer .in { max-width: var(--wide); margin: 0 auto; padding: 1.5rem 1.25rem 2.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.75rem; color: var(--muted); font-size: 0.92rem; }
 footer .in p { margin: 0; flex-basis: 100%; }
 
-@media (max-width: 40rem) {
-  .bar nav { gap: 0.9rem; }
-  .hero { min-height: 34rem; background-position: 62% 40%; }
-  .hero::before { background: linear-gradient(0deg, rgba(2, 10, 20, 0.88) 0%, rgba(2, 10, 20, 0.45) 55%, rgba(2, 10, 20, 0.2) 100%); }
+@media (max-width: 48rem) {
+  .hero-in { grid-template-columns: 1fr; min-height: 0; padding-top: 2rem; gap: 1rem; }
+  .hero figure { max-width: 26rem; margin: 0 auto; }
   .hero .other { display: block; margin: 1rem 0 0; }
-  .hero .credit { position: static; padding: 0 1.25rem 0.9rem; }
+  .bar nav { gap: 0.9rem; }
 }
