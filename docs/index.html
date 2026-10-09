@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eoview: a fast viewer for Earth observation data</title>
+<meta name="description" content="eoview is a free, open-source desktop viewer for satellite and Earth observation data: GeoTIFF, COG, NetCDF, HDF5, Zarr, JPEG 2000, NITF and Sentinel SAFE products, local or remote.">
+<link rel="icon" href="img/favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <div class="bar">
+    <a class="name" href="./"><img src="img/eoview.svg" alt="">eoview</a>
+    <nav><a href="download.html">Download</a><a href="https://github.com/polymood/eoview">Source code</a></nav>
+  </div>
+  <div class="hero-text">
+    <h1>eoview</h1>
+    <p>A fast desktop viewer for satellite and Earth observation data.</p>
+    <a class="button" href="https://github.com/polymood/eoview/releases/latest/download/eoview-setup-windows-x86_64.exe">Download for Windows</a>
+    <a class="other" href="download.html#linux-and-macos">Linux and macOS</a>
+  </div>
+  <p class="credit">Wind from ERA5 over NASA Blue Marble, drawn by eoview on the globe.</p>
+</header>
+
+<main>
+  <section class="prose">
+    <h2>Open the data, see it at once</h2>
+    <p class="lead">eoview opens satellite products from your disk or from a server, and shows them in seconds.</p>
+    <p>eoview reads only the parts of a product that the view needs. The coarse level comes first, then the finer levels. You can pan and zoom through images of many gigabytes, and the window never waits for the disk or the network.</p>
+    <p>The GPU draws the data. It also reprojects the data, so swaths, map projections and the 3D globe show at the same speed.</p>
+  </section>
+
+  <figure>
+    <img src="img/olci-orbits.webp" width="1600" height="1000" loading="lazy" alt="eoview with fourteen Sentinel-3 OLCI orbits as a true-color layer, in a 2D map at the left and on a 3D globe at the right.">
+    <figcaption>Fourteen Sentinel-3 OLCI orbits of one day, in a 2D map and on the globe. Each orbit is a SAFE product with 64 variables.</figcaption>
+  </figure>
+
+  <section>
+    <h2>Formats</h2>
+    <dl class="pairs">
+      <dt>GeoTIFF and COG</dt><dd>Strips, tiles, overviews and the usual compressions. BigTIFF.</dd>
+      <dt>NetCDF-4 and HDF5</dt><dd>Chunked datasets, CF scale, offset and fill values, latitude and longitude arrays.</dd>
+      <dt>Zarr v2 and v3</dt><dd>EOPF and GeoZarr products, sharding, Blosc and Zstd, multiscales.</dd>
+      <dt>Sentinel SAFE</dt><dd>Sentinel-1 GRD and SLC, Sentinel-2 L1C and L2A, Sentinel-3 OLCI and SLSTR.</dd>
+      <dt>JPEG 2000</dt><dd>Tiles and resolution levels.</dd>
+      <dt>NITF</dt><dd>SICD and SIDD radar products, complex pixels.</dd>
+      <dt>Locations</dt><dd>Local files and directories, HTTP and HTTPS, and S3 buckets. A disk cache keeps the remote data.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Work with the data</h2>
+    <dl class="pairs">
+      <dt>Compare</dt><dd>Link the views. Swipe, blend, flicker or subtract two layers.</dd>
+      <dt>Time series</dt><dd>Open many dates as one layer, play them on a timeline, and calculate aggregates over time.</dd>
+      <dt>Measure</dt><dd>Inspect pixels, draw transects and regions, and pin points.</dd>
+      <dt>Calculate</dt><dd>Band math in a layer, and math between layers of different products.</dd>
+      <dt>Python</dt><dd>Run scripts and Jupyter notebooks on the layers of a view. Show the results as new layers and charts.</dd>
+      <dt>Wind</dt><dd>Show vector fields as arrows or as particles that move with the field.</dd>
+      <dt>Output</dt><dd>Export layers to GeoTIFF. Make figures (PDF, SVG, PNG) and videos of a time series.</dd>
+      <dt>Workspaces</dt><dd>Save the views, layers and settings of a project in one file. A product that changes on the disk opens again.</dd>
+    </dl>
+  </section>
+
+  <figure>
+    <img src="img/lst-python.webp" width="1600" height="1000" loading="lazy" alt="eoview with two linked views of land surface temperature over Europe, a timeline, a transect from Lisbon to Stockholm with its chart, and a Python script in a panel below.">
+    <figcaption>A month of land surface temperature (synthetic data) in two linked views, with a transect and a Python script that fills the gaps.</figcaption>
+  </figure>
+
+  <section class="prose">
+    <h2>Download</h2>
+    <p>eoview is free and open source (MIT or Apache-2.0). It runs on Windows, Linux and macOS, and updates itself.</p>
+    <p><a class="button" href="download.html">Download eoview</a></p>
+  </section>
+</main>
+
+<footer>
+  <div class="in">
+    <a href="download.html">Download</a>
+    <a href="https://github.com/polymood/eoview">Source code</a>
+    <a href="https://github.com/polymood/eoview/issues">Report a problem</a>
+    <a href="privacy.html">Privacy policy</a>
+    <p>Images: contains modified Copernicus Sentinel data (2026) and modified Copernicus Climate Change Service information (ERA5, 2025). Blue Marble: NASA Earth Observatory.</p>
+  </div>
+</footer>
+</body>
+</html>
