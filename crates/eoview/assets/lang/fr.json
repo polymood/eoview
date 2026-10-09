@@ -327,6 +327,8 @@
  "Quality": "Qualité",
  "Quit": "Quitter",
  "Range of a new layer": "Plage d'une nouvelle couche",
+ "Other programs can rewrite open products": "D'autres programmes peuvent réécrire les produits ouverts",
+ "eoview reads the local files without a memory map. On Windows, a program can then rewrite or replace a product that a view shows. The products load slower. For the products that open after the change.": "eoview lit les fichiers locaux sans projection en mémoire. Sous Windows, un programme peut alors réécrire ou remplacer un produit qu'une vue affiche. Les produits se chargent plus lentement. Pour les produits ouverts après le changement.",
  "Rate": "Cadence",
  "Read the themes again": "Relire les thèmes",
  "Recent": "Récents",
