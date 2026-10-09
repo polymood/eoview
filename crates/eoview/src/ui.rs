@@ -1682,6 +1682,13 @@ impl App {
                 ui.colored_label(ui.visuals().error_fg_color, e);
                 ui.separator();
             }
+            if let Some(Ok(v)) = self.update.as_ref().and_then(|s| s.lock().unwrap().clone()) {
+                if ui.small_button("x").on_hover_text(t("Close the message")).clicked() {
+                    self.update = None;
+                }
+                ui.label(tf("eoview {} is installed. It runs at the next start.", &[&v]));
+                ui.separator();
+            }
             if let Some(id) = self.hovered
                 && let Some(c) = self.pane(id).and_then(|p| p.v.cursor)
             {

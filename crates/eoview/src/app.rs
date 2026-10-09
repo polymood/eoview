@@ -671,6 +671,8 @@ pub struct App {
     pub watcher: Option<Watcher>,
     /// Wakes the event loop from an other thread (None in the tests).
     pub waker: Option<crate::Wake>,
+    /// The automatic update (`update::start`).
+    pub update: Option<crate::update::Status>,
     /// The figure: its settings, its tab open or not, its state (the image of the map).
     pub figure: crate::figure::FigSet,
     pub figure_open: bool,
@@ -754,6 +756,7 @@ impl App {
             export: None,
             watcher: None,
             waker: None,
+            update: None,
             figure: Default::default(),
             figure_open: false,
             fig: Default::default(),
