@@ -1,0 +1,127 @@
+/* The site of eoview (GitHub Pages, the docs directory of main). No external resources: the fonts are here. */
+@font-face { font-family: 'Atkinson Hyperlegible Next'; font-weight: 200 800; font-display: swap; src: url(fonts/atkinson-hyperlegible-next-400.woff2) format('woff2'); }
+@font-face { font-family: 'Atkinson Hyperlegible Mono'; font-weight: 400; font-display: swap; src: url(fonts/atkinson-hyperlegible-mono-400.woff2) format('woff2'); }
+
+:root {
+  --paper: #f1f4f3;
+  --ink: #14212b;
+  --muted: #55666f;
+  --line: #c9d3d5;
+  --ocean: #155a77;
+  --ocean-ink: #ffffff;
+  --code: #e3e9e8;
+  --measure: 40rem;
+  --wide: 72rem;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f1a21; --ink: #e2e9eb; --muted: #9aabb2; --line: #2a3a43;
+    --ocean: #6fb6d3; --ocean-ink: #0f1a21; --code: #18262e; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f1a21; --ink: #e2e9eb; --muted: #9aabb2; --line: #2a3a43;
+  --ocean: #6fb6d3; --ocean-ink: #0f1a21; --code: #18262e; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 1.0625rem/1.6 'Atkinson Hyperlegible Next', system-ui, sans-serif;
+}
+a { color: var(--ocean); text-underline-offset: 0.18em; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 3px solid var(--ocean); outline-offset: 3px; border-radius: 2px; }
+img { max-width: 100%; height: auto; display: block; }
+code, pre, kbd { font-family: 'Atkinson Hyperlegible Mono', ui-monospace, monospace; font-size: 0.92em; }
+code { background: var(--code); padding: 0.1em 0.35em; border-radius: 3px; }
+pre { background: var(--code); padding: 1rem 1.1rem; border-radius: 4px; overflow-x: auto; line-height: 1.5; margin: 0; }
+pre code { background: none; padding: 0; }
+
+/* Bar at the top of each page. */
+.bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  max-width: var(--wide); margin: 0 auto; padding: 1rem 1.25rem;
+}
+.bar .name { display: flex; align-items: center; gap: 0.55rem; font-weight: 700; font-size: 1.15rem; color: var(--ink); text-decoration: none; }
+.bar .name img { width: 28px; height: 28px; }
+.bar nav { display: flex; gap: 1.25rem; }
+.bar nav a { color: var(--ink); text-decoration: none; }
+.bar nav a:hover, .bar nav a[aria-current] { text-decoration: underline; }
+
+/* The home page: the globe with the wind of ERA5 fills the first screen, the name is on the ocean. */
+.hero {
+  position: relative; min-height: min(86vh, 52rem); display: flex; flex-direction: column; justify-content: flex-end;
+  background: #04101c url(img/globe-wind.webp) center 40% / cover no-repeat; color: #f4f8fa;
+}
+.hero::before {
+  content: ""; position: absolute; inset: 0;
+  background:
+    linear-gradient(180deg, rgba(2, 10, 20, 0.7) 0, rgba(2, 10, 20, 0) 7rem),
+    linear-gradient(90deg, rgba(2, 10, 20, 0.86) 0%, rgba(2, 10, 20, 0.55) 38%, rgba(2, 10, 20, 0) 70%);
+}
+.hero .bar { position: absolute; top: 0; left: 0; right: 0; }
+.hero .bar .name, .hero .bar nav a { color: #f4f8fa; }
+.hero-text { position: relative; width: 100%; max-width: var(--wide); margin: 0 auto; padding: 6rem 1.25rem 4.5rem; }
+.hero h1 {
+  margin: 0; font-size: clamp(4rem, 13vw, 9.5rem); line-height: 0.9; font-weight: 800; letter-spacing: -0.035em;
+}
+.hero p { margin: 1.1rem 0 2rem; font-size: clamp(1.2rem, 2.4vw, 1.55rem); max-width: 26ch; line-height: 1.35; }
+.hero .credit { position: absolute; right: 1.25rem; bottom: 0.9rem; margin: 0; font-size: 0.78rem; max-width: none; padding: 0.15rem 0.45rem; background: rgba(2, 10, 20, 0.55); border-radius: 3px; }
+.hero .other { color: #f4f8fa; margin-left: 1.25rem; }
+
+.button {
+  display: inline-block; padding: 0.8rem 1.35rem; border-radius: 4px; font-weight: 700;
+  background: var(--ocean); color: var(--ocean-ink); text-decoration: none;
+}
+.hero .button { background: #f4f8fa; color: #0b2a3a; }
+.button:hover { filter: brightness(1.08); text-decoration: none; }
+
+main { max-width: var(--wide); margin: 0 auto; padding: 0 1.25rem 4rem; }
+section { margin-top: 4.5rem; }
+.prose { max-width: var(--measure); }
+h1.page { font-size: clamp(2.4rem, 6vw, 3.6rem); line-height: 1.05; letter-spacing: -0.02em; margin: 2.5rem 0 1rem; }
+h2 { font-size: 1.75rem; line-height: 1.2; letter-spacing: -0.01em; margin: 0 0 1rem; }
+h3 { font-size: 1.15rem; margin: 2rem 0 0.4rem; }
+.lead { font-size: 1.3rem; line-height: 1.45; max-width: 34ch; }
+.muted { color: var(--muted); }
+
+figure { margin: 2.25rem 0 0; }
+figure img { border: 1px solid var(--line); border-radius: 4px; }
+figcaption { color: var(--muted); font-size: 0.95rem; margin-top: 0.6rem; max-width: var(--measure); }
+
+/* Formats and functions: a term at the left, what eoview does with it at the right. */
+dl.pairs { display: grid; grid-template-columns: minmax(10rem, 16rem) 1fr; margin: 0; border-top: 1px solid var(--line); max-width: 56rem; }
+dl.pairs dt, dl.pairs dd { margin: 0; padding: 0.8rem 0; border-bottom: 1px solid var(--line); }
+dl.pairs dt { font-weight: 700; padding-right: 1.5rem; }
+@media (max-width: 40rem) {
+  dl.pairs { grid-template-columns: 1fr; }
+  dl.pairs dt { border-bottom: 0; padding-bottom: 0; }
+  dl.pairs dd { padding-top: 0.15rem; }
+}
+
+ol.steps { padding-left: 1.3rem; }
+ol.steps li { margin: 0.35rem 0; }
+
+.command { position: relative; max-width: 48rem; }
+.command button {
+  position: absolute; top: 0.5rem; right: 0.5rem; font: inherit; font-size: 0.85rem; cursor: pointer;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 3px; padding: 0.25rem 0.6rem;
+}
+.command pre { padding-right: 5.5rem; }
+
+footer { border-top: 1px solid var(--line); }
+footer .in { max-width: var(--wide); margin: 0 auto; padding: 1.5rem 1.25rem 2.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem 1.75rem; color: var(--muted); font-size: 0.92rem; }
+footer .in p { margin: 0; flex-basis: 100%; }
+
+@media (max-width: 40rem) {
+  .bar nav { gap: 0.9rem; }
+  .hero { min-height: 34rem; background-position: 62% 40%; }
+  .hero::before { background: linear-gradient(0deg, rgba(2, 10, 20, 0.88) 0%, rgba(2, 10, 20, 0.45) 55%, rgba(2, 10, 20, 0.2) 100%); }
+  .hero .other { display: block; margin: 1rem 0 0; }
+  .hero .credit { position: static; padding: 0 1.25rem 0.9rem; }
+}

@@ -2,7 +2,7 @@
 
 # eoview
 
-Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
+Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui. Website and download: https://polymood.github.io/eoview/
 
 `eoview` is a working name.
 
