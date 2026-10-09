@@ -88,9 +88,24 @@ fn warped(p: vec2f) -> vec2f {
     let g = clamp(p / u.wsize, vec2f(0.0), vec2f(1.0)) * vec2f(u.grid - 1u);
     let i = min(vec2u(g), u.grid - 2u);
     let t = g - vec2f(i);
-    let top = mix(node(i), node(i + vec2u(1u, 0u)), t.x);
-    let bot = mix(node(i + vec2u(0u, 1u)), node(i + vec2u(1u, 1u)), t.x);
-    return mix(top, bot, t.y);
+    let n0 = node(i);
+    var n1 = node(i + vec2u(1u, 0u));
+    var n2 = node(i + vec2u(0u, 1u));
+    var n3 = node(i + vec2u(1u, 1u));
+    if ((u.flags & 16u) != 0u) {
+        // Longitudes: the rows of the grid are continuous, but two rows can differ by 360 degrees (a grid
+        // that contains a pole). The next row of the cell goes within 180 degrees of this row.
+        let k = 360.0 * round((n2.x - n0.x) / 360.0);
+        n2.x -= k;
+        n3.x -= k;
+    }
+    return mix(mix(n0, n1, t.x), mix(n2, n3, t.x), t.y);
+}
+
+// Longitude x without a jump of about 360 degrees from longitude a (the cut of the longitudes of a grid that
+// contains a pole). A difference of less than 270 degrees does not change.
+fn near(x: f32, a: f32) -> f32 {
+    return select(x, x - 360.0 * round((x - a) / 360.0), abs(x - a) > 270.0);
 }
 
 // rect: tile corners in level-0 pixels. The tile is a mesh of n x n quads.
@@ -100,19 +115,23 @@ fn warped(p: vec2f) -> vec2f {
     let corner = array(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0));
     let t = (vec2f(f32(q % u.n), f32(q / u.n)) + corner[k]) / f32(u.n);
     // uvl.w: the tile is at this distance to the east, in display units (a layer that repeats in longitude).
-    let w = warped(mix(rect.xy, rect.zw, t)) + u.off + vec2f(uvl.w, 0.0);
+    var w = warped(mix(rect.xy, rect.zw, t));
     if ((u.flags & 16u) != 0u) {
-        // Longitude and latitude: a quad over more than 180 degrees of longitude goes around a pole (its
-        // longitudes are not continuous). It is not drawn: it would stretch over the map.
+        // Longitude and latitude: the corners of a quad over the cut of the longitudes of a grid that contains
+        // a pole go to the side of its first corner.
         let qi = vec2f(f32(q % u.n), f32(q / u.n));
         let a = warped(mix(rect.xy, rect.zw, qi / f32(u.n))).x;
-        let b = warped(mix(rect.xy, rect.zw, (qi + vec2f(1.0, 0.0)) / f32(u.n))).x;
-        let c = warped(mix(rect.xy, rect.zw, (qi + vec2f(0.0, 1.0)) / f32(u.n))).x;
-        let d = warped(mix(rect.xy, rect.zw, (qi + vec2f(1.0, 1.0)) / f32(u.n))).x;
-        if (max(max(a, b), max(c, d)) - min(min(a, b), min(c, d)) > 180.0) {
+        w.x = near(w.x, a);
+        // 2D: a quad around the pole has corners over more than 180 degrees of longitude. It is not drawn: it
+        // would stretch over the map. On the globe, it is at its place.
+        let b = near(warped(mix(rect.xy, rect.zw, (qi + vec2f(1.0, 0.0)) / f32(u.n))).x, a);
+        let c = near(warped(mix(rect.xy, rect.zw, (qi + vec2f(0.0, 1.0)) / f32(u.n))).x, a);
+        let d = near(warped(mix(rect.xy, rect.zw, (qi + vec2f(1.0, 1.0)) / f32(u.n))).x, a);
+        if ((u.flags & 8u) == 0u && max(max(a, b), max(c, d)) - min(min(a, b), min(c, d)) > 180.0) {
             return VO(vec4f(2.0, 2.0, 0.0, 1.0), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), -1.0);
         }
     }
+    w += u.off + vec2f(uvl.w, 0.0);
     if ((u.flags & 8u) != 0u) {
         // A point outside the domain of the projection is not on the globe.
         if (abs(w.x) > 1.0e4 || abs(w.y) > 1.0e4) {
