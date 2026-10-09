@@ -2,6 +2,7 @@
 # Outputs of renders
 *.frames/
 *.mp4
+!docs/img/*.mp4
 examples/lst_europe/
 __pycache__/
 examples/live/
