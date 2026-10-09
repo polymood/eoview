@@ -627,6 +627,7 @@ eoview --render --out frames --steps ::4 project.eoview
 | `--legend` | the name of the layer and its unit | Text of the legend of the frames |
 | `--overlays` | none | Map overlays on the frames: `coasts`, `borders`, `names` (for example `coasts,borders,names`) |
 | `--sub` | 1 | Frames for each time step. More than 1: the frames between two steps are a blend of the two steps, for a smooth change (data and particles) |
+| `--spin` | 0 | Degrees of longitude that the camera goes to the west for each frame: the globe (or the map) turns as the Earth does. For example `--globe --spin 0.5`: one turn in 720 frames |
 | `--keep` | | Keep the frames as PNG files in a directory next to the video (`name.frames`), and make the video at the end. A render that stopped continues after its last frame: for a long render. The particles of a wind layer start again at this frame |
 | `--no-stamp` | | Do not write the time of the step, the legend of the color map and the scale bar on the frames |
 
