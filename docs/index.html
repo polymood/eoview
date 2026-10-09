@@ -15,13 +15,18 @@
     <a class="name" href="./"><img src="img/eoview.svg" alt="">eoview</a>
     <nav><a href="download.html">Download</a><a href="https://github.com/polymood/eoview">Source code</a></nav>
   </div>
-  <div class="hero-text">
-    <h1>eoview</h1>
-    <p>A fast desktop viewer for satellite and Earth observation data.</p>
-    <a class="button" href="https://github.com/polymood/eoview/releases/latest/download/eoview-setup-windows-x86_64.exe">Download for Windows</a>
-    <a class="other" href="download.html#linux-and-macos">Linux and macOS</a>
+  <div class="hero-in">
+    <div>
+      <h1>eoview</h1>
+      <p>A fast desktop viewer for satellite and Earth observation data.</p>
+      <a class="button" href="https://github.com/polymood/eoview/releases/latest/download/eoview-setup-windows-x86_64.exe">Download for Windows</a>
+      <a class="other" href="download.html#linux-and-macos">Linux and macOS</a>
+    </div>
+    <figure>
+      <video src="img/globe-olci.mp4" poster="img/globe-olci.webp" width="720" height="720" autoplay muted loop playsinline aria-label="The Earth turns on a globe. The fourteen orbits of Sentinel-3B on 3 October 2026 cover it in stripes of clouds, oceans and deserts."></video>
+      <figcaption>The 14 orbits of Sentinel-3B OLCI on 3 October 2026, on the globe of eoview.</figcaption>
+    </figure>
   </div>
-  <p class="credit">Wind from ERA5 over NASA Blue Marble, drawn by eoview on the globe.</p>
 </header>
 
 <main>
@@ -51,6 +56,15 @@
   </section>
 
   <section>
+    <h2>A season in 21 images</h2>
+    <p class="prose">eoview opens a list of dates as one layer. The timeline plays them, and a render writes them to a video. These are 21 Sentinel-2 images of the Écrins massif (French Alps) from March to August 2025, read directly from the public archive on AWS.</p>
+    <figure>
+      <video src="img/alps-snow.mp4" poster="img/alps-snow.webp" width="1280" height="800" autoplay muted loop playsinline preload="metadata" aria-label="The snow of the Écrins massif melts from March to August 2025, and the valleys turn green."></video>
+      <figcaption>Sentinel-2 L2A true color, 31TGK, 4 March to 8 August 2025. A render of eoview with blends between the dates.</figcaption>
+    </figure>
+  </section>
+
+  <section>
     <h2>Work with the data</h2>
     <dl class="pairs">
       <dt>Compare</dt><dd>Link the views. Swipe, blend, flicker or subtract two layers.</dd>
@@ -63,6 +77,24 @@
       <dt>Workspaces</dt><dd>Save the views, layers and settings of a project in one file. A product that changes on the disk opens again.</dd>
     </dl>
   </section>
+
+  <section>
+    <h2>A year of Arctic sea ice</h2>
+    <div class="side">
+      <figure>
+        <video src="img/arctic-ice.mp4" poster="img/arctic-ice.webp" width="720" height="720" autoplay muted loop playsinline preload="metadata" aria-label="The Arctic sea ice grows to its maximum in March, melts to its minimum in September, and freezes again."></video>
+      </figure>
+      <div class="prose">
+        <p>348 daily files of sea ice concentration from OSI SAF, 2025, over the Blue Marble of NASA. The grid of the files is polar stereographic, with latitude and longitude arrays. eoview puts it on the globe as it is, without a conversion.</p>
+        <p>A band math expression, <code>mask(ice_conc, ice_conc &lt; 15)</code>, removes the open water. A render then writes one frame for each two days, with blends between them.</p>
+      </div>
+    </div>
+  </section>
+
+  <figure>
+    <img src="img/sar-mine.webp" width="1600" height="1000" loading="lazy" alt="eoview with a radar image of the terraces of the Bingham Canyon copper mine, Utah.">
+    <figcaption>The Bingham Canyon mine (Utah) in an Umbra SAR image with pixels of less than 1 m, opened from the Umbra open data bucket on S3. eoview reads only the parts of the file that the view shows.</figcaption>
+  </figure>
 
   <figure>
     <img src="img/lst-python.webp" width="1600" height="1000" loading="lazy" alt="eoview with two linked views of land surface temperature over Europe, a timeline, a transect from Lisbon to Stockholm with its chart, and a Python script in a panel below.">
@@ -82,8 +114,15 @@
     <a href="https://github.com/polymood/eoview">Source code</a>
     <a href="https://github.com/polymood/eoview/issues">Report a problem</a>
     <a href="privacy.html">Privacy policy</a>
-    <p>Images: contains modified Copernicus Sentinel data (2026) and modified Copernicus Climate Change Service information (ERA5, 2025). Blue Marble: NASA Earth Observatory.</p>
+    <p>Images: contains modified Copernicus Sentinel data (2025, 2026). Umbra SAR: Umbra Open Data Program (CC BY 4.0). Sea ice: EUMETSAT OSI SAF. Blue Marble: NASA Earth Observatory.</p>
   </div>
 </footer>
+
+<script>
+  // Without motion (a preference of the system): the videos stay on their first image.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    for (const v of document.querySelectorAll('video')) { v.removeAttribute('autoplay'); v.pause(); v.controls = true; }
+  }
+</script>
 </body>
 </html>
