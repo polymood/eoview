@@ -112,6 +112,8 @@ pub enum Cmd {
     /// The information window (metadata of the product) and the values window: open or close.
     Info,
     Values,
+    /// The color bar of the view: on or off.
+    ColorBar,
 }
 
 #[derive(Default)]
@@ -195,6 +197,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Smooth pixels: on or off"), "", Cmd::Smooth),
         (t("Pixel grid: on or off"), "X", Cmd::PixelGrid),
         (t("Coordinate grid: on or off"), "N", Cmd::CoordGrid),
+        (t("Color bar: on or off"), "Shift+B", Cmd::ColorBar),
         (t("Remove the pinned points"), "", Cmd::ClearPins),
         (t("Python panel: open or close"), "F7", Cmd::Python),
         (t("Python: run the script"), "", Cmd::PythonRun),
@@ -823,14 +826,73 @@ fn swatches(ui: &mut egui::Ui, cur: usize, invert: bool) -> Option<usize> {
 }
 
 fn gradient(ui: &egui::Ui, r: Rect, stops: &[[u8; 3]], invert: bool) {
+    gradient_on(ui.painter(), r, stops, invert);
+}
+
+fn gradient_on(pt: &egui::Painter, r: Rect, stops: &[[u8; 3]], invert: bool) {
     let l = layer::lut(stops);
-    let n = 32;
+    let n = 64;
     for i in 0..n {
         let t = i as f32 / (n - 1) as f32;
         let j = ((if invert { 1.0 - t } else { t }) * 255.0) as usize;
         let x0 = r.left() + r.width() * i as f32 / n as f32;
-        ui.painter().rect_filled(Rect::from_x_y_ranges(x0..=x0 + r.width() / n as f32 + 0.5, r.y_range()), 0.0, Color32::from_rgb(l[j][0], l[j][1], l[j][2]));
+        pt.rect_filled(Rect::from_x_y_ranges(x0..=x0 + r.width() / n as f32 + 0.5, r.y_range()), 0.0, Color32::from_rgb(l[j][0], l[j][1], l[j][2]));
     }
+}
+
+/// Round values from `lo` to `hi` for the ticks of a color bar: 1, 2 or 5 times a power of 10, about 5.
+pub fn ticks(lo: f32, hi: f32) -> Vec<f32> {
+    let (a, b) = (lo.min(hi) as f64, lo.max(hi) as f64);
+    if !(b - a).is_finite() || b <= a {
+        return vec![lo];
+    }
+    let raw = (b - a) / 5.0;
+    let e = 10f64.powf(raw.log10().floor());
+    let step = [1.0, 2.0, 2.5, 5.0, 10.0].into_iter().map(|k| k * e).find(|&s| s >= raw).unwrap_or(10.0 * e);
+    let first = (a / step).ceil() as i64;
+    let last = (b / step).floor() as i64;
+    (first..=last).map(|k| (k as f64 * step) as f32).collect()
+}
+
+/// A tick value as text: no digits that the step does not need.
+fn tick_text(v: f32, step: f32) -> String {
+    let d = if step >= 1.0 || step <= 0.0 { 0 } else { (-step.log10() + 1e-4).ceil() as usize };
+    let s = format!("{v:.d$}");
+    if s == "-0" { "0".into() } else { s }
+}
+
+/// The color bar of a data layer in the box `r` (its lower right corner is `corner`): the name and the unit,
+/// the colors from the low limit to the high limit of the stretch (with its gamma, and in dB), and ticks at
+/// round values.
+pub fn colorbar(pt: &egui::Painter, corner: Pos2, stops: &[[u8; 3]], invert: bool, st: &Stretch, name: &str) {
+    let bar = Rect::from_min_size(corner + vec2(-16.0 - 12.0 - 280.0, -16.0 - 40.0), vec2(280.0, 12.0));
+    pt.rect_filled(bar.expand2(vec2(12.0, 0.0)).with_min_y(bar.top() - 24.0).with_max_y(bar.bottom() + 28.0), 4.0, Color32::from_black_alpha(170));
+    gradient_on(pt, bar, stops, invert);
+    pt.text(bar.left_top() + vec2(0.0, -5.0), Align2::LEFT_BOTTOM, name, FontId::proportional(13.0), Color32::WHITE);
+    let (lo, hi) = (st.lo, st.hi);
+    let ts = ticks(lo, hi);
+    let step = if ts.len() > 1 { (ts[1] - ts[0]).abs() } else { (hi - lo).abs() };
+    let mut last_x = f32::NEG_INFINITY;
+    for v in ts {
+        // The position of the color of the value: the shader maps (v - lo) / (hi - lo) with the gamma.
+        let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0).powf(st.gamma.max(1e-3));
+        let x = bar.left() + bar.width() * t;
+        pt.line_segment([egui::pos2(x, bar.bottom()), egui::pos2(x, bar.bottom() + 4.0)], Stroke::new(1.0, Color32::WHITE));
+        let txt = tick_text(v, step);
+        // Ticks that the gamma puts close together keep only the first label.
+        if x - last_x >= 7.0 * txt.len() as f32 {
+            pt.text(egui::pos2(x, bar.bottom() + 5.0), Align2::CENTER_TOP, txt, FontId::proportional(11.5), Color32::WHITE);
+            last_x = x;
+        }
+    }
+}
+
+/// The layer, the colors and the name for the color bar of a view: its top visible data layer.
+pub fn colorbar_layer(p: &Pane) -> Option<(Vec<[u8; 3]>, bool, Stretch, String)> {
+    let l = p.layers.iter().rev().find(|l| l.visible && l.kind != Kind::Rgb && !l.inputs.is_empty())?;
+    let unit = if l.st[0].db { "dB".to_string() } else { l.inputs[0].var().units.clone() };
+    let name = if l.kind == Kind::Wind { t("Wind speed").to_string() } else { l.comp_name() };
+    Some((l.stops.clone(), l.invert, l.st[0], if unit.is_empty() { name } else { format!("{name} ({unit})") }))
 }
 
 impl App {
@@ -962,26 +1024,17 @@ impl App {
             let (a, b) = (l.steps[l.shown].t, l.steps[(l.shown + l.stride.max(1)) % l.steps.len()].t);
             if l.blend && p.tmix > 0.0 && a.is_finite() && b.is_finite() { eo_core::time::text(a + (b - a) * p.tmix as f64) } else { l.step_label(l.shown) }
         });
-        // The legend of the frame: the color map of the top data layer, with its limits and its unit.
-        let legend = p.layers.iter().rev().find(|l| l.visible && l.kind != Kind::Rgb && !l.inputs.is_empty()).filter(|_| stamp).map(|l| {
-            let unit = l.inputs[0].var().units.clone();
-            let name = if l.kind == Kind::Wind { t("Wind speed").to_string() } else { l.comp_name() };
-            (l.stops.clone(), l.invert, l.st[0].lo, l.st[0].hi, if unit.is_empty() { name } else { format!("{name} ({unit})") })
-        });
-        let legend = legend.map(|(s, i, lo, hi, name)| (s, i, lo, hi, if legend_text.is_empty() { name } else { legend_text.to_string() }));
+        // The legend of the frame: the color bar of the top data layer (the text of the settings, if any).
+        let legend = colorbar_layer(p).filter(|_| stamp).map(|(s, i, st, name)| (s, i, st, if legend_text.is_empty() { name } else { legend_text.to_string() }));
+        // The view does not draw its own color bar on the frame.
+        let cb = std::mem::replace(&mut p.colorbar, false);
         self.sync();
         self.paint(&ctx, Some(id));
-        if let Some((stops, invert, lo, hi, name)) = legend {
-            let pt = ui.painter();
-            let bar = Rect::from_min_size(rect.right_bottom() + vec2(-16.0 - 12.0 - 260.0, -16.0 - 44.0), vec2(260.0, 12.0));
-            pt.rect_filled(bar.expand2(vec2(12.0, 0.0)).with_min_y(bar.top() - 24.0).with_max_y(bar.bottom() + 24.0), 4.0, Color32::from_black_alpha(170));
-            gradient(ui, bar, &stops, invert);
-            let text = |pos: Pos2, align: Align2, s: String, size: f32| {
-                pt.text(pos, align, s, FontId::proportional(size), Color32::WHITE);
-            };
-            text(bar.left_top() + vec2(0.0, -5.0), Align2::LEFT_BOTTOM, name, 13.0);
-            text(bar.left_bottom() + vec2(0.0, 4.0), Align2::LEFT_TOP, format!("{lo:.4}").trim_end_matches('0').trim_end_matches('.').to_string(), 12.0);
-            text(bar.right_bottom() + vec2(0.0, 4.0), Align2::RIGHT_TOP, format!("{hi:.4}").trim_end_matches('0').trim_end_matches('.').to_string(), 12.0);
+        if let Some(p) = self.pane_mut(id) {
+            p.colorbar = cb;
+        }
+        if let Some((stops, invert, st, name)) = legend {
+            colorbar(ui.painter(), rect.right_bottom(), &stops, invert, &st, &name);
         }
         if let Some(text) = label {
             let pt = ui.painter();
@@ -1085,6 +1138,7 @@ impl App {
             (cmd, Key::S, Cmd::Save),
             (cmd, Key::K, Cmd::Palette),
             (sh, Key::I, Cmd::Values),
+            (Modifiers::SHIFT, Key::B, Cmd::ColorBar),
             (cmd, Key::I, Cmd::Info),
             (cmd, Key::Comma, Cmd::Prefs),
             (cmd, Key::R, Cmd::Render),
@@ -1292,6 +1346,10 @@ impl App {
                         p.coord_grid ^= true;
                         false
                     }
+                    Cmd::ColorBar => {
+                        p.colorbar ^= true;
+                        false
+                    }
                     Cmd::SameDisplay => {
                         // The bands (by their names), the stretch and the colors of the selected layer, for
                         // example for the orbits of a day: one stretch, no seams between them.
@@ -1432,6 +1490,7 @@ impl App {
         let (cmap, has_layer) = (sel.map_or(0, |l| l.cmap), sel.is_some());
         let (panel, link_px) = (self.panel, self.link_px);
         let grids = self.pane(id).map_or((false, false), |p| (p.pixel_grid, p.coord_grid));
+        let cbar = self.pane(id).is_some_and(|p| p.colorbar);
         let (tool, pins) = (self.tool, !self.pins.is_empty());
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(t("File"), |ui| {
@@ -1489,6 +1548,7 @@ impl App {
                 check(ui, cmds, id, panel, t("Side panel"), "H", Cmd::Panel);
                 check(ui, cmds, id, grids.0, t("Pixel grid"), "X", Cmd::PixelGrid);
                 check(ui, cmds, id, grids.1, t("Coordinate grid"), "N", Cmd::CoordGrid);
+                check(ui, cmds, id, cbar, t("Color bar"), "Shift+B", Cmd::ColorBar);
                 ui.separator();
                 entry(ui, cmds, id, t("New view"), "Ctrl+N", Cmd::NewView);
                 entry(ui, cmds, id, t("Duplicate view"), "Ctrl+D", Cmd::Duplicate);
@@ -2469,6 +2529,12 @@ fn overlays(p: &Pane, pt: &egui::Painter, ppp: f32, mpp: Option<f64>, cross: Opt
                 pt.line_segment([egui::pos2(q.x, r.top()), egui::pos2(q.x, r.bottom())], s);
             }
         }
+    }
+    if p.colorbar
+        && !p.bare
+        && let Some((stops, invert, st, name)) = colorbar_layer(p)
+    {
+        colorbar(pt, r.right_bottom(), &stops, invert, &st, &name);
     }
     // Scale bar: a length of 1, 2 or 5 times a power of 10, at most 120 points.
     let per_pt = match (mpp, p.v.space) {
