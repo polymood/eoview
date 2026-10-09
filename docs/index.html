@@ -11,22 +11,20 @@
 <body>
 
 <header class="hero">
+  <video poster="img/hero-atlantic.webp" autoplay muted loop playsinline aria-label="A map of the North Atlantic for a month. The ocean has the colors of its temperature, and white particles follow the wind. Hurricanes turn in spirals between the Caribbean and Europe."><source src="img/hero-atlantic-av1.mp4" type='video/mp4; codecs="av01.0.08M.08"'><source src="img/hero-atlantic.mp4" type="video/mp4"></video>
   <div class="bar">
     <a class="name" href="./"><img src="img/eoview.svg" alt="">eoview</a>
     <nav><a href="download.html">Download</a><a href="https://github.com/polymood/eoview">Source code</a></nav>
   </div>
   <div class="hero-in">
+    <h1>eoview</h1>
+    <p>A fast desktop viewer for satellite and Earth observation data.</p>
     <div>
-      <h1>eoview</h1>
-      <p>A fast desktop viewer for satellite and Earth observation data.</p>
       <a class="button" href="https://github.com/polymood/eoview/releases/latest/download/eoview-setup-windows-x86_64.exe">Download for Windows</a>
       <a class="other" href="download.html#linux-and-macos">Linux and macOS</a>
     </div>
-    <figure>
-      <video src="img/globe-ocean.mp4" poster="img/globe-ocean.webp" width="720" height="720" autoplay muted loop playsinline aria-label="The Earth turns on a globe for a month. The oceans have the colors of their temperature, and white particles follow the wind. Typhoons and hurricanes turn in spirals."></video>
-      <figcaption>Sea surface temperature and ocean wind, 10 September to 9 October 2025, every 6 hours. A render of eoview.</figcaption>
-    </figure>
   </div>
+  <p class="credit">Sea temperature and ocean wind, September and October 2025, drawn by eoview.</p>
 </header>
 
 <main>
@@ -35,6 +33,7 @@
     <p class="lead">eoview opens satellite products from your disk or from a server, and shows them in seconds.</p>
     <p>eoview reads only the parts of a product that the view needs. The coarse level comes first, then the finer levels. You can pan and zoom through images of many gigabytes, and the window never waits for the disk or the network.</p>
     <p>The GPU draws the data. It also reprojects the data, so swaths, map projections and the 3D globe show at the same speed.</p>
+    <p>eoview is written in Rust, from the file readers to the interface. It is one program with no runtime to install, and it draws through wgpu: Direct3D 12 on Windows, Vulkan on Linux and Metal on macOS.</p>
   </section>
 
   <figure>
@@ -55,11 +54,32 @@
     </dl>
   </section>
 
+  <section id="speed">
+    <h2>Open times</h2>
+    <p class="prose">The time from the open command to the first pixels on the screen, and to the complete view at the resolution of the screen. eoview reads the header, then only the parts of the data that the view shows, in parallel.</p>
+    <div class="legend"><span style="--c:var(--first)">First pixels</span><span style="--c:var(--complete)">Complete view</span></div>
+    <table class="bars">
+      <tbody>
+      <tr class="axis"><th></th><td><span>0</span><span>1 s</span><span>2 s</span><span>3 s</span><span>4 s</span></td></tr>
+      <tr><th class="group" colspan="2">Local files</th></tr>
+      <tr><th scope="row">COG, 16-bit, 10000 x 10000 (200 MB)</th><td><div class="b" style="--v:2.35%;--c:var(--first)" title="First pixels: 94 ms"><span>94 ms</span></div><div class="b" style="--v:3.33%;--c:var(--complete)" title="Complete view: 133 ms"><span>133 ms</span></div></td></tr>
+      <tr><th scope="row">TIFF without overviews (200 MB)</th><td><div class="b" style="--v:2.10%;--c:var(--first)" title="First pixels: 84 ms"><span>84 ms</span></div><div class="b" style="--v:17.19%;--c:var(--complete)" title="Complete view: 688 ms"><span>688 ms</span></div></td></tr>
+      <tr><th scope="row">Sentinel-3 OLCI SAFE, NetCDF (0.9 GB)</th><td><div class="b" style="--v:21.42%;--c:var(--first)" title="First pixels: 857 ms"><span>857 ms</span></div><div class="b" style="--v:22.30%;--c:var(--complete)" title="Complete view: 892 ms"><span>892 ms</span></div></td></tr>
+      <tr><th scope="row">Sentinel-2 L1C, EOPF Zarr (0.7 GB)</th><td><div class="b" style="--v:22.90%;--c:var(--first)" title="First pixels: 916 ms"><span>916 ms</span></div><div class="b" style="--v:34.27%;--c:var(--complete)" title="Complete view: 1.4 s"><span>1.4 s</span></div></td></tr>
+      <tr><th scope="row">Umbra SICD, NITF, complex (1.7 GB)</th><td><div class="b" style="--v:14.29%;--c:var(--first)" title="First pixels: 572 ms"><span>572 ms</span></div><div class="b" style="--v:87.44%;--c:var(--complete)" title="Complete view: 3.5 s"><span>3.5 s</span></div></td></tr>
+      <tr><th class="group" colspan="2">Remote files (HTTPS)</th></tr>
+      <tr><th scope="row">Sentinel-2 L2A COG on AWS</th><td><div class="b" style="--v:63.48%;--c:var(--first)" title="First pixels: 2.5 s"><span>2.5 s</span></div><div class="b" style="--v:96.23%;--c:var(--complete)" title="Complete view: 3.8 s"><span>3.8 s</span></div></td></tr>
+      <tr><th scope="row">Umbra SAR COG on S3</th><td><div class="b" style="--v:52.84%;--c:var(--first)" title="First pixels: 2.1 s"><span>2.1 s</span></div><div class="b" style="--v:79.40%;--c:var(--complete)" title="Complete view: 3.2 s"><span>3.2 s</span></div></td></tr>
+      </tbody>
+    </table>
+    <p class="muted prose">Measured with <code>eoview --bench</code>: median of 3 runs, a view of 1920 x 1080 pixels. Intel Core Ultra 7 265, 32 GB, Windows with WSL2 and a software GPU (llvmpipe). The local files are in the cache of the system. The remote files come from AWS (us-west-2) over the internet.</p>
+  </section>
+
   <section>
     <h2>A season in 21 images</h2>
     <p class="prose">eoview opens a list of dates as one layer. The timeline plays them, and a render writes them to a video. These are 21 Sentinel-2 images of the Écrins massif (French Alps) from March to August 2025, read directly from the public archive on AWS.</p>
     <figure>
-      <video src="img/alps-snow.mp4" poster="img/alps-snow.webp" width="1280" height="800" autoplay muted loop playsinline preload="metadata" aria-label="The snow of the Écrins massif melts from March to August 2025, and the valleys turn green."></video>
+      <video data-lazy poster="img/alps-snow.webp" width="1280" height="800" muted loop playsinline preload="none" aria-label="The snow of the Écrins massif melts from March to August 2025, and the valleys turn green."><source data-src="img/alps-snow.mp4" type="video/mp4"></video>
       <figcaption>Sentinel-2 L2A true color, 31TGK, 4 March to 8 August 2025. A render of eoview with blends between the dates.</figcaption>
     </figure>
   </section>
@@ -79,14 +99,27 @@
   </section>
 
   <section>
+    <h2>A month of ocean weather</h2>
+    <div class="side">
+      <figure>
+        <video data-lazy poster="img/globe-ocean.webp" width="1080" height="1080" muted loop playsinline preload="none" aria-label="The Earth turns on a globe for a month. The oceans have the colors of their temperature, and white particles follow the wind. Typhoons and hurricanes turn in spirals."><source data-src="img/globe-ocean-av1.mp4" type='video/mp4; codecs="av01.0.08M.08"'><source data-src="img/globe-ocean.mp4" type="video/mp4"></video>
+      </figure>
+      <div class="prose">
+        <p>Sea surface temperature (NOAA OISST, daily) and ocean wind (NOAA Blended Sea Winds, every 6 hours) from 10 September to 9 October 2025, over the Blue Marble of NASA. Typhoon Ragasa crosses the Philippine Sea, and the hurricanes Humberto and Imelda turn between the Bahamas and Bermuda.</p>
+        <p>The wind is a layer of particles that follow the field. A render of 715 frames turns the globe with <code>--spin 0.5</code> while the time steps advance, with blends between them.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
     <h2>A year of Arctic sea ice</h2>
     <div class="side">
       <figure>
-        <video src="img/arctic-ice.mp4" poster="img/arctic-ice.webp" width="720" height="720" autoplay muted loop playsinline preload="metadata" aria-label="The Arctic sea ice grows to its maximum in March, melts to its minimum in September, and freezes again."></video>
+        <video data-lazy poster="img/arctic-ice.webp" width="1080" height="1080" muted loop playsinline preload="none" aria-label="The Arctic sea ice grows to its maximum in March, melts to its minimum in September, and freezes again."><source data-src="img/arctic-ice.mp4" type="video/mp4"></video>
       </figure>
       <div class="prose">
-        <p>348 daily files of sea ice concentration from OSI SAF, 2025, over the Blue Marble of NASA. The grid of the files is polar stereographic, with latitude and longitude arrays. eoview puts it on the globe as it is, without a conversion.</p>
-        <p>A band math expression, <code>mask(ice_conc, ice_conc &lt; 15)</code>, removes the open water. A render then writes one frame for each two days, with blends between them.</p>
+        <p>330 daily files of sea ice concentration from OSI SAF, 2025, over the Blue Marble of NASA. The grid of the files is polar stereographic, with latitude and longitude arrays. eoview puts it on the globe as it is, without a conversion.</p>
+        <p>A band math expression, <code>mask(ice_conc, ice_conc &lt; 15)</code>, removes the open water. The days with missing satellite passes are not in the series. A render writes one frame for each two days, with blends between them.</p>
       </div>
     </div>
   </section>
@@ -119,8 +152,20 @@
 </footer>
 
 <script>
+  // The videos below the first screen load when they come near the view, and play while they are in it.
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const io = new IntersectionObserver(es => {
+    for (const e of es) {
+      const v = e.target;
+      if (e.isIntersecting) {
+        if (!v.dataset.loaded) { for (const s of v.querySelectorAll('source[data-src]')) s.src = s.dataset.src; v.load(); v.dataset.loaded = '1'; }
+        if (!still) v.play().catch(() => {});
+      } else v.pause();
+    }
+  }, { rootMargin: '200px' });
+  for (const v of document.querySelectorAll('video[data-lazy]')) io.observe(v);
   // Without motion (a preference of the system): the videos stay on their first image.
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (still) {
     for (const v of document.querySelectorAll('video')) { v.removeAttribute('autoplay'); v.pause(); v.controls = true; }
   }
 </script>
