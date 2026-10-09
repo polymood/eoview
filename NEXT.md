@@ -47,6 +47,18 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
 - Interface: the Python editor, the charts and the figure are tabs of the dock.
 - Example project: `examples/features.eoview` (`scripts/make_example.py` makes its data).
 
+- 2026-10-09: memory map again on Windows (fast loads), a preference for products that other programs
+  rewrite. Automatic updates (signed), a Windows installer, an install script for Linux and macOS,
+  releases v0.1.0 and v0.1.1. Website (GitHub Pages, `docs/`). New icon and banner. `--spin` for renders.
+  The globe draws grids with a pole (sea ice). Information window (dimensions, attributes, all variables),
+  values window, color bar in each view (DESIGN section 12).
+
+- 2026-10-09: memory map again on Windows (fast loads), a preference for products that other programs
+  rewrite. Automatic updates (signed), a Windows installer, an install script for Linux and macOS,
+  releases v0.1.0 and v0.1.1. Website (GitHub Pages, `docs/`). New icon and banner. `--spin` for renders.
+  The globe draws grids with a pole (sea ice). Information window (dimensions, attributes, all variables),
+  values window, color bar in each view (DESIGN section 12).
+
 ## In work
 
 1. **Time in the application.** Layers with time steps (a time dimension, or a list of products), a
@@ -118,6 +130,35 @@ Work rule (Jules, 2026-10-06): add functions first. Keep the tests short.
    - Statistics: zonal statistics of a box or a polygon, threshold to a mask, classification with
      k-means, histogram match between two layers.
    - Geometry: resample to the grid of another layer, mosaic, crop to the bounding box.
+
+11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. To
+    do: Sentinel-1 and Sentinel-2 SAFE (manifest, metadata XML), NITF header fields, JPEG 2000 boxes.
+    The names of the dimensions of HDF5 come from the lengths of the dimension scales: read
+    `DIMENSION_LIST` (object references) for files with two dimensions of the same length.
+12. **Dimensions other than time (2026-10-09).** A slider for each extra dimension (vertical level,
+    depth, wavelength, ensemble member), profiles along a dimension, vertical sections. DESIGN section 13.
+13. **A DEM in 3D on the globe (2026-10-09).** Camera tilt and heading, depth buffer, terrain mesh from a
+    DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
+14. **Panoply parity, other items.** The values window as a full table that scrolls over the whole array
+    (now 9 x 15 values around a point); the coordinate values in its headers (latitude, longitude); 1D
+    variables as line charts (item 7).
+
+11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. To
+    do: Sentinel-1 and Sentinel-2 SAFE (manifest, metadata XML), NITF header fields, JPEG 2000 boxes.
+    The names of the dimensions of HDF5 come from the lengths of the dimension scales: read
+    `DIMENSION_LIST` (object references) for files with two dimensions of the same length.
+12. **Color bar (2026-10-09).** Code done (Shift+B, on by default, in the render frames too). To do: check
+    it on screen, with gamma and dB, and in the light theme.
+13. **Dimensions other than time (2026-10-09).** A slider for each extra dimension (vertical level,
+    depth, wavelength, ensemble member), profiles along a dimension, vertical sections. DESIGN section 13.
+14. **A DEM in 3D on the globe (2026-10-09).** Camera tilt and heading, depth buffer, terrain mesh from a
+    DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
+15. **Panoply parity, other items.** The values window as a full table that scrolls over the whole array
+    (now 9 x 15 values around a point); the coordinate values in its headers (latitude, longitude); 1D
+    variables as line charts (item 7).
+16. **Repository size.** The frames of an old render (`arctic_ice_2025.frames`, 365 PNG files) are out of
+    the repository now, but they stay in the git history. Removing them needs a rewrite of the history
+    and a force push: ask Jules first.
 
 ## Specification, not done
 

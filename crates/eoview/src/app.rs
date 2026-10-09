@@ -163,6 +163,8 @@ pub struct Pane {
     /// Lines at the edges of the pixels, and lines of longitude and latitude.
     pub pixel_grid: bool,
     pub coord_grid: bool,
+    /// A color bar of the top data layer in the corner of the view.
+    pub colorbar: bool,
     /// The shapes of the tools (measure, transect, region) in the display coordinates of the view. The
     /// last can be a shape that the user draws now (not done).
     pub shapes: Vec<crate::tools::Shape>,
@@ -216,6 +218,7 @@ impl Pane {
             next_step: 0.0,
             pixel_grid: false,
             coord_grid: false,
+            colorbar: true,
             shapes: vec![],
             sel_shape: None,
             bare: false,
@@ -539,6 +542,9 @@ struct PaneSave {
     pixel_grid: bool,
     #[serde(default)]
     coord_grid: bool,
+    /// The color bar of the view is off.
+    #[serde(default)]
+    no_colorbar: bool,
     #[serde(default)]
     shapes: Vec<crate::tools::Shape>,
     /// One shape (the files of the first versions).
@@ -1727,6 +1733,7 @@ impl App {
                 overlays: p.overlays,
                 pixel_grid: p.pixel_grid,
                 coord_grid: p.coord_grid,
+                no_colorbar: !p.colorbar,
                 shapes: p.shapes.iter().filter(|s| s.done).cloned().collect(),
                 shape: None,
             })
@@ -1800,7 +1807,7 @@ impl App {
             let mut p = Pane::new(id);
             if let Some(s) = ws_panes.iter().find(|s| s.id == id) {
                 (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe, p.smooth) = (s.space, s.center, s.scale, s.link, s.globe, s.smooth);
-                (p.overlays, p.pixel_grid, p.coord_grid) = (s.overlays, s.pixel_grid, s.coord_grid);
+                (p.overlays, p.pixel_grid, p.coord_grid, p.colorbar) = (s.overlays, s.pixel_grid, s.coord_grid, !s.no_colorbar);
                 p.shapes = s.shapes.iter().chain(&s.shape).cloned().collect();
                 crate::tools::name_shapes(&mut p);
                 p.sel_shape = p.shapes.len().checked_sub(1);

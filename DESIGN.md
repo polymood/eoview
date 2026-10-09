@@ -276,3 +276,189 @@ The figure workspace shows the page as it will print. The same drawing code make
 5. Answered (2026-10-07): journal widths are presets, and any size is possible. All the chart types of
    section 7, and custom charts from Python (`ev.plot`). `ev.input` has an argument for the extent. A
    notebook connects to eoview with `ev.connect()`.
+
+## 12. Metadata and values (done, 2026-10-09)
+
+A colleague of Jules opened his products but did not find the sizes of the dimensions or the attributes.
+Panoply shows these, and the values of a variable as a table.
+
+- The model: `Product::info` (`Info`) has the global attributes, the dimensions with their names and
+  sizes, and all the variables of the file (`Meta`: name, dimensions, data type, attributes). This
+  includes the variables that the viewer does not draw (coordinates, scalars such as `crs`).
+- The readers fill it: NetCDF-4 and HDF5, Zarr v2 and v3, TIFF (tags and GDAL metadata), Sentinel-3
+  SAFE. To do: Sentinel-1 and Sentinel-2 SAFE (manifest and metadata XML), NITF (header fields), JPEG
+  2000.
+- Information window (Ctrl+I): dimensions, global attributes, variables with their storage and their
+  attributes, a search field, a copy in the layout of `ncdump -h`.
+- Values window (Ctrl+Shift+I): 9 x 15 values around the cursor at level 0, with the scale and the offset.
+- Color bar in each view (Shift+B): the color map of the top data layer, with ticks at round values,
+  the name and the unit. The render frames use the same color bar.
+
+## 13. Data with more dimensions
+
+### 13.1 The problem
+
+A variable can have more dimensions than y, x and time: a vertical level (pressure levels of ERA5, depth
+of an ocean model, height), a band or a wavelength (hyperspectral cubes), an ensemble member, a forecast
+lead time. Now the readers use the last two dimensions as rows and columns, the time dimension if they
+find it, and the first index of the other dimensions. The user cannot select another index.
+
+### 13.2 The proposal: one selector for each extra dimension
+
+- The model: `Array::dims` keeps the names of the file. A layer has an index for each dimension that is
+  not y, x or time (`Layer::at: Vec<(usize, u64)>`), in the same way as `Layer::time` now. The chunk
+  address (`chunk_at`) uses all the indexes.
+- The interface: for each extra dimension, a slider with its name, its size and the value of its
+  coordinate (for example "level = 850 hPa", "depth = 5.0 m"), under the timeline. Keys: Page Up and Page
+  Down for the first extra dimension.
+- Time and the extra dimensions are the same thing for the engine (an index into the array). The timeline
+  stays for time because it plays the steps and shows the dates.
+- The values window and the information window show the index of each dimension.
+
+### 13.3 Profiles and sections
+
+- A profile along one dimension at the cursor: the values of all the levels at one pixel, as a chart (the
+  same chart as the time profile).
+- A vertical section: a transect (a line on the map) by the vertical dimension, as an image (distance by
+  level), with the color map of the layer. This is the Hovmoller diagram with the vertical dimension in
+  place of time.
+
+### 13.4 1D variables
+
+A variable with one dimension (an along-track altimetry product, a coordinate, a time series) shows as a
+line chart in the chart tab, and as a track on the map if it has latitude and longitude. See NEXT.md item 7.
+
+## 14. Terrain: a DEM in 3D on the globe
+
+### 14.1 What the user sees
+
+The globe shows the relief of a digital elevation model (DEM): mountains and valleys in 3D, with the
+layers of the view on them (an image, a time series, a wind field). The user turns and tilts the camera to
+look at a mountain from the side. A slider sets the vertical exaggeration (1 to 20).
+
+### 14.2 Changes to the view
+
+- The camera: now it looks down at the center of the view, north up. It needs a tilt (0 to about 80
+  degrees from the vertical) and a heading, with the mouse (right drag or Shift drag) and the keys. The
+  camera of the 2D view does not change.
+- A depth buffer (reversed Z, 32-bit float) for the terrain and for the far side of the globe.
+- Positions relative to the camera (now f32 positions from the center of the Earth: about 0.5 m of
+  error, and jitter in a close view).
+- Tiles of the terrain: a mesh of each display tile is moved along the vertical by the height of the DEM
+  at its vertices (in the vertex shader, from a height texture of the same tile key). The layers of the
+  view use the same mesh, so they drape on the relief.
+- Levels from the distance of each tile to the camera (a tilted view sees near tiles and far tiles).
+- Light: a simple shade from the normal of the mesh (a hillshade on the globe), on or off.
+
+### 14.3 The DEM source
+
+- A layer of the view marked as "terrain" (a COG or any raster with heights in meters). The Copernicus
+  DEM (GLO-30 and GLO-90, COG on AWS, open) is the default source for the whole Earth.
+- No data in the DEM: height 0. The sea: 0, or the bathymetry if the DEM has it.
+
+### 14.4 Order of work
+
+1. Camera tilt and heading on the globe, depth buffer, positions relative to the camera.
+2. A terrain layer with a height texture, the mesh moved in the vertex shader, the exaggeration slider.
+3. Levels from the distance, the shade, the Copernicus DEM as a default terrain.
+4. In 2D: hillshade, slope and aspect as layers (DESIGN section 3, operations).
+
+## 15. Questions for the review (sections 13 and 14)
+
+1. An extra dimension with a coordinate that is not regular (pressure levels): show the value of the
+   coordinate, or only the index? Proposal: the value and the unit if the file has them.
+2. Terrain on the globe only, or also a 3D view of a flat map (a local area with a tilted camera)?
+3. Is the Copernicus DEM a good default, or must the terrain always be a layer of the user?
+
+## 12. Metadata and values (done, 2026-10-09)
+
+A colleague of Jules opened his products but did not find the sizes of the dimensions or the attributes.
+Panoply shows these, and the values of a variable as a table.
+
+- The model: `Product::info` (`Info`) has the global attributes, the dimensions with their names and
+  sizes, and all the variables of the file (`Meta`: name, dimensions, data type, attributes). This
+  includes the variables that the viewer does not draw (coordinates, scalars such as `crs`).
+- The readers fill it: NetCDF-4 and HDF5, Zarr v2 and v3, TIFF (tags and GDAL metadata), Sentinel-3
+  SAFE. To do: Sentinel-1 and Sentinel-2 SAFE (manifest and metadata XML), NITF (header fields), JPEG
+  2000.
+- Information window (Ctrl+I): dimensions, global attributes, variables with their storage and their
+  attributes, a search field, a copy in the layout of `ncdump -h`.
+- Values window (Ctrl+Shift+I): 9 x 15 values around the cursor at level 0, with the scale and the offset.
+- Color bar in each view (Shift+B): the color map of the top data layer, with ticks at round values,
+  the name and the unit. The render frames use the same color bar. Not yet checked on screen.
+
+## 13. Data with more dimensions
+
+### 13.1 The problem
+
+A variable can have more dimensions than y, x and time: a vertical level (pressure levels of ERA5, depth
+of an ocean model, height), a band or a wavelength (hyperspectral cubes), an ensemble member, a forecast
+lead time. Now the readers use the last two dimensions as rows and columns, the time dimension if they
+find it, and the first index of the other dimensions. The user cannot select another index.
+
+### 13.2 The proposal: one selector for each extra dimension
+
+- The model: `Array::dims` keeps the names of the file. A layer has an index for each dimension that is
+  not y, x or time (`Layer::at: Vec<(usize, u64)>`), in the same way as `Layer::time` now. The chunk
+  address (`chunk_at`) uses all the indexes.
+- The interface: for each extra dimension, a slider with its name, its size and the value of its
+  coordinate (for example "level = 850 hPa", "depth = 5.0 m"), under the timeline. Keys: Page Up and Page
+  Down for the first extra dimension.
+- Time and the extra dimensions are the same thing for the engine (an index into the array). The timeline
+  stays for time because it plays the steps and shows the dates.
+- The values window and the information window show the index of each dimension.
+
+### 13.3 Profiles and sections
+
+- A profile along one dimension at the cursor: the values of all the levels at one pixel, as a chart (the
+  same chart as the time profile).
+- A vertical section: a transect (a line on the map) by the vertical dimension, as an image (distance by
+  level), with the color map of the layer. This is the Hovmoller diagram with the vertical dimension in
+  place of time.
+
+### 13.4 1D variables
+
+A variable with one dimension (an along-track altimetry product, a coordinate, a time series) shows as a
+line chart in the chart tab, and as a track on the map if it has latitude and longitude. See NEXT.md item 7.
+
+## 14. Terrain: a DEM in 3D on the globe
+
+### 14.1 What the user sees
+
+The globe shows the relief of a digital elevation model (DEM): mountains and valleys in 3D, with the
+layers of the view on them (an image, a time series, a wind field). The user turns and tilts the camera to
+look at a mountain from the side. A slider sets the vertical exaggeration (1 to 20).
+
+### 14.2 Changes to the view
+
+- The camera: now it looks down at the center of the view, north up. It needs a tilt (0 to about 80
+  degrees from the vertical) and a heading, with the mouse (right drag or Shift drag) and the keys. The
+  camera of the 2D view does not change.
+- A depth buffer (reversed Z, 32-bit float) for the terrain and for the far side of the globe.
+- Positions relative to the camera (now f32 positions from the center of the Earth: about 0.5 m of
+  error, and jitter in a close view).
+- Tiles of the terrain: a mesh of each display tile moves along the vertical by the height of the DEM at
+  its vertices (in the vertex shader, from a height texture of the same tile key). The layers of the view
+  use the same mesh, so they drape on the relief.
+- Levels from the distance of each tile to the camera (a tilted view sees near tiles and far tiles).
+- Light: a simple shade from the normal of the mesh (a hillshade on the globe), on or off.
+
+### 14.3 The DEM source
+
+- A layer of the view marked as "terrain" (a COG or any raster with heights in meters). The Copernicus
+  DEM (GLO-30 and GLO-90, COG on AWS, open) is the default source for the whole Earth.
+- No data in the DEM: height 0. The sea: 0, or the bathymetry if the DEM has it.
+
+### 14.4 Order of work
+
+1. Camera tilt and heading on the globe, depth buffer, positions relative to the camera.
+2. A terrain layer with a height texture, the mesh moved in the vertex shader, the exaggeration slider.
+3. Levels from the distance, the shade, the Copernicus DEM as a default terrain.
+4. In 2D: hillshade, slope and aspect as layers (section 3, operations).
+
+## 15. Questions for the review (sections 13 and 14)
+
+1. An extra dimension with a coordinate that is not regular (pressure levels): show the value of the
+   coordinate, or only the index? Proposal: the value and the unit if the file has them.
+2. Terrain on the globe only, or also a 3D view of a flat map (a local area with a tilted camera)?
+3. Is the Copernicus DEM a good default, or must the terrain always be a layer of the user?
