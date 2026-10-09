@@ -3,6 +3,7 @@ mod animate;
 mod app;
 mod bench;
 mod icons;
+mod info;
 mod lang;
 mod layer;
 mod outlines;
@@ -823,6 +824,17 @@ fn info(path: &str) {
     };
     let p = &l.ds.product;
     println!("{}\n{}\nopen and first layer: {:.1} ms, {} source(s)", p.name, p.desc, t.elapsed().as_secs_f64() * 1e3, l.ds.sources.len());
+    if !p.info.dims.is_empty() {
+        println!("dimensions: {}", p.info.dims.iter().map(|(n, s)| format!("{n} = {s}")).collect::<Vec<_>>().join(", "));
+    }
+    for (k, v) in &p.info.attrs {
+        println!("  :{k} = {}", v.chars().take(120).collect::<String>());
+    }
+    let shown: Vec<&str> = p.vars.iter().map(|v| v.name.as_str()).collect();
+    let others: Vec<String> = p.info.vars.iter().filter(|m| !shown.contains(&m.name.as_str())).map(|m| format!("{}({})", m.name, m.dims.iter().map(|d| d.0.as_str()).collect::<Vec<_>>().join(", "))).collect();
+    if !others.is_empty() {
+        println!("other variables: {}", others.join(" "));
+    }
     for v in &p.vars {
         let a = &v.levels[0];
         let lv: Vec<String> = v.levels.iter().map(|a| format!("{}x{}", a.len_of("x"), a.len_of("y"))).collect();

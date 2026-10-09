@@ -127,6 +127,21 @@ local files without a memory map, and the products load slower (an uncompressed 
 7 times slower on Linux). On Linux and macOS, replace a product (write a new file, then rename it), do not
 rewrite it in place.
 
+### Information and values
+
+**Layer**, then **Information...** (Ctrl+I), or the **Information** button next to the product tree, shows
+the metadata of the product of the selected layer: its dimensions with their sizes, its global attributes,
+and all its variables, also the ones that the viewer does not draw (coordinates, scalars). Each variable
+shows its dimensions, its data type and its attributes, and for the variables that the viewer draws, the
+chunks, the compression, the resolution levels, the scale, the offset and the no data value. The search
+field finds a text in the names and the values. **Copy as text** copies all of it, in the layout of
+`ncdump -h`. NetCDF-4, HDF5, Zarr, TIFF and Sentinel-3 SAFE products have attributes.
+
+**Layer**, then **Values...** (Ctrl+Shift+I), shows a table of the values of the selected layer around the
+cursor (9 columns and 15 rows), as they are in the file at full resolution, with the scale and the offset.
+Uncheck **Follow the cursor** to keep the table in place, and move it with the arrow buttons. **Copy as
+CSV** copies the table.
+
 ### Export data
 
 **Layer**, then **Export data (GeoTIFF)...**, writes the values of the selected layer at the full

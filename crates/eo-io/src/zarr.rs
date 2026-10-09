@@ -478,6 +478,8 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     let mut tcache = std::collections::HashMap::new();
     // Arrays at a multiscale level: (parent group, array name) to level groups.
     let mut done = std::collections::HashSet::new();
+    // The level-0 array of each variable of the viewer, and the name of the variable.
+    let mut shown: Vec<(String, String)> = vec![];
     let arrays: Vec<(&String, &Value)> = nodes.iter().filter(|n| n.1.0).map(|(k, v)| (k, &v.1)).collect();
     for (path, meta) in &arrays {
         if done.contains(*path) || u64s(meta.get("shape")).is_none_or(|s| s.len() < 2) {
@@ -541,6 +543,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         };
         let nb = levels[0].len_of("band") as usize;
         let short = if level_groups.len() > 1 { join(parent, name) } else { p0.clone() };
+        shown.push((p0.clone(), short.clone()));
         vars.push(Variable {
             bands: if nb == 1 { vec![name.to_string()] } else { (1..=nb).map(|b| format!("Band {b}")).collect() },
             name: short,
@@ -564,7 +567,47 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     // The times with data, from the attributes of the store (the ARCO ERA5 store has them).
     let day = |k: &str| nodes.get("").and_then(|n| n.2.get(k)).and_then(Value::as_str).and_then(time::parse);
     let valid = day("valid_time_start").zip(day("valid_time_stop")).map(|(a, b)| (a, b + 86_399.0));
-    Ok(Dataset { product: Product { name, desc, vars, valid }, sources })
+    let info = info(&nodes, &shown);
+    Ok(Dataset { product: Product { name, desc, vars, valid, info }, sources })
+}
+
+/// A JSON attribute as text: a string as it is, a list of numbers or strings with commas, other values as JSON.
+fn attr_text(v: &Value) -> String {
+    let t = match v {
+        Value::String(s) => s.clone(),
+        Value::Array(a) if a.iter().all(|x| !x.is_array() && !x.is_object()) => a.iter().map(|x| x.as_str().map_or(x.to_string(), str::to_string)).collect::<Vec<_>>().join(", "),
+        _ => v.to_string(),
+    };
+    if t.chars().count() > 2000 { t.chars().take(2000).collect::<String>() + " ..." } else { t }
+}
+
+/// The metadata of a store for the user: the attributes of the root group, the dimensions and all arrays.
+/// `shown`: the level-0 array of each variable of the viewer, and its name in the product.
+fn info(nodes: &Nodes, shown: &[(String, String)]) -> Info {
+    let attrs = |a: &Value| -> Attrs {
+        let mut v: Attrs = a.as_object().map(|o| o.iter().filter(|(k, _)| *k != "_ARRAY_DIMENSIONS").map(|(k, x)| (k.clone(), attr_text(x))).collect()).unwrap_or_default();
+        v.sort();
+        v
+    };
+    let mut info = Info { attrs: nodes.get("").map(|n| attrs(&n.2)).unwrap_or_default(), ..Default::default() };
+    let mut paths: Vec<&String> = nodes.iter().filter(|n| n.1.0).map(|n| n.0).collect();
+    paths.sort();
+    for p in paths {
+        let (meta, a) = (&nodes[p].1, &nodes[p].2);
+        let shape = u64s(meta.get("shape")).unwrap_or_default();
+        let names: Vec<String> = a.get("_ARRAY_DIMENSIONS").or_else(|| meta.get("dimension_names")).and_then(Value::as_array)
+            .map(|v| v.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect()).unwrap_or_default();
+        let dims: Vec<(String, u64)> = shape.iter().enumerate().map(|(k, &n)| (names.get(k).filter(|s| !s.is_empty()).cloned().unwrap_or(format!("dim_{k}")), n)).collect();
+        for d in &dims {
+            if !info.dims.contains(d) {
+                info.dims.push(d.clone());
+            }
+        }
+        let dtype = meta.get("data_type").or_else(|| meta.get("dtype")).map(attr_text).unwrap_or_default();
+        let name = shown.iter().find(|s| s.0 == *p).map_or(p.clone(), |s| s.1.clone());
+        info.vars.push(Meta { name, dims, dtype, attrs: attrs(a) });
+    }
+    info
 }
 
 #[cfg(test)]
