@@ -4,9 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Download eoview</title>
-<meta name="description" content="Download eoview for Windows, Linux and macOS. eoview updates itself.">
-<link rel="icon" href="img/favicon.png">
-<link rel="stylesheet" href="style.css?v=f84ba09b">
+<meta name="description" content="Download eoview for Windows, Linux and macOS. It keeps itself up to date.">
+<link rel="icon" type="image/svg+xml" href="img/eoview.svg?v=46dacbdb">
+<link rel="icon" type="image/png" sizes="64x64" href="img/favicon.png?v=46dacbdb">
+<link rel="apple-touch-icon" href="img/favicon.png?v=46dacbdb">
+<link rel="stylesheet" href="style.css?v=9c60d806">
 </head>
 <body>
 
@@ -18,52 +20,41 @@
 <main>
   <div class="prose">
     <h1 class="page">Download eoview</h1>
-    <p class="lead">Install eoview one time. After that, eoview updates itself.</p>
+    <p class="lead">Install it once. After that, eoview keeps itself up to date.</p>
   </div>
 
   <section class="prose" id="windows">
     <h2>Windows</h2>
     <p><a class="button" href="https://github.com/polymood/eoview/releases/latest/download/eoview-setup-windows-x86_64.exe">Download the installer</a></p>
-    <p>The installer puts eoview in your user folder (<code>%LOCALAPPDATA%\Programs\eoview</code>). It does not need administrator rights. It adds eoview to the Start menu, and opens workspace files (<code>.eoview</code>) in eoview.</p>
-    <p>The installer has no Windows code signature yet. Thus Windows SmartScreen can show the message “Windows protected your PC”. To continue, select <b>More info</b>, then <b>Run anyway</b>.</p>
-    <p class="muted">Without the installer: <a href="https://github.com/polymood/eoview/releases/latest/download/eoview-windows-x86_64.exe">eoview-windows-x86_64.exe</a>. Put it in a folder that you can write to, so that it can update itself.</p>
+    <p>The installer puts eoview in your own user folder, so you don't need administrator rights. It adds eoview to the Start menu, and project files open in eoview when you double-click them.</p>
+    <p>The installer isn't signed by a certificate yet, so Windows may show "Windows protected your PC". Click <b>More info</b>, then <b>Run anyway</b>.</p>
+    <p class="muted">Prefer no installer? Download <a href="https://github.com/polymood/eoview/releases/latest/download/eoview-windows-x86_64.exe">the program on its own</a> and put it in a folder you can write to, so that it can update itself.</p>
   </section>
 
   <section class="prose" id="linux-and-macos">
     <h2>Linux and macOS</h2>
-    <p>Run this command in a terminal. It puts eoview in <code>~/.local/bin</code>. On Linux, it also adds eoview to the menu of applications.</p>
+    <p>Open a terminal, paste this line and press Enter. It installs eoview for your user only. On Linux it also adds eoview to your applications menu.</p>
     <div class="command">
       <pre><code id="cmd">curl -fsSL https://github.com/polymood/eoview/releases/latest/download/install.sh | sh</code></pre>
       <button type="button" data-copy="cmd">Copy</button>
     </div>
-    <p>Then start eoview from the menu, or with the command <code>eoview</code>.</p>
   </section>
 
   <section class="prose" id="requirements">
-    <h2>Requirements</h2>
+    <h2>What you need</h2>
     <dl class="pairs">
       <dt>Windows</dt><dd>Windows 10 or 11, 64-bit.</dd>
-      <dt>Linux</dt><dd>x86_64, glibc 2.35 or newer (for example Ubuntu 22.04 or newer).</dd>
-      <dt>macOS</dt><dd>Apple silicon (M1 or newer).</dd>
-      <dt>Processor</dt><dd>On x86_64, a processor with AVX2 (most processors since 2015).</dd>
-      <dt>Graphics</dt><dd>A GPU with Direct3D 12, Vulkan or Metal. An integrated GPU is sufficient.</dd>
+      <dt>Linux</dt><dd>A 64-bit PC with a recent distribution, for example Ubuntu 22.04 or newer.</dd>
+      <dt>macOS</dt><dd>A Mac with Apple silicon (M1 or newer).</dd>
+      <dt>Processor</dt><dd>On a PC, a processor from about 2015 or newer.</dd>
+      <dt>Graphics</dt><dd>Any recent graphics card. The one built into your processor is enough.</dd>
     </dl>
   </section>
 
   <section class="prose" id="updates">
     <h2>Updates</h2>
-    <p>At each start, eoview reads the version of the latest release on GitHub. If that version is newer, eoview downloads it in the background and checks its signature. Then eoview replaces its program file. The new version runs at the next start.</p>
-    <p>To stop the automatic updates, open <b>Preferences</b>, then <b>General</b>, and clear <b>Automatic updates</b>. All versions are on the <a href="https://github.com/polymood/eoview/releases">releases page</a>.</p>
-  </section>
-
-  <section class="prose" id="verify">
-    <h2>Verify a download</h2>
-    <p>Each file of a release has a signature file (<code>.sig</code>, Ed25519). eoview installs an update only if the signature is correct for this public key:</p>
-    <pre><code id="key">-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEA8r+3vit0GYl7rQyR/86Ptl9uazFc9di66jCroG0AKvc=
------END PUBLIC KEY-----</code></pre>
-    <p>To verify a file yourself, save the key as <code>eoview.pub</code>, then use OpenSSL 3:</p>
-    <pre><code>openssl pkeyutl -verify -pubin -inkey eoview.pub -rawin -in eoview-linux-x86_64 -sigfile eoview-linux-x86_64.sig</code></pre>
+    <p>Each time eoview starts, it checks GitHub for a new version. If there is one, it downloads it in the background, and you get the new version the next time you start eoview.</p>
+    <p>Every update is signed, and eoview checks the signature before it installs anything. You can turn updates off in <b>Preferences</b>, under <b>General</b>. Older versions are on the <a href="https://github.com/polymood/eoview/releases">releases page</a>.</p>
   </section>
 </main>
 
