@@ -1,0 +1,21 @@
+name: Feature request
+description: An idea for something eoview should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: Tell us about your work and your data. What is hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: How you imagine it could work. A sketch or an example from another tool is welcome.
+  - type: textarea
+    id: data
+    attributes:
+      label: Example data
+      description: A link to a public sample of the data, if there is one.

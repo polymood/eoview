@@ -1,0 +1,48 @@
+name: Bug report
+description: Something does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a problem. The more we know, the faster we can fix it.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead? A screenshot helps.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: eoview version
+      description: In eoview, open Preferences, then About.
+      placeholder: "0.1.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: Graphics card
+      description: Preferences, then About, shows the one eoview uses.
+  - type: textarea
+    id: product
+    attributes:
+      label: Product
+      description: What kind of file did you open (for example a Sentinel-2 SAFE, a NetCDF file, a COG)? Add a link to a public sample if there is one.
+  - type: textarea
+    id: log
+    attributes:
+      label: Error message or log
+      description: Paste any error message that eoview showed.
+      render: text
