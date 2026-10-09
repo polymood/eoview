@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>eoview: a fast viewer for Earth observation data</title>
 <meta name="description" content="eoview is a free, open-source desktop viewer for satellite and Earth observation data: GeoTIFF, COG, NetCDF, HDF5, Zarr, JPEG 2000, NITF and Sentinel SAFE products, local or remote.">
-<link rel="icon" href="img/favicon.png">
-<link rel="stylesheet" href="style.css?v=f84ba09b">
+<link rel="icon" type="image/svg+xml" href="img/eoview.svg?v=46dacbdb">
+<link rel="icon" type="image/png" sizes="64x64" href="img/favicon.png?v=46dacbdb">
+<link rel="apple-touch-icon" href="img/favicon.png?v=46dacbdb">
+<link rel="stylesheet" href="style.css?v=9c60d806">
 </head>
 <body>
 
@@ -24,39 +26,39 @@
       <a class="other" href="download.html#linux-and-macos">Linux and macOS</a>
     </div>
   </div>
-  <p class="credit">Sea temperature and ocean wind, September and October 2025, drawn by eoview.</p>
+  <p class="credit">Sea temperature and ocean winds in autumn 2025, shown in eoview.</p>
 </header>
 
 <main>
   <section class="prose">
-    <h2>Open the data, see it at once</h2>
-    <p class="lead">eoview opens satellite products from your disk or from a server, and shows them in seconds.</p>
-    <p>eoview reads only the parts of a product that the view needs. The coarse level comes first, then the finer levels. You can pan and zoom through images of many gigabytes, and the window never waits for the disk or the network.</p>
-    <p>The GPU draws the data. It also reprojects the data, so swaths, map projections and the 3D globe show at the same speed.</p>
-    <p>eoview is written in Rust, from the file readers to the interface. It is one program with no runtime to install, and it draws through wgpu: Direct3D 12 on Windows, Vulkan on Linux and Metal on macOS.</p>
+    <h2>See your data right away</h2>
+    <p class="lead">Open satellite images from your computer or from the internet, and see them in seconds.</p>
+    <p>eoview only reads the part of a file that you are looking at. A rough version shows up first and gets sharper as the details arrive. You can move around images of many gigabytes, and the window never freezes while it waits for the disk or the network.</p>
+    <p>Your graphics card does the drawing, so satellite swaths, map projections and the 3D globe are all just as smooth.</p>
+    <p>eoview is written in Rust, from the file readers to the interface. It is a single program with nothing else to install, and it uses Direct3D 12 on Windows, Vulkan on Linux and Metal on macOS.</p>
   </section>
 
   <figure>
     <img src="img/olci-orbits.webp" width="1600" height="1000" loading="lazy" alt="eoview with fourteen Sentinel-3 OLCI orbits as a true-color layer, in a 2D map at the left and on a 3D globe at the right.">
-    <figcaption>Fourteen Sentinel-3 OLCI orbits of one day, in a 2D map and on the globe. Each orbit is a SAFE product with 64 variables.</figcaption>
+    <figcaption>One day of Sentinel-3 OLCI: fourteen orbits, on a flat map and on the globe.</figcaption>
   </figure>
 
   <section>
-    <h2>Formats</h2>
+    <h2>What it opens</h2>
     <dl class="pairs">
-      <dt>GeoTIFF and COG</dt><dd>Strips, tiles, overviews and the usual compressions. BigTIFF.</dd>
-      <dt>NetCDF-4 and HDF5</dt><dd>Chunked datasets, CF scale, offset and fill values, latitude and longitude arrays.</dd>
-      <dt>Zarr v2 and v3</dt><dd>EOPF and GeoZarr products, sharding, Blosc and Zstd, multiscales.</dd>
-      <dt>Sentinel SAFE</dt><dd>Sentinel-1 GRD and SLC, Sentinel-2 L1C and L2A, Sentinel-3 OLCI and SLSTR.</dd>
-      <dt>JPEG 2000</dt><dd>Tiles and resolution levels.</dd>
-      <dt>NITF</dt><dd>SICD and SIDD radar products, complex pixels.</dd>
-      <dt>Locations</dt><dd>Local files and directories, HTTP and HTTPS, and S3 buckets. A disk cache keeps the remote data.</dd>
+      <dt>GeoTIFF and COG</dt><dd>Including very large files, tiled files and files with overviews.</dd>
+      <dt>NetCDF and HDF5</dt><dd>Including files with latitude and longitude grids, like most climate and ocean data.</dd>
+      <dt>Zarr</dt><dd>Including the new EOPF products from ESA, and GeoZarr.</dd>
+      <dt>Sentinel SAFE</dt><dd>Sentinel-1, Sentinel-2 and Sentinel-3 products, as they come from the Copernicus archive.</dd>
+      <dt>JPEG 2000</dt><dd>Including Sentinel-2 images in their original format.</dd>
+      <dt>NITF</dt><dd>Radar products in SICD and SIDD.</dd>
+      <dt>From where</dt><dd>Your disk, a web server or a cloud bucket. eoview keeps downloaded data in a cache.</dd>
     </dl>
   </section>
 
   <section id="speed">
-    <h2>Open times</h2>
-    <p class="prose">The time from the open command to the first pixels on the screen, and to the complete view at the resolution of the screen. eoview reads the header, then only the parts of the data that the view shows, in parallel.</p>
+    <h2>How fast it opens</h2>
+    <p class="prose">The time from opening a file to the first image on screen, and to a sharp, complete view.</p>
     <div class="legend"><span style="--c:var(--first)">First pixels</span><span style="--c:var(--complete)">Complete view</span></div>
     <table class="bars">
       <tbody>
@@ -72,29 +74,29 @@
       <tr><th scope="row">Umbra SAR COG on S3</th><td><div class="b" style="--v:52.84%;--c:var(--first)" title="First pixels: 2.1 s"><span>2.1 s</span></div><div class="b" style="--v:79.40%;--c:var(--complete)" title="Complete view: 3.2 s"><span>3.2 s</span></div></td></tr>
       </tbody>
     </table>
-    <p class="muted prose">Measured with <code>eoview --bench</code>: median of 3 runs, a view of 1920 x 1080 pixels. Intel Core Ultra 7 265, 32 GB, Windows with WSL2 and a software GPU (llvmpipe). The local files are in the cache of the system. The remote files come from AWS (us-west-2) over the internet.</p>
+    <p class="muted prose">Measured on a PC with an Intel Core Ultra 7 265 and 32 GB of memory, with software drawing instead of the graphics card. Each number is the middle of three tries, in a window of 1920 by 1080 pixels. The local files were already in memory. The remote files came over the internet from Amazon's servers in the United States.</p>
   </section>
 
   <section>
     <h2>A season in 21 images</h2>
-    <p class="prose">eoview opens a list of dates as one layer. The timeline plays them, and a render writes them to a video. These are 21 Sentinel-2 images of the Écrins massif (French Alps) from March to August 2025, read directly from the public archive on AWS.</p>
+    <p class="prose">Give eoview a list of dates and it plays them like a film. These are 21 Sentinel-2 images of the Écrins mountains in the French Alps, from March to August 2025. eoview read them straight from the public archive in Amazon's cloud.</p>
     <figure>
       <video data-lazy poster="img/alps-snow.webp" width="1280" height="800" muted loop playsinline preload="none" aria-label="The snow of the Écrins massif melts from March to August 2025, and the valleys turn green."><source data-src="img/alps-snow.mp4" type="video/mp4"></video>
-      <figcaption>Sentinel-2 L2A true color, 31TGK, 4 March to 8 August 2025. A render of eoview with blends between the dates.</figcaption>
+      <figcaption>The snow melts and the valleys turn green. eoview blends each image into the next one.</figcaption>
     </figure>
   </section>
 
   <section>
-    <h2>Work with the data</h2>
+    <h2>Work with your data</h2>
     <dl class="pairs">
-      <dt>Compare</dt><dd>Link the views. Swipe, blend, flicker or subtract two layers.</dd>
-      <dt>Time series</dt><dd>Open many dates as one layer, play them on a timeline, and calculate aggregates over time.</dd>
-      <dt>Measure</dt><dd>Inspect pixels, draw transects and regions, and pin points.</dd>
-      <dt>Calculate</dt><dd>Band math in a layer, and math between layers of different products.</dd>
-      <dt>Python</dt><dd>Run scripts and Jupyter notebooks on the layers of a view. Show the results as new layers and charts.</dd>
-      <dt>Wind</dt><dd>Show vector fields as arrows or as particles that move with the field.</dd>
-      <dt>Output</dt><dd>Export layers to GeoTIFF. Make figures (PDF, SVG, PNG) and videos of a time series.</dd>
-      <dt>Workspaces</dt><dd>Save the views, layers and settings of a project in one file. A product that changes on the disk opens again.</dd>
+      <dt>Compare</dt><dd>Link several views together, or swipe, blend, flicker and subtract two images.</dd>
+      <dt>Time series</dt><dd>Play many dates on a timeline, and compute averages and other statistics over time.</dd>
+      <dt>Measure</dt><dd>Read pixel values, draw lines and areas, and pin points.</dd>
+      <dt>Calculate</dt><dd>Combine bands or whole images with formulas, even from different products.</dd>
+      <dt>Python</dt><dd>Run your own scripts and Jupyter notebooks, and show the results as new layers and charts.</dd>
+      <dt>Wind</dt><dd>Show wind and currents as arrows or as moving particles.</dd>
+      <dt>Share</dt><dd>Export to GeoTIFF, make figures for papers and slides, and make videos.</dd>
+      <dt>Projects</dt><dd>Save a whole project in one file. When a file changes on disk, eoview reloads it.</dd>
     </dl>
   </section>
 
@@ -105,8 +107,8 @@
         <video data-lazy poster="img/globe-ocean.webp" width="1080" height="1080" muted loop playsinline preload="none" aria-label="The Earth turns on a globe for a month. The oceans have the colors of their temperature, and white particles follow the wind. Typhoons and hurricanes turn in spirals."><source data-src="img/globe-ocean-av1.mp4" type='video/mp4; codecs="av01.0.08M.08"'><source data-src="img/globe-ocean.mp4" type="video/mp4"></video>
       </figure>
       <div class="prose">
-        <p>Sea surface temperature (NOAA OISST, daily) and ocean wind (NOAA Blended Sea Winds, every 6 hours) from 10 September to 9 October 2025, over the Blue Marble of NASA. Typhoon Ragasa crosses the Philippine Sea, and the hurricanes Humberto and Imelda turn between the Bahamas and Bermuda.</p>
-        <p>The wind is a layer of particles that follow the field. A render of 715 frames turns the globe with <code>--spin 0.5</code> while the time steps advance, with blends between them.</p>
+        <p>Sea temperature and ocean winds from NOAA, from 10 September to 9 October 2025, on top of NASA's Blue Marble. Watch typhoon Ragasa cross the Philippine Sea, and hurricanes Humberto and Imelda spin between the Bahamas and Bermuda.</p>
+        <p>The wind is drawn as particles that drift with it, and the globe turns while the days go by.</p>
       </div>
     </div>
   </section>
@@ -118,25 +120,25 @@
         <video data-lazy poster="img/arctic-ice.webp" width="1080" height="1080" muted loop playsinline preload="none" aria-label="The Arctic sea ice grows to its maximum in March, melts to its minimum in September, and freezes again."><source data-src="img/arctic-ice.mp4" type="video/mp4"></video>
       </figure>
       <div class="prose">
-        <p>330 daily files of sea ice concentration from OSI SAF, 2025, over the Blue Marble of NASA. The grid of the files is polar stereographic, with latitude and longitude arrays. eoview puts it on the globe as it is, without a conversion.</p>
-        <p>A band math expression, <code>mask(ice_conc, ice_conc &lt; 15)</code>, removes the open water. The days with missing satellite passes are not in the series. A render writes one frame for each two days, with blends between them.</p>
+        <p>Daily sea ice maps from EUMETSAT OSI SAF for 2025. The ice grows until March, shrinks to its smallest in September, then freezes again.</p>
+        <p>The files use a polar grid, and eoview puts them on the globe as they are, with no conversion. A simple formula hides the open water, and the few days with missing satellite data are left out.</p>
       </div>
     </div>
   </section>
 
   <figure>
     <img src="img/sar-mine.webp" width="1600" height="1000" loading="lazy" alt="eoview with a radar image of the terraces of the Bingham Canyon copper mine, Utah.">
-    <figcaption>The Bingham Canyon mine (Utah) in an Umbra SAR image with pixels of less than 1 m, opened from the Umbra open data bucket on S3. eoview reads only the parts of the file that the view shows.</figcaption>
+    <figcaption>The Bingham Canyon copper mine in Utah, seen by an Umbra radar satellite with pixels smaller than one meter. eoview opened it straight from Umbra's open data on the internet, reading only what is on screen.</figcaption>
   </figure>
 
   <figure>
     <img src="img/lst-python.webp" width="1600" height="1000" loading="lazy" alt="eoview with two linked views of land surface temperature over Europe, a timeline, a transect from Lisbon to Stockholm with its chart, and a Python script in a panel below.">
-    <figcaption>A month of land surface temperature (synthetic data) in two linked views, with a transect and a Python script that fills the gaps.</figcaption>
+    <figcaption>A month of land temperature (made-up test data) in two linked views, with a profile line and a Python script that fills in the cloud gaps.</figcaption>
   </figure>
 
   <section class="prose">
     <h2>Download</h2>
-    <p>eoview is free and open source (MIT or Apache-2.0). It runs on Windows, Linux and macOS, and updates itself.</p>
+    <p>eoview is free and open source (MIT or Apache-2.0). It runs on Windows, Linux and macOS, and keeps itself up to date.</p>
     <p><a class="button" href="download.html">Download eoview</a></p>
   </section>
 </main>
