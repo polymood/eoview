@@ -5,6 +5,7 @@ pub mod hdf5;
 pub mod netcdf;
 pub mod nitf;
 pub mod codec;
+pub mod grib;
 mod jp2;
 pub mod safe;
 pub mod xml;
@@ -75,8 +76,10 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         }
         let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len());
         Product { name, desc, vars, small, valid: None, info }
+    } else if grib::is_grib(&src) {
+        grib::open(&src, 0, name)?
     } else {
-        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-4, HDF5, Zarr or SAFE expected)").into());
+        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-4, HDF5, GRIB, Zarr or SAFE expected)").into());
     };
     Ok(Dataset { product, sources: vec![Arc::new(src)] })
 }
