@@ -193,12 +193,12 @@ impl Inner {
         let open = |s: &StepIn| -> Result<Arc<Layer>> {
             match s {
                 StepIn::Layer(l) => Ok(l.clone()),
-                StepIn::Time(t) => self.layer(base.ds.clone(), base.ds_id, var, choice, *t),
+                StepIn::Time(t) => self.layer(base.ds.clone(), base.ds_id, var, choice, *t, &base.pick()),
                 StepIn::Path(p) => {
                     let ds = eo_io::open(p, &self.rt)?;
                     let var = ds.product.vars.iter().position(|v| v.name == name).ok_or_else(|| Error(format!("{p}: no variable {name}")))?;
                     let ds_id = self.next.fetch_add(1, Relaxed);
-                    self.layer(Arc::new(ds), ds_id, var, choice, 0)
+                    self.layer(Arc::new(ds), ds_id, var, choice, 0, &base.pick())
                 }
             }
         };
@@ -236,23 +236,27 @@ impl Inner {
             units: if how == Agg::Count { String::new() } else { v0.units.clone() },
             georef: g0,
             times: Default::default(),
+            dims: vec![],
         };
         let desc = format!("{} of {} time steps of {name}", how.name(), inputs.len());
         let product = Product { name: format!("{name} {}", how.name().to_lowercase()), desc, vars: vec![var], valid: None, info: Default::default() };
         let ds = Arc::new(Dataset { product, sources: inputs[0].ds.sources.clone() });
         let src = |l: &Layer| l.var().levels[0].chunks.iter().next().and_then(|c| l.ds.sources.get(c.src as usize)).map_or(String::new(), |s| s.name().to_string());
-        let key = format!("{how:?} {:?}", inputs.iter().map(|l| (src(l), l.var().name.clone(), l.choice, l.time)).collect::<Vec<_>>());
+        let key = format!("{how:?} {:?}", inputs.iter().map(|l| (src(l), l.var().name.clone(), l.choice, l.at.clone(), l.v.axes())).collect::<Vec<_>>());
         let enc = choose_enc(DType::F32, Part::Real, &sample);
         let levels = inputs[0].levels.clone();
         let op = Op { kind: OpKind::Agg { how, inputs }, key };
+        let v = Arc::new(ds.product.vars[0].clone());
         let l = Layer {
             id: self.next.fetch_add(1, Relaxed),
             ds,
             ds_id: self.next.fetch_add(1, Relaxed),
             var: 0,
+            v,
             choice: 0,
             band: 0,
             time: 0,
+            at: vec![],
             part: Part::Real,
             levels,
             enc,
@@ -301,13 +305,15 @@ impl Inner {
             units: units.into(),
             georef: g,
             times: Default::default(),
+            dims: vec![],
         };
         let product = Product { name: name.into(), desc: format!("{name}: a function of {} layers", inputs.len()), vars: vec![var], valid: None, info: Default::default() };
         let ds = Arc::new(Dataset { product, sources: inputs[0].ds.sources.clone() });
         let (levels, enc) = (inputs[0].levels.clone(), choose_enc(DType::F32, Part::Real, &sample));
         let op = Op { kind: OpKind::Math { f, inputs }, key };
         let id = self.next.fetch_add(1, Relaxed);
-        Ok(Arc::new(Layer { id, ds, ds_id: self.next.fetch_add(1, Relaxed), var: 0, choice: 0, band: 0, time: 0, part: Part::Real, levels, enc, sample, sample_at, op: Some(Arc::new(op)) }))
+        let v = Arc::new(ds.product.vars[0].clone());
+        Ok(Arc::new(Layer { id, ds, ds_id: self.next.fetch_add(1, Relaxed), v, var: 0, choice: 0, band: 0, time: 0, at: vec![], part: Part::Real, levels, enc, sample, sample_at, op: Some(Arc::new(op)) }))
     }
 
     /// The physical values (NaN: no data) of tile (tx, ty) of display level `lv` of layer `l`.
@@ -338,7 +344,7 @@ impl Inner {
                 let l2 = l.clone();
                 self.on_pool(prio, move || {
                     let a = &l2.var().levels[lvl];
-                    let p = PlaneAt::new(a, l2.band, l2.time);
+                    let p = PlaneAt::new(a, &l2.at);
                     let mut out = vec![f32::NAN; (w * h) as usize];
                     let mut row = vec![0f32; cw as usize];
                     for (&(cy, cx), raw) in cells.iter().zip(&raws) {
@@ -619,7 +625,7 @@ impl Inner {
         }
         let c = TILE.min(w).max(1);
         let a = Array { dims: vec!["y".into(), "x".into()], shape: vec![h, w], chunk: vec![TILE.min(h), c], dtype: DType::F32, le: true, codecs: vec![], chunks: vec![].into(), place: None };
-        let var = Variable { name: name.into(), group: String::new(), levels: vec![a], bands: vec![name.into()], fill: None, scale: 1.0, offset: 0.0, units: units.into(), georef: g, times: Default::default() };
+        let var = Variable { name: name.into(), group: String::new(), levels: vec![a], bands: vec![name.into()], fill: None, scale: 1.0, offset: 0.0, units: units.into(), georef: g, times: Default::default(), dims: vec![] };
         let levels = display_levels(&var);
         // The sample: 64 K values spread on the array.
         let step = (data.len() / 65_536).max(1);
@@ -631,7 +637,8 @@ impl Inner {
         let id = self.next.fetch_add(1, Relaxed);
         let op = Op { kind: OpKind::Array { w, data: Arc::new(data) }, key: format!("array {id}") };
         let ds = Arc::new(Dataset { product, sources: vec![] });
-        Ok(Arc::new(Layer { id, ds, ds_id: self.next.fetch_add(1, Relaxed), var: 0, choice: 0, band: 0, time: 0, part: Part::Real, levels, enc, sample, sample_at, op: Some(Arc::new(op)) }))
+        let v = Arc::new(ds.product.vars[0].clone());
+        Ok(Arc::new(Layer { id, ds, ds_id: self.next.fetch_add(1, Relaxed), v, var: 0, choice: 0, band: 0, time: 0, at: vec![], part: Part::Real, levels, enc, sample, sample_at, op: Some(Arc::new(op)) }))
     }
 }
 
@@ -744,7 +751,7 @@ mod tests {
         };
         e.open(path.into());
         let a = opened();
-        e.select(&a, a.var, a.choice, 2);
+        e.select(&a, a.var, a.choice, 2, Default::default());
         let b = opened();
         // a - b where a > 285, else no data.
         e.math("d".into(), "K".into(), vec![a.clone(), b.clone()], Arc::new(|v| if v[0] > 285.0 { v[0] - v[1] } else { f64::NAN }), "test".into());

@@ -124,15 +124,16 @@ impl PlaneAt {
         w.r1 <= w.r0 || w.c1 <= w.c0 || (self.base + (w.r1 - 1) * self.sy + (w.c1 - 1) * self.sx + 1) * a.dtype.size() <= len
     }
 
-    pub fn new(a: &Array, band: u64, time: u64) -> PlaneAt {
+    /// The plane of the dimensions "y" and "x" at index `at` of the other dimensions (one index for each
+    /// dimension of `a`, in its order; a missing index is 0).
+    pub fn new(a: &Array, at: &[u64]) -> PlaneAt {
         let n = a.dims.len();
         let mut st = vec![1usize; n];
         for i in (0..n.saturating_sub(1)).rev() {
             st[i] = st[i + 1] * a.chunk[i + 1] as usize;
         }
         let (y, x) = (a.axis("y").unwrap(), a.axis("x").unwrap());
-        let at = |d: &str, i: u64| a.axis(d).map_or(0, |k| (i % a.chunk[k]) as usize * st[k]);
-        let base = at("band", band) + at("time", time);
+        let base = (0..n).filter(|&k| k != y && k != x).map(|k| (at.get(k).copied().unwrap_or(0) % a.chunk[k]) as usize * st[k]).sum();
         PlaneAt { base, sy: st[y], sx: st[x], ch: a.chunk[y] as usize, cw: a.chunk[x] as usize }
     }
 }
@@ -267,7 +268,7 @@ mod tests {
             place: None,
         };
         let raw: Vec<u8> = (0u16..12).flat_map(|v| v.to_be_bytes()).collect();
-        let p = PlaneAt::new(&a, 1, 0);
+        let p = PlaneAt::new(&a, &[0, 0, 1]);
         let mut out = [0f32; 6];
         to_f32(&a, &raw, &p, Part::Real, &p.full(), &mut out);
         assert_eq!(out, [1., 3., 5., 7., 9., 11.]);

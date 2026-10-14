@@ -127,6 +127,7 @@ fn s2(dir: &Path, rt: &Handle) -> Result<Dataset> {
         let bands = if name == "TCI" { vec!["red".into(), "green".into(), "blue".into()] } else { (1..=nb).map(|b| format!("{name} {b}")).collect() };
         vars.push(Variable {
             times: Default::default(),
+            dims: vec![],
             name: format!("{name} ({res} m)"),
             // Product tree: the spectral bands in one group, then AOT, SCL, TCI and WVP.
             group: if name.starts_with('B') { "Reflectance".into() } else { String::new() },

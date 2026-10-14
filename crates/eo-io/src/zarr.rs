@@ -554,6 +554,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             units: attrs.get("units").and_then(Value::as_str).unwrap_or("").to_string(),
             georef,
             times: levels[0].axis("time").map_or(Default::default(), |k| times(url, &nodes, &level_groups[idx[0]], levels[0].shape[k], ver, rt, &mut tcache)),
+            dims: vec![],
             levels,
         });
     }

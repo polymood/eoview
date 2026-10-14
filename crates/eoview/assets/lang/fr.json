@@ -544,5 +544,11 @@
  "{} has changes that are not saved. Close again to close it.": "{} a des modifications non enregistrées. Fermez à nouveau pour le fermer.",
  "{} of the two lowest layers of the active view": "{} des deux couches les plus basses de la vue active",
  "{} s left": "{} s restantes",
- "{} steps. The steps must be on the same grid.": "{} pas. Les pas doivent être sur la même grille."
+ "{} steps. The steps must be on the same grid.": "{} pas. Les pas doivent être sur la même grille.",
+ "Rows": "Lignes",
+ "Columns": "Colonnes",
+ "Dimensions": "Dimensions",
+ "Filter": "Filtre",
+ "Cancel": "Annuler",
+ "Select the variable, the dimensions of the image, and the index of the other dimensions.": "Choisissez la variable, les dimensions de l'image et l'indice des autres dimensions."
 }

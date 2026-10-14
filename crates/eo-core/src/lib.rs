@@ -358,9 +358,42 @@ pub struct Variable {
     /// not known (the number of steps is then the length of the dimension).
     /// The variables of a product share the times of a dimension (a cube has many variables and steps).
     pub times: std::sync::Arc<Vec<f64>>,
+    /// Names of the dimensions in the file, one for each dimension of the levels. The reader names two of
+    /// them "y" and "x" in `Array::dims` (a proposal), and the user can select two others (`with_axes`).
+    /// Empty: the format fixes the image axes (TIFF, JPEG 2000, NITF, SAFE).
+    pub dims: Vec<String>,
 }
 
 impl Variable {
+    /// The same variable with dimension `rows` as "y" and dimension `cols` as "x". The other dimensions get
+    /// their names of the file, except "time" and "band", which stay (an image axis can also be time).
+    /// None if the format fixes the axes or if the two dimensions are not valid.
+    pub fn with_axes(&self, rows: usize, cols: usize) -> Option<Variable> {
+        let n = self.dims.len();
+        if rows == cols || rows >= n || cols >= n || self.levels[0].dims.len() != n {
+            return None;
+        }
+        let mut v = self.clone();
+        for a in &mut v.levels {
+            for (k, d) in a.dims.iter_mut().enumerate() {
+                *d = match k {
+                    _ if k == rows => "y".into(),
+                    _ if k == cols => "x".into(),
+                    _ if d == "time" || d == "band" => continue,
+                    // A file dimension with the name of an axis: not an axis now.
+                    _ if ["y", "x", "time", "band"].contains(&self.dims[k].as_str()) => format!("{}_", self.dims[k]),
+                    _ => self.dims[k].clone(),
+                };
+            }
+        }
+        Some(v)
+    }
+
+    /// Positions of the dimensions "y" and "x" (rows, columns).
+    pub fn axes(&self) -> Option<[usize; 2]> {
+        Some([self.levels[0].axis("y")?, self.levels[0].axis("x")?])
+    }
+
     /// Width and height at level 0.
     pub fn size(&self) -> (u64, u64) {
         let a = &self.levels[0];

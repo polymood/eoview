@@ -365,6 +365,8 @@ struct Open {
     to: Option<(u64, usize)>,
     /// The product changed on the disk: the new layer replaces the layer of this uid (`App::watch_tick`).
     replace: Option<u64>,
+    /// The variable that the user selected in the open dialog (`dims::Asking`): the layer shows it, without the dialog.
+    var: Option<usize>,
 }
 
 /// A product of the views on the disk: its stamp (times and sizes of its files), and a new stamp that waits
@@ -590,8 +592,8 @@ pub struct App {
     next_pane: u32,
     next_uid: u64,
     opens: HashMap<u64, Open>,
-    /// Channel requests: request id to (view, layer uid, time step, (variable, choice)).
-    requests: HashMap<u64, (u32, u64, usize, (usize, usize))>,
+    /// Channel requests: request id to (view, layer uid, time step, (variable, choice), pick generation).
+    requests: HashMap<u64, (u32, u64, usize, (usize, usize), u64)>,
     /// Open requests for the products of time steps: request id to (view, layer uid, time step).
     step_opens: HashMap<u64, (u32, u64, usize)>,
     pub warps: HashMap<(u64, Option<u32>), (Arc<Warp>, u64)>,
@@ -606,6 +608,9 @@ pub struct App {
     pub error: Option<String>,
     pub panel: bool,
     pub dialog: Option<Dialog>,
+    /// A product that waits in the open dialog (DESIGN section 16), and the last choice of the user.
+    asking: Option<(Open, crate::dims::Asking)>,
+    last_pick: eo_cache::Pick,
     pub palette: Option<crate::ui::Palette>,
     /// URL field of the "open URL" dialog: text, add as a layer, view.
     pub url: Option<(String, bool, u32)>,
@@ -727,6 +732,8 @@ impl App {
             error: None,
             panel: true,
             dialog: None,
+            asking: None,
+            last_pick: Default::default(),
             palette: None,
             gpu_budget,
             bench,
@@ -1047,7 +1054,7 @@ impl App {
             self.rebuild(pane);
         }
         let req = self.engine.open(path.clone());
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band, op: None, to: None, replace: None });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band, op: None, to: None, replace: None, var: None });
     }
 
     /// Put a path at the top of the recent list, and write the list.
@@ -1213,14 +1220,14 @@ impl App {
     /// of its selected time step, and of the next steps (prefetch). The product of a step opens first.
     pub fn load_steps(&mut self, id: u32, layer: usize) {
         let Some(l) = self.pane(id).and_then(|p| p.layers.get(layer)) else { return };
-        let (uid, n) = (l.uid, l.steps.len().max(1));
+        let (uid, n, pgen, pick) = (l.uid, l.steps.len().max(1), l.pgen, l.pick.clone());
         let (mut select, mut open) = (vec![], vec![]);
         for k in 0..=AHEAD.min(n - 1) {
             let s = (l.step + k * l.stride.max(1)) % n;
             match l.base(s) {
                 Some(b) => {
                     for key in l.missing(s) {
-                        if !self.requests.values().any(|r| (r.1, r.2, r.3) == (uid, s, key)) {
+                        if !self.requests.values().any(|r| (r.1, r.2, r.3, r.4) == (uid, s, key, pgen)) {
                             select.push((b.clone(), s, key, l.time_of(s, key.0)));
                         }
                     }
@@ -1230,8 +1237,8 @@ impl App {
             }
         }
         for (b, s, key, t) in select {
-            let r = self.engine.select(&b, key.0, key.1, t);
-            self.requests.insert(r, (id, uid, s, key));
+            let r = self.engine.select(&b, key.0, key.1, t, pick.clone());
+            self.requests.insert(r, (id, uid, s, key, pgen));
         }
         for (s, path) in open {
             let r = self.engine.open(path);
@@ -1385,10 +1392,10 @@ impl App {
                             Ok(l) => self.opened(o, l),
                             Err(e) => self.error = Some(format!("{}: {}", o.path, e.0)),
                         }
-                    } else if let Some((pane, uid, s, _)) = self.requests.remove(&req) {
+                    } else if let Some((pane, uid, s, _, pgen)) = self.requests.remove(&req) {
                         match res {
                             Ok(l) => {
-                                let done = self.pane_mut(pane).and_then(|p| p.layers.iter_mut().find(|m| m.uid == uid)).is_some_and(|m| m.loaded(s, l));
+                                let done = self.pane_mut(pane).and_then(|p| p.layers.iter_mut().find(|m| m.uid == uid)).is_some_and(|m| m.loaded(s, pgen, l));
                                 if done {
                                     self.rebuild(pane);
                                 }
@@ -1404,7 +1411,9 @@ impl App {
                                 if let Some(st) = m.steps.get_mut(s) {
                                     st.ds = Some(l.clone());
                                 }
-                                let done = m.loaded(s, l);
+                                // The product of a step opens with the axes of its reader: a channel only if the pick is the same.
+                                let pgen = if l.pick() == m.pick { m.pgen } else { u64::MAX };
+                                let done = m.loaded(s, pgen, l);
                                 self.load_steps(pane, at);
                                 if done {
                                     self.rebuild(pane);
@@ -1458,6 +1467,21 @@ impl App {
         }
     }
 
+    /// The open dialog: the user opens the selected variable with its pick, or cancels.
+    pub fn ask_ui(&mut self, ctx: &egui::Context) {
+        let Some((_, a)) = &mut self.asking else { return };
+        match crate::dims::ask_ui(ctx, a) {
+            Some(true) => {
+                let (o, a) = self.asking.take().unwrap();
+                self.last_pick = a.pick.clone();
+                let req = self.engine.select(&a.l, a.var, 0, 0, a.pick);
+                self.opens.insert(req, Open { var: Some(a.var), ..o });
+            }
+            Some(false) => self.asking = None,
+            None => {}
+        }
+    }
+
     /// A product is open: make its layer in the target view.
     fn opened(&mut self, mut o: Open, l: Arc<Layer>) {
         // The source of a computed layer of a workspace: start the operation.
@@ -1474,9 +1498,21 @@ impl App {
         if let Some((mid, k)) = o.to {
             return self.math_input(mid, k, o, l);
         }
+        // The user selects the variable and its dimensions: a product with more than one variable or with
+        // more than two dimensions. Not for the layers of a workspace, of a list or of a `path#name`.
+        let plain = o.save.is_none() && o.band.is_none() && o.replace.is_none() && o.op.is_none() && o.series.is_empty() && o.var.is_none();
+        if plain && self.win.is_some() && self.shot.is_none() && self.bench.is_none() && self.cli_render.is_none() && crate::dims::ask(&l.ds.product) {
+            let a = crate::dims::Asking::new(l, &self.last_pick);
+            self.asking = Some((o, a));
+            return;
+        }
         let uid = self.uid();
+        let var = o.var;
         let mut m = MapLayer::new(uid, o.path, l);
         (m.order, m.op) = (o.order, o.op.take());
+        if let Some(c) = var.and_then(|v| m.chans.iter().position(|c| c.var == v && c.choice == 0)) {
+            (m.kind, m.band, m.auto_pending) = (crate::layer::Kind::Band, c, true);
+        }
         if !o.series.is_empty() {
             m.set_series(o.series);
         }
@@ -1546,14 +1582,14 @@ impl App {
     pub fn aggregate(&mut self, id: u32, how: eo_cache::Agg, range: (usize, usize)) {
         let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
         match agg_start(&self.engine, l, how, range) {
-            Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None, replace: None })),
+            Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None, replace: None, var: None })),
             Err(e) => self.error = Some(e),
         }
     }
 
     /// Engine request `req` makes a layer (a computed layer): put it in view `pane` when it comes, with the name `path`.
     pub fn open_req(&mut self, req: u64, pane: u32, path: String) {
-        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band: None, op: None, to: None, replace: None });
+        self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band: None, op: None, to: None, replace: None, var: None });
     }
 
     /// Number of products that open now, time steps included.
@@ -1826,7 +1862,7 @@ impl App {
     /// Open the saved layer `s` in view `pane` at position `order`, or as input `to` of a layer math. A
     /// computed layer opens its source (an aggregate) or its inputs (a layer math) first.
     fn load_layer(&mut self, pane: u32, order: usize, s: LayerSave, to: Option<(u64, usize)>) {
-        let open = Open { pane, save: Some(s.clone()), order, path: s.path.clone(), series: vec![], band: None, op: s.op.clone(), to, replace: None };
+        let open = Open { pane, save: Some(s.clone()), order, path: s.path.clone(), series: vec![], band: None, op: s.op.clone(), to, replace: None, var: None };
         match &s.op {
             Some(OpSave::Math { expr, names, inputs }) => {
                 let mid = self.uid();
@@ -1863,8 +1899,8 @@ impl App {
                 return self.error = Some(format!("{}: {}", o.path, t("An input of layer math shows one band.")));
             };
             let time = m.time_of(m.step, c.var);
-            if (c.var, c.choice, time) != (l.var, l.choice, l.time) {
-                let req = self.engine.select(&l, c.var, c.choice, time);
+            if (c.var, c.choice, time) != (l.var, l.choice, l.time) || l.pick() != m.pick {
+                let req = self.engine.select(&l, c.var, c.choice, time, m.pick.clone());
                 return drop(self.opens.insert(req, Open { save: None, ..o }));
             }
         }
@@ -1918,7 +1954,7 @@ impl App {
         }
         for (pane, order, uid, save) in todo {
             let req = self.engine.open(path.to_string());
-            self.opens.insert(req, Open { pane, save: Some(save), order, path: path.to_string(), series: vec![], band: None, op: None, to: None, replace: Some(uid) });
+            self.opens.insert(req, Open { pane, save: Some(save), order, path: path.to_string(), series: vec![], band: None, op: None, to: None, replace: Some(uid), var: None });
         }
     }
 
@@ -1982,7 +2018,7 @@ impl App {
                     names: used.iter().map(|&k| names[k].clone()).collect(),
                     inputs: used.iter().map(|&k| p.layers[k].save()).collect(),
                 });
-                self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path: expr, series: vec![], band: None, op, to: None, replace: None });
+                self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path: expr, series: vec![], band: None, op, to: None, replace: None, var: None });
             }
             Err(e) => self.error = Some(e),
         }
@@ -2026,12 +2062,12 @@ fn agg_start(engine: &Engine, l: &MapLayer, how: eo_cache::Agg, range: (usize, u
     }
     let c = l.chans.get(l.band).ok_or("no band")?;
     let (var, choice) = (c.var, c.choice);
-    let base = l.cache.values().next().cloned().ok_or_else(|| t("The band is not open yet.").to_string())?;
+    let base = l.cache.values().find(|x| x.0 == l.pgen).map(|x| x.1.clone()).ok_or_else(|| t("The band is not open yet.").to_string())?;
     let (a, b) = (range.0.min(l.steps.len() - 1), range.1.min(l.steps.len() - 1));
     let (a, b) = (a.min(b), a.max(b));
     let steps: Vec<StepIn> = (a..=b)
-        .map(|s| match (&l.steps[s], l.cache.get(&(s, var, choice))) {
-            (_, Some(x)) => StepIn::Layer(x.clone()),
+        .map(|s| match (&l.steps[s], l.cache.get(&(s, var, choice)).filter(|x| x.0 == l.pgen)) {
+            (_, Some(x)) => StepIn::Layer(x.1.clone()),
             (st, None) if st.path.is_empty() => StepIn::Time(l.time_of(s, var)),
             (st, None) => StepIn::Path(st.path.clone()),
         })

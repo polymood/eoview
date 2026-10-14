@@ -41,6 +41,7 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>, Info
             units: d.text("units").unwrap_or("").to_string(),
             georef: Georef::None,
             times: Default::default(),
+            dims: info.vars.iter().find(|m| m.name == d.path).map(|m| m.dims.iter().map(|x| x.0.clone()).collect()).unwrap_or_default(),
         });
     }
     // Time dimension: the reader does not read the dimension lists of HDF5, it compares the lengths.
@@ -90,8 +91,16 @@ pub fn info(ds: &[H5], groups: &[hdf5::Group]) -> Info {
             continue;
         }
         let g = dir(&d.path);
+        // The dimension scales of `DIMENSION_LIST`, by their addresses. Without it: the scale of the same length.
+        let listed: Vec<Option<String>> = match d.attrs.get("DIMENSION_LIST") {
+            Some(hdf5::Attr::Num(a)) if a.len() == d.shape.len() => a.iter().map(|&x| ds.iter().find(|s| s.addr as f64 == x).map(|s| leaf(&s.path))).collect(),
+            _ => vec![None; d.shape.len()],
+        };
         let mut used = vec![false; dims.len()];
         let names = d.shape.iter().enumerate().map(|(k, &n)| {
+            if let Some(s) = &listed[k] {
+                return (s.clone(), n);
+            }
             let hit = dims.iter().enumerate().find(|(i, x)| !used[*i] && x.2 == n && g.starts_with(&x.0));
             match hit {
                 Some((i, x)) => {

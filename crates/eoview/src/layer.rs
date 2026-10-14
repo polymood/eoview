@@ -282,8 +282,14 @@ pub struct MapLayer {
     pub path: String,
     pub name: String,
     pub chans: Vec<Chan>,
-    /// Layers that are ready, by (time step, variable, choice).
-    pub cache: HashMap<(usize, usize, usize), Arc<Layer>>,
+    /// Layers that are ready, by (time step, variable, choice), with the generation of the pick that made them.
+    pub cache: HashMap<(usize, usize, usize), (u64, Arc<Layer>)>,
+    /// The image axes and the index of the other dimensions (DESIGN section 16), and its generation: a
+    /// change of the pick makes the layers of the older generations not current.
+    pub pick: eo_cache::Pick,
+    pub pgen: u64,
+    /// The pick generation of the inputs that show.
+    pub shown_pgen: u64,
     /// Time steps. Empty or one step: the layer has no timeline.
     pub steps: Vec<Step>,
     /// The step that the user selected, and the step that the layer shows (the selected step shows when
@@ -349,6 +355,9 @@ impl MapLayer {
             name,
             chans: channels(&first.ds.product),
             cache: HashMap::new(),
+            pick: first.pick(),
+            pgen: 0,
+            shown_pgen: 0,
             steps,
             // A cube opens at its first step with data.
             step: valid.map_or(0, |v| v.0),
@@ -386,7 +395,7 @@ impl MapLayer {
         if first.var().levels[0].dtype.is_complex() {
             m.st[0].db = first.part == eo_cache::Part::Amp;
         }
-        m.cache.insert((0, first.var, first.choice), first);
+        m.cache.insert((0, first.var, first.choice), (0, first));
         if let Some(p) = PRESETS.iter().find(|p| DEFAULT_PRESETS.contains(&p.0) && m.preset_ok(p)) {
             m.set_preset(p);
         } else if let Some(ids) = m.color_bands() {
@@ -432,7 +441,7 @@ impl MapLayer {
 
     /// A layer of the product (for a list of products: of the product of the selected step, if it is open).
     pub fn any(&self) -> Option<&Arc<Layer>> {
-        self.steps.get(self.step).and_then(|s| s.ds.as_ref()).or_else(|| self.cache.values().next())
+        self.steps.get(self.step).and_then(|s| s.ds.as_ref()).or_else(|| self.cache.values().next().map(|x| &x.1))
     }
 
     /// A layer of the product of step `s`: the engine makes the other channels of the step from it.
@@ -440,13 +449,13 @@ impl MapLayer {
     pub fn base(&self, s: usize) -> Option<&Arc<Layer>> {
         match self.steps.get(s) {
             Some(st) if !st.path.is_empty() => st.ds.as_ref(),
-            _ => self.cache.values().next(),
+            _ => self.cache.values().next().map(|x| &x.1),
         }
     }
 
     /// Index on the time dimension of variable `var` for step `s`.
     pub fn time_of(&self, s: usize, var: usize) -> u64 {
-        match (self.steps.get(s), self.cache.values().next()) {
+        match (self.steps.get(s), self.cache.values().next().map(|x| &x.1)) {
             (Some(st), Some(l)) if st.path.is_empty() => (s as u64).min(l.ds.product.vars[var].steps() - 1),
             _ => 0,
         }
@@ -454,13 +463,13 @@ impl MapLayer {
 
     /// (variable, choice) of the used channels that are not ready for step `s`.
     pub fn missing(&self, s: usize) -> Vec<(usize, usize)> {
-        let m: HashSet<(usize, usize)> = self.used.iter().map(|&c| (self.chans[c].var, self.chans[c].choice)).filter(|k| !self.cache.contains_key(&(s, k.0, k.1))).collect();
+        let m: HashSet<(usize, usize)> = self.used.iter().map(|&c| (self.chans[c].var, self.chans[c].choice)).filter(|k| !self.cache.get(&(s, k.0, k.1)).is_some_and(|x| x.0 == self.pgen)).collect();
         m.into_iter().collect()
     }
 
     /// Layers of the used channels for step `s`, if all are ready.
     pub fn inputs_at(&self, s: usize) -> Option<Vec<Arc<Layer>>> {
-        self.used.iter().map(|&c| self.cache.get(&(s, self.chans[c].var, self.chans[c].choice)).cloned()).collect()
+        self.used.iter().map(|&c| self.cache.get(&(s, self.chans[c].var, self.chans[c].choice)).filter(|x| x.0 == self.pgen).map(|x| x.1.clone())).collect()
     }
 
     /// Layers of the used channels for the step after the step that shows (at the interval `stride`), if
@@ -506,7 +515,7 @@ impl MapLayer {
     /// Make the layer a series of products: one time step for each (path, time). The first product is the
     /// product of the layer.
     pub fn set_series(&mut self, list: Vec<(String, f64)>) {
-        let first = self.cache.values().next().cloned();
+        let first = self.cache.values().next().map(|x| x.1.clone());
         self.steps = list.into_iter().map(|(path, t)| Step { path, t, ds: None }).collect();
         if let Some(s) = self.steps.first_mut() {
             s.ds = first;
@@ -579,17 +588,29 @@ impl MapLayer {
         missing
     }
 
-    /// A channel layer of step `s` is ready. Return true if the view must make its inputs again: the
-    /// selected step is complete and shows now, or a next step is complete (prefetch).
-    pub fn loaded(&mut self, s: usize, l: Arc<Layer>) -> bool {
-        self.cache.insert((s, l.var, l.choice), l);
-        if s == self.step { (self.inputs.is_empty() || self.shown != s) && self.ready() } else { self.inputs_at(s).is_some() }
+    /// Change the pick: the layers of all steps come again with it.
+    pub fn set_pick(&mut self, p: eo_cache::Pick) {
+        if p != self.pick {
+            self.pick = p;
+            self.pgen += 1;
+        }
+    }
+
+    /// A channel layer of step `s` and of pick generation `pgen` is ready. Return true if the view must make
+    /// its inputs again: the selected step is complete and shows now, or a next step is complete (prefetch).
+    pub fn loaded(&mut self, s: usize, pgen: u64, l: Arc<Layer>) -> bool {
+        if pgen != self.pgen {
+            return false;
+        }
+        self.cache.insert((s, l.var, l.choice), (pgen, l));
+        if s == self.step { (self.inputs.is_empty() || self.shown != s || self.shown_pgen != pgen) && self.ready() } else { self.inputs_at(s).is_some() }
     }
 
     fn ready(&mut self) -> bool {
         let Some(v) = self.inputs_at(self.step) else { return false };
         self.inputs = v;
         self.shown = self.step;
+        self.shown_pgen = self.pgen;
         if self.auto_pending {
             self.auto_pending = false;
             if self.is_color() { self.as_is() } else { self.auto() }
@@ -812,6 +833,11 @@ pub struct LayerSave {
     /// A computed layer: its operation. The layer opens again from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub op: Option<OpSave>,
+    /// The image axes and the index of the other dimensions, by the names of the file (DESIGN section 16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axes: Option<[String; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub at: Vec<(String, u64)>,
 }
 
 /// The operation of a computed layer in a workspace file.
@@ -863,6 +889,8 @@ impl MapLayer {
             step: self.step,
             wind: Some([self.fill, self.arrows, self.particles]),
             op: self.op.clone(),
+            axes: self.pick.axes.clone(),
+            at: self.pick.at.clone(),
         }
     }
 
@@ -887,6 +915,9 @@ impl MapLayer {
         self.step = s.step.min(self.steps.len().saturating_sub(1));
         if let Some([f, a, p]) = s.wind {
             (self.fill, self.arrows, self.particles) = (f, a, p);
+        }
+        if s.axes.is_some() || !s.at.is_empty() {
+            self.set_pick(eo_cache::Pick { axes: s.axes.clone(), at: s.at.clone() });
         }
         self.auto_pending = false;
     }

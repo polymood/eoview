@@ -279,6 +279,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     );
     let var = Variable {
         times: Default::default(),
+        dims: vec![],
         name: kind.into(),
         group: String::new(),
         bands: match nbv {

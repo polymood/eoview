@@ -53,12 +53,6 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
   The globe draws grids with a pole (sea ice). Information window (dimensions, attributes, all variables),
   values window, color bar in each view (DESIGN section 12).
 
-- 2026-10-09: memory map again on Windows (fast loads), a preference for products that other programs
-  rewrite. Automatic updates (signed), a Windows installer, an install script for Linux and macOS,
-  releases v0.1.0 and v0.1.1. Website (GitHub Pages, `docs/`). New icon and banner. `--spin` for renders.
-  The globe draws grids with a pole (sea ice). Information window (dimensions, attributes, all variables),
-  values window, color bar in each view (DESIGN section 12).
-
 ## In work
 
 1. **Time in the application.** Layers with time steps (a time dimension, or a list of products), a
@@ -133,29 +127,27 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 
 11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. To
     do: Sentinel-1 and Sentinel-2 SAFE (manifest, metadata XML), NITF header fields, JPEG 2000 boxes.
-    The names of the dimensions of HDF5 come from the lengths of the dimension scales: read
-    `DIMENSION_LIST` (object references) for files with two dimensions of the same length.
-12. **Dimensions other than time (2026-10-09).** A slider for each extra dimension (vertical level,
-    depth, wavelength, ensemble member), profiles along a dimension, vertical sections. DESIGN section 13.
-13. **A DEM in 3D on the globe (2026-10-09).** Camera tilt and heading, depth buffer, terrain mesh from a
-    DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
-14. **Panoply parity, other items.** The values window as a full table that scrolls over the whole array
-    (now 9 x 15 values around a point); the coordinate values in its headers (latitude, longitude); 1D
-    variables as line charts (item 7).
-
-11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. To
-    do: Sentinel-1 and Sentinel-2 SAFE (manifest, metadata XML), NITF header fields, JPEG 2000 boxes.
-    The names of the dimensions of HDF5 come from the lengths of the dimension scales: read
-    `DIMENSION_LIST` (object references) for files with two dimensions of the same length.
+    Done (2026-10-14): the names of the dimensions come from `DIMENSION_LIST` (object references). To
+    do: the time dimension of NetCDF still comes from the length of the `time` coordinate.
 12. **Color bar (2026-10-09).** Code done (Shift+B, on by default, in the render frames too). To do: check
     it on screen, with gamma and dB, and in the light theme.
-13. **Dimensions other than time (2026-10-09).** A slider for each extra dimension (vertical level,
-    depth, wavelength, ensemble member), profiles along a dimension, vertical sections. DESIGN section 13.
+13. **Any variable, any dimensions (2026-10-14, first priority).** A tester could not see `stokes_vector`
+    (8 dimensions) of a CO2M MAP `SPECTRA.nc` for each camera, or the values of the dimensions. The
+    reader uses the last two dimensions as the image and index 0 of the others. DESIGN section 16: the
+    choice of the two image axes, a selector for each other dimension, views along a dimension, a table
+    of values, profiles, the 1D and scalar variables. Test file: `scripts/testdata_nd.py`. Also all the
+    formats of Panoply users (NetCDF-3, OPeNDAP, GRIB 2, HDF4), and a points mode that shows the sampling
+    of the data (a colored point at the center of each pixel, 16.5b).
+    Done (steps 1 and 2, 2026-10-14): the readers keep the dimension names (`Variable::dims`), the engine
+    reads any two dimensions as the image (`Pick`, `Layer::at`), an open dialog for a product with more
+    than one variable or more than two dimensions, a "Dimensions" part of the layer panel (rows,
+    columns, a slider for each other dimension), the workspace file keeps the choice. To do: the open
+    dialog seen on a screen (the shot mode does not show it), keys for the index, a check with the real
+    product on the network share (speed of a plane that is not in file order).
 14. **A DEM in 3D on the globe (2026-10-09).** Camera tilt and heading, depth buffer, terrain mesh from a
     DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
-15. **Panoply parity, other items.** The values window as a full table that scrolls over the whole array
-    (now 9 x 15 values around a point); the coordinate values in its headers (latitude, longitude); 1D
-    variables as line charts (item 7).
+15. **Panoply parity, other items.** DESIGN section 16.7 has the full list, with a decision for each
+    function.
 16. **Repository size.** The frames of an old render (`arctic_ice_2025.frames`, 365 PNG files) are out of
     the repository now, but they stay in the git history. Removing them needs a rewrite of the history
     and a force push: ask the maintainer first.

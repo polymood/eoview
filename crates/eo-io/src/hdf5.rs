@@ -35,6 +35,8 @@ pub struct Dataset {
     pub chunks: Vec<(Vec<u64>, u64, u64, u32)>,
     pub codecs: Vec<Codec>,
     pub attrs: HashMap<String, Attr>,
+    /// Address of the object header: the target of object references (`DIMENSION_LIST`).
+    pub addr: u64,
 }
 
 /// Reader of the file, with a cache of aligned blocks.
@@ -186,7 +188,8 @@ fn dataspace(b: &[u8]) -> Option<Vec<u64>> {
     (0..rank).map(|i| Some(u64::from_le_bytes(b.get(p + 8 * i..p + 8 * i + 8)?.try_into().ok()?))).collect()
 }
 
-fn attribute(b: &[u8]) -> Option<(String, Attr)> {
+/// Name, datatype message, number of values and data of an attribute message.
+fn attr_parts(b: &[u8]) -> Option<(String, &[u8], u64, &[u8])> {
     let ver = *b.first()?;
     let name_len = u16::from_le_bytes(b.get(2..4)?.try_into().ok()?) as usize;
     let dt_len = u16::from_le_bytes(b.get(4..6)?.try_into().ok()?) as usize;
@@ -200,8 +203,12 @@ fn attribute(b: &[u8]) -> Option<(String, Attr)> {
     let ds = b.get(p..p + ds_len)?;
     p += pad(ds_len);
     let n: u64 = dataspace(ds).map_or(1, |d| d.iter().product());
+    Some((name, dt, n, b.get(p..)?))
+}
+
+fn attribute(b: &[u8]) -> Option<(String, Attr)> {
+    let (name, dt, n, data) = attr_parts(b)?;
     let (t, le, size) = datatype(dt)?;
-    let data = b.get(p..)?;
     if dt[0] & 0x0F == 3 {
         let s = data.get(..size * n as usize)?;
         return Some((name, Attr::Text(String::from_utf8_lossy(s).trim_end_matches('\0').trim().to_string())));
@@ -359,7 +366,7 @@ fn group(r: &Rd, addr: u64, path: &str, min_rank: usize, out: &mut Vec<Dataset>,
         }
     }
     if links.is_empty() && msgs.iter().any(|m| m.0 == 0x08) {
-        if let Some(d) = dataset(r, &msgs, path)?.filter(|d| d.shape.len() >= min_rank) {
+        if let Some(d) = dataset(r, &msgs, path, addr)?.filter(|d| d.shape.len() >= min_rank) {
             out.push(d);
         }
         return Ok(());
@@ -565,7 +572,7 @@ fn symbol_table(r: &Rd, bt: u64, heap: u64, links: &mut Vec<(String, u64)>) -> R
 
 /// The attributes of an object header: compact (attribute messages) and dense (attribute info message).
 fn attributes(r: &Rd, msgs: &[(u16, Vec<u8>)]) -> Result<HashMap<String, Attr>> {
-    let mut attrs: HashMap<String, Attr> = msgs.iter().filter(|m| m.0 == 0x0C).filter_map(|m| attribute(&m.1)).collect();
+    let mut raw: Vec<Vec<u8>> = msgs.iter().filter(|m| m.0 == 0x0C).map(|m| m.1.clone()).collect();
     if let Some(d) = msgs.iter().find(|m| m.0 == 0x15).map(|m| &m.1[..]) {
         let mut c = Cur { b: d, p: 1 };
         let flags = c.u(1)?;
@@ -574,13 +581,59 @@ fn attributes(r: &Rd, msgs: &[(u16, Vec<u8>)]) -> Result<HashMap<String, Attr>> 
         }
         let (heap, bt) = (c.u(r.so)?, c.u(r.so)?);
         if !undef(heap, r.so) {
-            attrs.extend(dense(r, heap, bt, 8)?.iter().filter_map(|m| attribute(m)));
+            raw.extend(dense(r, heap, bt, 8)?);
         }
+    }
+    let mut attrs: HashMap<String, Attr> = raw.iter().filter_map(|m| attribute(m)).collect();
+    if let Some(a) = raw.iter().find_map(|m| dim_list(r, m)) {
+        attrs.insert("DIMENSION_LIST".into(), a);
     }
     Ok(attrs)
 }
 
-fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset>> {
+/// The attribute `DIMENSION_LIST` of a dataset (HDF5 dimension scales, NetCDF-4): for each dimension, the
+/// object header address of its first dimension scale (NaN: none). The attribute is a variable-length
+/// sequence of object references for each dimension, in the global heap.
+// ponytail: the addresses are in an `Attr::Num` (exact below 2^53 bytes): no new attribute type for one use.
+fn dim_list(r: &Rd, b: &[u8]) -> Option<Attr> {
+    let (name, dt, n, data) = attr_parts(b)?;
+    if name != "DIMENSION_LIST" || dt.first()? & 0x0F != 9 {
+        return None;
+    }
+    let so = r.so;
+    let e = 4 + so + 4;
+    let mut out = vec![];
+    for i in 0..n as usize {
+        let mut c = Cur { b: data.get(i * e..(i + 1) * e)?, p: 0 };
+        let (len, heap, idx) = (c.u(4).ok()?, c.u(so).ok()?, c.u(4).ok()?);
+        out.push(if len == 0 { f64::NAN } else { heap_object(r, heap, idx).and_then(|o| Cur { b: &o, p: 0 }.u(so).ok()).map_or(f64::NAN, |a| a as f64) });
+    }
+    Some(Attr::Num(out))
+}
+
+/// Object `idx` of the global heap collection at `addr`.
+fn heap_object(r: &Rd, addr: u64, idx: u64) -> Option<bytes::Bytes> {
+    let head = r.bytes(addr, 8 + r.sl as u64).ok()?;
+    if &head[..4] != b"GCOL" {
+        return None;
+    }
+    let size = Cur { b: &head, p: 8 }.u(r.sl).ok()?;
+    let col = r.bytes(addr, size).ok()?;
+    let mut c = Cur { b: &col, p: 8 + r.sl };
+    while c.p + 8 + r.sl <= col.len() {
+        let (i, _refs, _res, n) = (c.u(2).ok()?, c.u(2).ok()?, c.u(4).ok()?, c.u(r.sl).ok()? as usize);
+        if i == 0 {
+            return None;
+        }
+        if i == idx {
+            return (c.p + n <= col.len()).then(|| col.slice(c.p..c.p + n));
+        }
+        c.skip(n.div_ceil(8) * 8);
+    }
+    None
+}
+
+fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str, addr: u64) -> Result<Option<Dataset>> {
     let get = |t: u16| msgs.iter().find(|m| m.0 == t).map(|m| &m.1[..]);
     let Some(shape) = get(0x01).and_then(dataspace) else { return Ok(None) };
     let Some((Some(dtype), le, size)) = get(0x03).and_then(datatype) else { return Ok(None) };
@@ -626,7 +679,7 @@ fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str) -> Result<Option<Dataset
         }
         _ => return Err(format!("HDF5 data layout {ver}/{class} is not supported").into()),
     }) })().map_err(lay_err)?;
-    Ok(Some(Dataset { path: path.to_string(), shape, dtype, le, chunk, chunks, codecs, attrs }))
+    Ok(Some(Dataset { path: path.to_string(), shape, dtype, le, chunk, chunks, codecs, attrs, addr }))
 }
 
 impl Attr {

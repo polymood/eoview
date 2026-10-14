@@ -41,11 +41,16 @@ fn find<'a>(p: &'a eo_core::Product, n: &str) -> &'a Variable {
     p.vars.iter().find(|v| v.name == n || v.name.ends_with(&format!("/{n}"))).unwrap_or_else(|| panic!("no variable {n}"))
 }
 
+/// Index of band `band` and of time step `time` in array `a`.
+fn at(a: &eo_core::Array, band: u64, time: u64) -> Vec<u64> {
+    a.dims.iter().map(|d| if d == "band" { band } else if d == "time" { time } else { 0 }).collect()
+}
+
 /// Stored value at pixel (x, y) of a file level and a time step, read through the chunk table and the codecs.
 fn read(ds: &Dataset, v: &Variable, level: usize, band: u64, time: u64, p: Part, x: u64, y: u64) -> f64 {
     let a = &v.levels[level];
     let (ch, cw) = (a.chunk[a.axis("y").unwrap()], a.chunk[a.axis("x").unwrap()]);
-    let c = a.chunks.at(chunk_at(a, band, time, y / ch, x / cw));
+    let c = a.chunks.at(chunk_at(a, &at(a, band, time), y / ch, x / cw));
     let s = &ds.sources[c.src as usize];
     let raw = s.read_chunk(c).unwrap();
     // A chunk that was not written: all values are the fill value.
@@ -53,7 +58,7 @@ fn read(ds: &Dataset, v: &Variable, level: usize, band: u64, time: u64, p: Part,
         return v.fill.unwrap_or(0.0);
     }
     let d = eo_io::codec::decode(a, &raw).unwrap();
-    let pa = PlaneAt::new(a, band, time);
+    let pa = PlaneAt::new(a, &at(a, band, time));
     value_f64(a, &d, pa.base + (y % ch) as usize * pa.sy + (x % cw) as usize * pa.sx, p)
 }
 
@@ -134,7 +139,7 @@ fn check_geo(dir: &Path, lines: &[Vec<String>]) -> usize {
         let (file, var) = f[1].split_once('#').unwrap();
         let l = layer(&e, &rx, &dir.join(file));
         let vi = l.ds.product.vars.iter().position(|v| v.name == var).unwrap_or_else(|| panic!("no variable {var}"));
-        e.select(&l, vi, 0, 0);
+        e.select(&l, vi, 0, 0, Default::default());
         let lv = loop {
             if let Event::Opened { res, .. } = rx.recv_timeout(Duration::from_secs(60)).unwrap() {
                 break res.unwrap();
@@ -230,7 +235,7 @@ fn engine_tiles_match_reference() {
         let (file, var) = f[1].split_once('#').unwrap();
         let l0 = layer(&e, &rx, &dir().join(file));
         let vi = l0.ds.product.vars.iter().position(|v| v.name == var).unwrap_or_else(|| panic!("no variable {var}"));
-        let req = e.select(&l0, vi, 0, f[2].parse().unwrap());
+        let req = e.select(&l0, vi, 0, f[2].parse().unwrap(), Default::default());
         let l = loop {
             if let Event::Opened { req: r, res } = rx.recv_timeout(Duration::from_secs(20)).unwrap()
                 && r == req
@@ -270,4 +275,46 @@ fn remote_tile_comes_back_from_disk() {
     println!("{src:?}: first session {ta:?}, second session {tb:?}, {files} cache files");
     assert!(a == b && files > 0);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Any two dimensions of an 8D variable are the image axes, and the other dimensions have an index
+/// (DESIGN section 16). The value of `stokes_vector` in `nc4_nd.nc` is its flat index (scripts/testdata_nd.py).
+#[test]
+fn any_two_dimensions_are_the_image() {
+    let (e, rx) = Engine::new(1 << 28, || {});
+    let first = layer(&e, &rx, &dir().join("nc4_nd.nc"));
+    let var = first.ds.product.vars.iter().position(|v| v.name.ends_with("MAP_6/stokes_vector")).unwrap();
+    let shape = [4u64, 3, 6, 20, 3, 3, 4, 3];
+    let at = [("dim_camera", 2), ("dim_view", 1), ("dim_oversampled_grid_ALT", 1), ("dim_oversampled_grid_ACT", 2), ("dim_wavelength", 3), ("dim_stokes_parameter", 1)];
+    let pick = eo_cache::Pick { axes: Some(["dim_ALT".into(), "dim_ACT".into()]), at: at.iter().map(|(n, i)| (n.to_string(), *i)).collect() };
+    e.select(&first, var, 0, 0, pick.clone());
+    let l = loop {
+        if let Event::Opened { res, .. } = rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+            break res.unwrap();
+        }
+    };
+    assert_eq!(l.size(), (20, 6));
+    assert_eq!(l.pick(), pick);
+    let flat = |alt: u64, act: u64| [2, 1, alt, act, 1, 2, 3, 1].iter().zip(&shape).fold(0, |i, (p, n)| i * n + p) as f64;
+    for (x, y) in [(1, 0), (7, 3), (19, 5)] {
+        e.probe(l.clone(), x, y);
+        let got = loop {
+            if let Event::Probe { values, .. } = rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+                break values;
+            }
+        };
+        assert_eq!(got, vec![Some(flat(y, x))], "pixel ({x}, {y})");
+    }
+    // The tile of the view: the first ACT column is fill (the margin of the product).
+    let k = TileKey { layer: l.id, lv: 0, tx: 0, ty: 0 };
+    let (w, px) = &tiles(&e, &rx, &l, &[k])[&k];
+    let Pixels::F16(v) = &**px else { panic!("f16 tile expected") };
+    for (x, y) in [(0usize, 2usize), (5, 4), (19, 1)] {
+        let t = (v[y * *w as usize + x].to_f32() / l.enc.k + l.enc.off) as f64;
+        if x == 0 {
+            assert!(t.is_nan(), "fill at ({x}, {y}): {t}");
+        } else {
+            assert!(close(t, flat(y as u64, x as u64), 2e-3), "pixel ({x}, {y}): {t}");
+        }
+    }
 }

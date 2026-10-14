@@ -972,6 +972,7 @@ impl App {
             self.palette_ui(&ctx);
         }
         self.url_ui(&ctx);
+        self.ask_ui(&ctx);
         self.help_ui(&ctx);
         self.prefs_ui(&ctx);
         self.info_ui(&ctx);
@@ -1988,6 +1989,21 @@ impl App {
             Some(Pick::Info) => cmds.push((Cmd::Info, id)),
             None => {}
         }
+        // The dimensions of the variable of the band: the image axes and the index of the others. The view
+        // shows the old plane until the new one is ready.
+        let mut pick_changed = false;
+        if let Some(a) = l.any().cloned()
+            && let Some(var) = l.chans.get(l.band).map(|c| c.var)
+            && a.ds.product.vars[var].dims.len() >= 2
+        {
+            egui::CollapsingHeader::new(t("Dimensions")).default_open(true).show(ui, |ui| {
+                let mut p = l.pick.clone();
+                if crate::dims::dims_ui(ui, &a.ds.product.vars[var], &mut p) {
+                    l.set_pick(p);
+                    pick_changed = true;
+                }
+            });
+        }
 
         ui.separator();
         let n = if l.kind == Kind::Rgb { 3 } else { 1 };
@@ -2047,6 +2063,9 @@ impl App {
         }
         if changed {
             self.compile(id, sel);
+        }
+        if pick_changed && !changed {
+            self.load_steps(id, sel);
         }
 
         if let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)).filter(|l| l.steps.len() > 1) {

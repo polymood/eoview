@@ -61,16 +61,30 @@ pub struct Level {
 }
 
 /// One displayable 2D plane of a variable: one band, or one part of a complex band.
+/// The image axes of a layer and the index of its other dimensions, by the names of the file
+/// (`Variable::dims`). The same pick fits all variables with these dimension names.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Pick {
+    /// The dimensions of the rows and of the columns. None: the axes that the reader proposes.
+    pub axes: Option<[String; 2]>,
+    /// Index of a dimension that is not an image axis, the band or time. A missing dimension: index 0.
+    pub at: Vec<(String, u64)>,
+}
+
 pub struct Layer {
     /// Same id for the same dataset, variable, choice and time step. Cache keys use it.
     pub id: u64,
     pub ds: Arc<Dataset>,
     pub ds_id: u64,
     pub var: usize,
+    /// The variable with the image axes of this layer (`Variable::with_axes`).
+    pub v: Arc<Variable>,
     pub choice: usize,
     pub band: u64,
     /// Step of the time dimension. 0 without a time dimension.
     pub time: u64,
+    /// Index of each dimension of the variable (the band and the time step too; 0 for "y" and "x").
+    pub at: Vec<u64>,
     pub part: Part,
     pub levels: Vec<Level>,
     pub enc: Enc,
@@ -85,7 +99,7 @@ pub struct Layer {
 
 impl Layer {
     pub fn var(&self) -> &Variable {
-        &self.ds.product.vars[self.var]
+        &self.v
     }
 
     pub fn size(&self) -> (u64, u64) {
@@ -134,22 +148,41 @@ impl Layer {
 
     /// Index in `Array::chunks` of chunk (cy, cx) for the band of this layer.
     fn chunk_at(&self, a: &Array, cy: u64, cx: u64) -> usize {
-        chunk_at(a, self.band, self.time, cy, cx)
+        chunk_at(a, &self.at, cy, cx)
+    }
+
+    /// The pick of this layer, by the names of the file. Empty for a format with fixed axes.
+    pub fn pick(&self) -> Pick {
+        let (v, a) = (&self.v, &self.v.levels[0]);
+        if v.dims.len() != a.dims.len() {
+            return Pick::default();
+        }
+        let axes = v.axes().map(|[r, c]| [v.dims[r].clone(), v.dims[c].clone()]);
+        let at = (0..a.dims.len()).filter(|&k| !["y", "x", "band", "time"].contains(&a.dims[k].as_str())).map(|k| (v.dims[k].clone(), self.at[k])).collect();
+        Pick { axes, at }
+    }
+
+    /// `at` with band `band`.
+    pub fn at_band(&self, band: u64) -> Vec<u64> {
+        let mut at = self.at.clone();
+        if let Some(k) = self.v.levels[0].axis("band") {
+            at[k] = band;
+        }
+        at
     }
 }
 
-/// Index in `Array::chunks` of chunk (cy, cx) that contains band `band` of time step `time`.
-pub fn chunk_at(a: &Array, band: u64, time: u64, cy: u64, cx: u64) -> usize {
+/// Index in `Array::chunks` of chunk (cy, cx) at index `at` of the other dimensions (see `PlaneAt::new`).
+pub fn chunk_at(a: &Array, at: &[u64], cy: u64, cx: u64) -> usize {
     let pos: Vec<u64> = a
         .dims
         .iter()
         .zip(&a.chunk)
-        .map(|(d, c)| match d.as_str() {
+        .enumerate()
+        .map(|(k, (d, c))| match d.as_str() {
             "y" => cy,
             "x" => cx,
-            "band" => band / c,
-            "time" => time / c,
-            _ => 0,
+            _ => at.get(k).copied().unwrap_or(0) / c,
         })
         .collect();
     a.chunk_index(&pos)
@@ -259,7 +292,10 @@ struct Inner {
     /// Geolocation grids read from arrays, by (dataset, variable).
     grids: Mutex<HashMap<(u64, usize), Georef>>,
     sched: Mutex<Sched>,
-    ids: Mutex<HashMap<(u64, usize, usize, u64), u64>>,
+    ids: Mutex<HashMap<(u64, usize, usize, Vec<u64>, Option<[usize; 2]>), u64>>,
+    /// Variables with the image axes of the user, by (dataset, variable, axes). None: the axes of the reader.
+    // ponytail: never emptied, as `grids`. Remove the entries of a dataset when the app closes it, if memory matters.
+    views: Mutex<HashMap<(u64, usize, Option<[usize; 2]>), Arc<Variable>>>,
     next: AtomicU64,
     max_running: usize,
     /// Tiles of computed layers that run at the same time: each one reads the tiles of many inputs.
@@ -362,6 +398,7 @@ impl Engine {
             grids: Default::default(),
             sched: Default::default(),
             ids: Default::default(),
+            views: Default::default(),
             next: AtomicU64::new(1),
             tx,
             wake: Box::new(wake),
@@ -386,20 +423,20 @@ impl Engine {
         self.rt.spawn_blocking(move || {
             let res = eo_io::open(&url, &i.rt).and_then(|ds| {
                 let ds_id = i.next.fetch_add(1, Relaxed);
-                i.layer(Arc::new(ds), ds_id, 0, 0, 0)
+                i.layer(Arc::new(ds), ds_id, 0, 0, 0, &Pick::default())
             });
             i.send(Event::Opened { req, res });
         });
         req
     }
 
-    /// Make a layer for another variable, choice or time step of the dataset of `l`. The result comes as
-    /// `Event::Opened`.
-    pub fn select(&self, l: &Layer, var: usize, choice: usize, time: u64) -> u64 {
+    /// Make a layer for another variable, choice, time step or pick (axes and indexes) of the dataset of `l`.
+    /// The result comes as `Event::Opened`.
+    pub fn select(&self, l: &Layer, var: usize, choice: usize, time: u64, pick: Pick) -> u64 {
         let (i, ds, ds_id) = (self.inner.clone(), l.ds.clone(), l.ds_id);
         let req = i.next.fetch_add(1, Relaxed);
         self.rt.spawn_blocking(move || {
-            let res = i.layer(ds, ds_id, var, choice, time);
+            let res = i.layer(ds, ds_id, var, choice, time, &pick);
             i.send(Event::Opened { req, res });
         });
         req
@@ -526,12 +563,12 @@ impl Inner {
         let mut cells: Vec<(u64, u64)> = js.iter().flat_map(|j| is.iter().map(move |i| (j / ch, i / cw))).collect();
         cells.sort_unstable();
         cells.dedup();
-        let locs: Vec<ChunkLoc> = cells.iter().map(|&(cy, cx)| a.chunks.at(chunk_at(a, 0, 0, cy, cx))).collect();
+        let locs: Vec<ChunkLoc> = cells.iter().map(|&(cy, cx)| a.chunks.at(chunk_at(a, &[], cy, cx))).collect();
         let raws = self.raw_ds(ds, ds_id, &locs).await?;
         let (a, v2, is, js) = (a.clone(), v.clone(), is.to_vec(), js.to_vec());
         self.on_pool(0, move || {
             let dec: Vec<Result<std::borrow::Cow<[u8]>>> = raws.par_iter().map(|r| if r.is_empty() { Ok(Default::default()) } else { readable(&a, r) }).collect();
-            let p = PlaneAt::new(&a, 0, 0);
+            let p = PlaneAt::new(&a, &[]);
             let mut out = Vec::with_capacity(is.len() * js.len());
             for &j in &js {
                 for &i in &is {
@@ -566,19 +603,57 @@ impl Inner {
         rx.await.expect("decode job stopped")
     }
 
-    fn layer(&self, ds: Arc<Dataset>, ds_id: u64, var: usize, choice: usize, time: u64) -> Result<Arc<Layer>> {
-        let v = ds.product.vars.get(var).filter(|v| time < v.steps()).ok_or("no such variable or time step")?;
-        let ((band, part), levels) = (Layer::choice(v, choice), display_levels(v));
-        let id = *self.ids.lock().unwrap().entry((ds_id, var, choice, time)).or_insert_with(|| self.next.fetch_add(1, Relaxed));
+    /// Variable `var` of `ds` with the image axes of `pick`.
+    fn view(&self, ds: &Dataset, ds_id: u64, var: usize, pick: &Pick) -> Result<Arc<Variable>> {
+        let v0 = ds.product.vars.get(var).ok_or("no such variable")?;
+        // A pick for other dimension names (an other variable of the layer): the axes of the reader.
+        let pos = |n: &String| v0.dims.iter().position(|d| d == n);
+        let axes = pick.axes.as_ref().and_then(|[r, c]| Some([pos(r)?, pos(c)?])).filter(|a| Some(*a) != v0.axes());
+        let mut views = self.views.lock().unwrap();
+        if let Some(v) = views.get(&(ds_id, var, axes)) {
+            return Ok(v.clone());
+        }
+        let v = match axes {
+            Some([r, c]) => {
+                let mut v = v0.with_axes(r, c).ok_or_else(|| Error(format!("{}: the image axes must be two different dimensions", v0.name)))?;
+                // ponytail: the georeferencing of the reader is for its axes. Other axes show in pixel space;
+                // keep a transposed georeferencing if users swap the rows and the columns of maps.
+                v.georef = Georef::None;
+                v
+            }
+            None => v0.clone(),
+        };
+        Ok(views.entry((ds_id, var, axes)).or_insert(Arc::new(v)).clone())
+    }
+
+    fn layer(&self, ds: Arc<Dataset>, ds_id: u64, var: usize, choice: usize, time: u64, pick: &Pick) -> Result<Arc<Layer>> {
+        let v = self.view(&ds, ds_id, var, pick)?;
+        if time >= v.steps() {
+            return Err("no such time step".into());
+        }
+        let ((band, part), levels) = (Layer::choice(&v, choice), display_levels(&v));
+        let a = &v.levels[0];
+        let at: Vec<u64> = (0..a.dims.len())
+            .map(|k| match a.dims[k].as_str() {
+                "y" | "x" => 0,
+                "band" => band,
+                "time" => time,
+                _ => v.dims.get(k).and_then(|n| pick.at.iter().find(|p| p.0 == *n)).map_or(0, |p| p.1.min(a.shape[k] - 1)),
+            })
+            .collect();
+        let key = (ds_id, var, choice, at.clone(), v.axes());
+        let id = *self.ids.lock().unwrap().entry(key).or_insert_with(|| self.next.fetch_add(1, Relaxed));
         let mut l = Layer {
             id,
             levels,
             ds,
             ds_id,
             var,
+            v,
             choice,
             band,
             time,
+            at,
             part,
             enc: Enc { u8: false, k: 1.0, off: 0.0 },
             sample: vec![],
@@ -612,9 +687,9 @@ impl Inner {
         let pick: Vec<(u64, u64)> = (0..n.min(16)).map(|i| i * n / n.min(16)).map(|i| (i as u64 / gx, i as u64 % gx)).collect();
         let locs: Vec<ChunkLoc> = pick.iter().map(|&(cy, cx)| a.chunks.at(l.chunk_at(a, cy, cx))).collect();
         let raws = self.raw_many(l, &locs).await?;
-        let (a, fill, part, band, time) = (a.clone(), v.fill, l.part, l.band, l.time);
+        let (a, fill, part, at) = (a.clone(), v.fill, l.part, l.at.clone());
         self.on_pool(0, move || {
-            let p = PlaneAt::new(&a, band, time);
+            let p = PlaneAt::new(&a, &at);
             let per = 65_536 / pick.len().max(1);
             let parts: Vec<Result<Vec<f32>>> = pick
                 .par_iter()
@@ -793,7 +868,7 @@ impl Inner {
                 let _c = Charge::new(&self.work, a.chunk_bytes() * raws.len());
                 self.on_pool(prio, move || {
                     let a = &l2.var().levels[lvl];
-                    let p = PlaneAt::new(a, l2.band, l2.time);
+                    let p = PlaneAt::new(a, &l2.at);
                     let fill = l2.var().fill;
                     raws.par_iter()
                         .map(|raw| {
@@ -889,7 +964,7 @@ impl Inner {
                     let t = self
                         .on_pool(prio, move || {
                             let a = &l2.var().levels[lvl];
-                            let p = PlaneAt::new(a, l2.band, l2.time);
+                            let p = PlaneAt::new(a, &l2.at);
                             let mut t = Pixels::empty(&l2.enc, l2.var().fill, (w * h) as usize);
                             for (&(cy, cx), raw) in cells.iter().zip(&raws) {
                                 let (ry0, ry1) = ((cy * ch).max(y0), ((cy + 1) * ch).min(y0 + h));
@@ -1053,7 +1128,8 @@ impl Inner {
         let (ch, cw) = chunk_size(a);
         let mut out = vec![];
         for band in 0..a.len_of("band") {
-            let idx = chunk_at(a, band, l.time, y / ch, x / cw);
+            let at = l.at_band(band);
+            let idx = chunk_at(a, &at, y / ch, x / cw);
             let key = (l.ds_id, l.var, idx);
             let cached = self.probe.lock().unwrap().get(&key).cloned();
             let d = match cached {
@@ -1074,7 +1150,7 @@ impl Inner {
                     }
                 }
             };
-            let p = PlaneAt::new(a, band, l.time);
+            let p = PlaneAt::new(a, &at);
             let i = p.base + (y % ch) as usize * p.sy + (x % cw) as usize * p.sx;
             if (i + 1) * a.dtype.size() > d.len() {
                 return Err("chunk data is shorter than the chunk".into());
@@ -1117,7 +1193,7 @@ struct Partial {
 }
 
 fn partial(l: &Layer, a: &Array, raw: &[u8], u: &Unit, r: &Region) -> Result<Option<Partial>> {
-    let p = PlaneAt::new(a, l.band, l.time);
+    let p = PlaneAt::new(a, &l.at);
     let (ch, cw) = (p.ch as u64, p.cw as u64);
     let (oy, ox) = (u.cy * ch, u.cx * cw);
     let (ry0, ry1, rx0, rx1) = (u.r0, u.r1, ox.max(r.bx0), (ox + cw).min(r.bx1));
@@ -1189,6 +1265,7 @@ mod tests {
         };
         Variable {
             times: Default::default(),
+            dims: vec![],
             name: "t".into(),
             group: String::new(),
             levels: std::iter::once(arr(w, h)).chain(levels.iter().map(|&(w, h)| arr(w, h))).collect(),
