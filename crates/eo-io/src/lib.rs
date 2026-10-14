@@ -2,6 +2,7 @@
 //! The chunk engine in `eo-cache` reads and decodes them.
 mod blosc;
 pub mod dap;
+pub mod hdf4;
 pub mod hdf5;
 pub mod netcdf;
 pub mod nitf;
@@ -84,6 +85,8 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         }
         let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len());
         Product { name, desc, vars, small, valid: None, info }
+    } else if head.starts_with(&hdf4::MAGIC) {
+        hdf4::open(&src, 0, name)?
     } else {
         return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-4, HDF5, Zarr or SAFE expected)").into());
     };
