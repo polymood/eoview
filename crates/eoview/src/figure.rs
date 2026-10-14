@@ -45,14 +45,20 @@ pub enum FigKind {
     Profile,
     /// A 1D variable of the product (`FigSet::small`).
     Line,
+    /// The mean of each row (`FigSet::mean_rows`) or of each column of the plane: a zonal mean.
+    Mean,
+    /// The density of the pairs of values of the two top layers of the view.
+    Scatter,
 }
 
 impl FigKind {
-    pub const ALL: [(FigKind, &str); 6] = [
+    pub const ALL: [(FigKind, &str); 8] = [
         (FigKind::Map, "Map"),
         (FigKind::Plane, "Plot"),
         (FigKind::Profile, "Profile"),
         (FigKind::Line, "1D variable"),
+        (FigKind::Mean, "Mean"),
+        (FigKind::Scatter, "Scatter"),
         (FigKind::Transect, "Transect"),
         (FigKind::Histogram, "Histogram"),
     ];
@@ -85,6 +91,8 @@ pub struct FigSet {
     pub yrev: bool,
     /// The 1D variable of a line plot (its name in the product).
     pub small: String,
+    /// Mean plot: the mean of each row (true: a zonal mean when the rows are latitudes), else of each column.
+    pub mean_rows: bool,
 }
 
 impl Default for FigSet {
@@ -106,6 +114,7 @@ impl Default for FigSet {
             ylog: false,
             yrev: false,
             small: String::new(),
+            mean_rows: true,
         }
     }
 }
@@ -245,10 +254,12 @@ pub struct FigState {
     tex: Vec<(usize, Arc<Img>, egui::TextureHandle)>,
     /// The result of the last export.
     pub msg: Option<String>,
-    /// Plot of a plane: its values, the request in progress (request, key, width, height), its image.
-    pub plane: Option<crate::plot::PlaneData>,
-    pub plane_req: Option<(u64, (u64, usize), usize, usize)>,
+    /// Plots: the planes that are here (the last ones), the requests in progress (request, key, width,
+    /// height), the image of the last plot, the profiles that the user keeps (name, points).
+    pub planes: Vec<crate::plot::PlaneData>,
+    pub plane_reqs: Vec<(u64, (u64, usize), usize, usize)>,
     pub plane_img: Option<(String, Arc<Img>)>,
+    pub kept: Vec<(String, Vec<[f64; 2]>)>,
 }
 
 /// The drawing of the image of a map: a hidden copy of the view.
@@ -388,6 +399,14 @@ impl App {
         let note = match set.kind {
             FigKind::Map => self.map_figure(&ctx, id, set, &mut fig, [pad, top, w - pad, bottom]),
             FigKind::Plane => self.plane_figure(&ctx, id, set, &mut fig, [pad, top, w - pad, bottom]),
+            FigKind::Scatter => self.scatter_figure(&ctx, id, set, &mut fig, [pad, top, w - pad, bottom]),
+            FigKind::Mean => match self.mean_chart(id, set) {
+                Ok(c) => {
+                    chart_figure(&ctx, &c, f, &mut fig, [pad, top, w - pad, bottom]);
+                    None
+                }
+                Err(e) => Some(e),
+            },
             kind => match self.chart_in(id, kind) {
                 Ok(c) => {
                     chart_figure(&ctx, &c, f, &mut fig, [pad, top, w - pad, bottom]);
@@ -667,7 +686,7 @@ fn clip_line(pts: &[[f32; 2]], r: [f32; 4]) -> Vec<Vec<[f32; 2]>> {
 const LINE_COLORS: [[u8; 3]; 6] = [[0, 114, 178], [213, 94, 0], [0, 158, 115], [204, 121, 167], [230, 159, 0], [86, 180, 233]];
 
 /// A chart (lines or bars) with its axes in the area `a` of the page.
-fn chart_figure(ctx: &egui::Context, c: &ChartIn, f: f32, fig: &mut Fig, a: [f32; 4]) {
+pub fn chart_figure(ctx: &egui::Context, c: &ChartIn, f: f32, fig: &mut Fig, a: [f32; 4]) {
     let fm = f * PT;
     let pts = || c.lines.iter().flat_map(|l| l.1.iter().copied()).chain(c.bars.iter().flat_map(|b| [[b[0], 0.0], [b[1], b[2]]]));
     let fin = |v: f64| v.is_finite();
@@ -963,6 +982,8 @@ impl App {
             "pdf" => std::fs::write(path, pdf(&fig, &self.pdf_widths())).map_err(|e| format!("{path}: {e}"))?,
             "png" => self.figure_png(&fig, set.dpi, path)?,
             "csv" if set.kind == FigKind::Plane => std::fs::write(path, self.plane_csv(id)?).map_err(|e| format!("{path}: {e}"))?,
+            "csv" if set.kind == FigKind::Scatter => std::fs::write(path, self.scatter_csv(id)?).map_err(|e| format!("{path}: {e}"))?,
+            "csv" if set.kind == FigKind::Mean => std::fs::write(path, chart_csv(&self.mean_chart(id, &set)?)).map_err(|e| format!("{path}: {e}"))?,
             "csv" => {
                 let c = self.chart_in(id, set.kind)?;
                 std::fs::write(path, chart_csv(&c)).map_err(|e| format!("{path}: {e}"))?;
@@ -1111,6 +1132,25 @@ impl App {
                 if set.kind == FigKind::Profile {
                     ui.separator();
                     ui.small(t("Select a dimension in the layer panel (Profile along), then move the cursor over the view."));
+                    ui.horizontal(|ui| {
+                        if ui.button(t("Keep")).on_hover_text(t("Keep this profile in the chart: compare pixels, layers or indexes")).clicked()
+                            && let Ok(c) = self.profile_chart_now(id)
+                        {
+                            self.fig.kept.extend(c.lines);
+                        }
+                        if ui.add_enabled(!self.fig.kept.is_empty(), egui::Button::new(t("Clear"))).clicked() {
+                            self.fig.kept.clear();
+                        }
+                    });
+                }
+                if set.kind == FigKind::Mean {
+                    ui.separator();
+                    ui.radio_value(&mut set.mean_rows, true, t("Mean of each row (a zonal mean if the rows are latitudes)"));
+                    ui.radio_value(&mut set.mean_rows, false, t("Mean of each column"));
+                }
+                if set.kind == FigKind::Scatter {
+                    ui.separator();
+                    ui.small(t("The two top layers of the view, on the same grid: the layer below on the x axis, the top layer on the y axis."));
                 }
                 if set.kind == FigKind::Line {
                     ui.separator();

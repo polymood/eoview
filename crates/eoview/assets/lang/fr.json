@@ -598,5 +598,16 @@
  "The values load...": "Chargement des valeurs...",
  "index": "indice",
  "1D variable": "Variable 1D",
- "Profile": "Profil"
+ "Profile": "Profil",
+ "A scatter plot needs two layers in the view.": "Un nuage de points demande deux couches dans la vue.",
+ "Clear": "Effacer",
+ "Keep": "Garder",
+ "Keep this profile in the chart: compare pixels, layers or indexes": "Garder ce profil dans le graphique : comparer des pixels, des couches ou des indices",
+ "Mean along": "Moyenne selon",
+ "Mean of each column": "Moyenne de chaque colonne",
+ "Mean of each row (a zonal mean if the rows are latitudes)": "Moyenne de chaque ligne (une moyenne zonale si les lignes sont des latitudes)",
+ "The two layers must be on the same grid.": "Les deux couches doivent être sur la même grille.",
+ "The two top layers of the view, on the same grid: the layer below on the x axis, the top layer on the y axis.": "Les deux couches du dessus de la vue, sur la même grille : la couche du dessous sur l'axe x, la couche du dessus sur l'axe y.",
+ "bias": "biais",
+ "Scatter": "Nuage de points"
 }

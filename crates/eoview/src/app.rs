@@ -1534,7 +1534,7 @@ impl App {
                     self.profile.values = Some(res.map_err(|e| e.0));
                 }
                 Event::Profile { .. } => {}
-                Event::Read { req, res } if self.fig.plane_req.as_ref().is_some_and(|r| r.0 == req) => self.plane_read(res),
+                Event::Read { req, res } if self.fig.plane_reqs.iter().any(|r| r.0 == req) => self.plane_read(req, res),
                 Event::Read { req, res } if self.values.req.is_some_and(|r| r.0 == req) => self.values_read(res),
                 Event::Read { req, res } => self.py_read(req, res),
                 Event::Export { req, done, total, res } => {

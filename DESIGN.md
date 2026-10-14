@@ -542,10 +542,10 @@ with axes, units and a legend.
 | Plot (the plane) | The plane of the layer on its two dimensions. The axes show the coordinates: dates for time, the coordinate variable (irregular values, for example pressure levels), the regular grid, or the index. Options: a logarithmic y axis, a reversed y axis, the color bar | Done |
 | Profile | The profile along a dimension at the cursor ("Profile along" of the layer panel) | Done |
 | 1D variable | A 1D variable of the product against its coordinate | Done |
-| Several lines | Profiles of several pixels, of several layers, or two variables in one chart, with a legend | To do |
-| Zonal and meridional mean | The mean along one image axis as a line (Panoply: zonal average) | To do |
+| Several lines | "Keep" adds the profile at the cursor to the chart: pixels, layers or indexes in one chart, with a legend | Done |
+| Zonal and meridional mean | The mean of each row or of each column of the plane, against its coordinate (Panoply: zonal average) | Done |
 | Time series of a point or a region | The values of each time step at a pinned point, or the mean of a region | To do |
-| Scatter | The density of the pairs of values of two layers on the same grid | To do |
+| Scatter | The density of the pairs of values of the two top layers of the view (on the same grid), the line y = x, the number of pairs, the correlation, the bias and the RMSD | Done |
 | Panels | Some plots and maps on one page (a, b, c) | To do |
 
 Examples: time by latitude (a Hovmoller diagram), pressure by latitude (a vertical section, logarithmic and

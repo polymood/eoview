@@ -171,8 +171,9 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 14a. **Native plots (2026-10-14).** DESIGN section 17. Done: the plot of a plane with the axes of its
     coordinates (Hovmoller diagram, vertical section with a logarithmic and reversed pressure axis,
     spectrogram), the profile at the cursor, the line plot of a 1D variable, in the Figure tab with all
-    its exports. To do: several lines in one chart, the zonal and meridional mean, the time series of a
-    point or of a region, the scatter of two layers, figures with several panels.
+    its exports, several profiles in one chart (Keep), the zonal and the meridional mean, the scatter of
+    two layers with its statistics. To do: the time series of a pinned point or of a region (now: a profile
+    along time at the cursor), the time series of a list of products, figures with several panels.
 14. **A DEM in 3D on the globe (2026-10-09).** Camera tilt and heading, depth buffer, terrain mesh from a
     DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
 15. **Panoply parity, other items.** DESIGN section 16.7 has the full list, with a decision for each
