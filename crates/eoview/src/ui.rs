@@ -926,7 +926,8 @@ pub fn cmaps_of(all: &[crate::colormaps::Cmap], g: &str) -> Vec<usize> {
 /// A row of a menu of color maps: the gradient of the map, then its name. `on`: the map of the layer.
 fn cmap_row(ui: &mut egui::Ui, c: &crate::colormaps::Cmap, on: bool, invert: bool) -> egui::Response {
     let name_w = ui.painter().layout_no_wrap(c.name.clone(), FontId::proportional(13.0), Color32::WHITE).size().x;
-    let w = ui.available_width().max(130.0 + name_w + 16.0);
+    // A fixed width: a row with the available width makes a menu grow to its largest size.
+    let w = (134.0 + name_w + 12.0).max(280.0);
     let (r, resp) = ui.allocate_exact_size(vec2(w, 20.0), Sense::click());
     if resp.hovered() || on {
         ui.painter().rect_filled(r, 1.0, if on { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill });
@@ -953,7 +954,7 @@ fn cmap_picker(ui: &mut egui::Ui, cur: usize, invert: bool) -> Option<usize> {
     icons::draw(ui.painter(), Icon::Down, Rect::from_center_size(egui::pos2(rect.right() - 11.0, rect.center().y), vec2(9.0, 9.0)), vis.text_color());
     let resp = resp.on_hover_text(t("Color map: all the maps, with a search field"));
     egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(340.0);
+        ui.set_min_width(280.0);
         let qid = egui::Id::new("cmap search");
         let mut q: String = ui.data_mut(|d| d.get_temp(qid).unwrap_or_default());
         ui.add(egui::TextEdit::singleline(&mut q).hint_text(t("Search the color maps")).desired_width(f32::INFINITY)).request_focus();
