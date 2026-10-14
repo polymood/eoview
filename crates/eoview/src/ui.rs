@@ -957,7 +957,7 @@ fn cmap_picker(ui: &mut egui::Ui, cur: usize, invert: bool) -> Option<usize> {
         ui.set_min_width(280.0);
         let qid = egui::Id::new("cmap search");
         let mut q: String = ui.data_mut(|d| d.get_temp(qid).unwrap_or_default());
-        ui.add(egui::TextEdit::singleline(&mut q).hint_text(t("Search the color maps")).desired_width(f32::INFINITY)).request_focus();
+        ui.add(egui::TextEdit::singleline(&mut q).hint_text(t("Search the color maps")).desired_width(280.0)).request_focus();
         ui.data_mut(|d| d.insert_temp(qid, q.clone()));
         let ql = q.to_lowercase();
         egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
