@@ -40,6 +40,10 @@ pub enum Cmd {
     NewView,
     Duplicate,
     CloseView,
+    /// Remove the selected layer of the view.
+    CloseLayer,
+    /// Close all the views and their layers: one empty view stays.
+    CloseAll,
     Layout(usize),
     Fit,
     OneToOne,
@@ -176,6 +180,8 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("New view"), "Ctrl+N", Cmd::NewView),
         (t("Duplicate view"), "Ctrl+D", Cmd::Duplicate),
         (t("Close view"), "Ctrl+W", Cmd::CloseView),
+        (t("Close layer"), "", Cmd::CloseLayer),
+        (t("Close all"), "Ctrl+Shift+W", Cmd::CloseAll),
         (t("Detach view to a window, or attach it"), "Ctrl+Shift+D", Cmd::Detach),
         (t("Full screen: on or off"), "F11", Cmd::Fullscreen),
         (t("Layout: 1 view"), "Alt+1", Cmd::Layout(1)),
@@ -1203,6 +1209,7 @@ impl App {
             (sh, Key::D, Cmd::Detach),
             (none, Key::F11, Cmd::Fullscreen),
             (cmd, Key::D, Cmd::Duplicate),
+            (sh, Key::W, Cmd::CloseAll),
             (cmd, Key::W, Cmd::CloseView),
             (alt, Key::Num1, Cmd::Layout(1)),
             (alt, Key::Num2, Cmd::Layout(2)),
@@ -1268,6 +1275,14 @@ impl App {
             Cmd::NewView => drop(self.split(id)),
             Cmd::Duplicate => self.duplicate(id),
             Cmd::CloseView => self.close(id),
+            Cmd::CloseLayer => {
+                if let Some(p) = self.pane_mut(id).filter(|p| !p.layers.is_empty()) {
+                    p.layers.remove(p.sel);
+                    p.sel = p.sel.min(p.layers.len().saturating_sub(1));
+                    self.rebuild(id);
+                }
+            }
+            Cmd::CloseAll => self.close_all(),
             Cmd::Detach => self.detach(id),
             Cmd::Prefs => self.prefs_open = if self.prefs_open.is_some() { None } else { Some(Default::default()) },
             Cmd::Render => self.render_open ^= true,
@@ -1579,6 +1594,10 @@ impl App {
                 entry(ui, cmds, id, t("Save workspace..."), "Ctrl+S", Cmd::Save);
                 entry(ui, cmds, id, t("Render video or frames..."), "Ctrl+R", Cmd::Render);
                 entry(ui, cmds, id, t("Open workspace..."), "", Cmd::Load);
+                ui.separator();
+                ui.add_enabled_ui(has_layer, |ui| entry(ui, cmds, id, t("Close layer"), "", Cmd::CloseLayer));
+                entry(ui, cmds, id, t("Close view"), "Ctrl+W", Cmd::CloseView);
+                entry(ui, cmds, id, t("Close all"), "Ctrl+Shift+W", Cmd::CloseAll);
                 ui.separator();
                 entry(ui, cmds, id, t("Quit"), "Ctrl+Q", Cmd::Quit);
             });

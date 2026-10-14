@@ -225,9 +225,19 @@ pub fn num(x: f64) -> String {
     if x.is_nan() {
         return "-".into();
     }
-    let s = format!("{x:.6}");
-    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    let d = (5 - x.abs().max(1e-300).log10().floor() as i32).clamp(0, 12) as usize;
+    let s = format!("{x:.d$}");
+    let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
     if s.len() > 12 { format!("{x:.5e}") } else { s }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn short_numbers() {
+        let n = super::num;
+        assert_eq!([n(676.063843), n(1000.0), n(0.000123456789), n(400.0), n(-2.5), n(f64::NAN)], ["676.064", "1000", "0.000123457", "400", "-2.5", "-"]);
+    }
 }
 
 /// The coordinate variable of dimension `dim`: a 1D small variable with this dimension and this name, in

@@ -913,6 +913,19 @@ impl App {
         self.closed(id);
     }
 
+    /// Close all the views (also the detached views) and their layers. One empty view stays. A render
+    /// in progress stops.
+    pub fn close_all(&mut self) {
+        self.cancel_render();
+        let ids: Vec<u32> = self.panes.iter().map(|p| p.id).collect();
+        for id in ids {
+            self.close(id);
+        }
+        self.asking = None;
+        self.values.small = None;
+        self.profile = Default::default();
+    }
+
     /// Move view `id` from the dock to its own window, or from its window back to the dock. The window
     /// opens or closes after the frame (`reconcile`).
     pub fn detach(&mut self, id: u32) {
@@ -2501,6 +2514,21 @@ mod workspace_tests {
         // Flat index of [camera, 0, 0, 1, 0, 0, 3, 2] in [4, 1, 6, 20, 3, 3, 5, 3], mean over the cameras.
         let flat = |c: f64| ((((c * 6.0 * 20.0 + 1.0) * 3.0 * 3.0) * 5.0 + 3.0) * 3.0) + 2.0;
         assert!((got - flat(1.5)).abs() < 1e-3 * flat(1.5), "{got} {}", flat(1.5));
+    }
+
+    /// Close all: no layer and one empty view stay.
+    #[test]
+    fn close_all_views() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, format!("{dir}nc4_grid.nc"), false);
+        wait(&mut app, |a| a.panes[0].layers.first().is_some_and(|l| !l.inputs.is_empty()));
+        app.duplicate(1);
+        app.run(crate::ui::Cmd::CloseLayer, app.active);
+        assert_eq!(app.panes.iter().map(|p| p.layers.len()).sum::<usize>(), 1);
+        app.run(crate::ui::Cmd::CloseAll, app.active);
+        assert_eq!((app.panes.len(), app.panes[0].layers.len(), app.view_tabs().len()), (1, 0, 1));
     }
 
     /// Same display for all layers: the stretch of the selected layer goes to the other layers.

@@ -575,5 +575,7 @@
  "Frames along": "Images selon",
  "time": "temps",
  "the plane of the new index": "le plan du nouvel indice",
- "the layer has no dimension {}": "la couche n'a pas de dimension {}"
+ "the layer has no dimension {}": "la couche n'a pas de dimension {}",
+ "Close layer": "Fermer la couche",
+ "Close all": "Tout fermer"
 }

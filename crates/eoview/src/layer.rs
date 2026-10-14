@@ -41,8 +41,11 @@ pub const WIND_CMAP: usize = 1;
 pub fn wind_pair(names: &[String]) -> Option<[String; 2]> {
     const PAIRS: &[(&str, &str)] = &[
         ("u10", "v10"),
+        // GRIB short names of ECMWF (10u, 10v): a name in expressions does not start with a digit.
+        ("b10u", "b10v"),
         ("b10m_u_component_of_wind", "b10m_v_component_of_wind"),
         ("u100", "v100"),
+        ("b100u", "b100v"),
         ("b100m_u_component_of_wind", "b100m_v_component_of_wind"),
         ("u_component_of_wind", "v_component_of_wind"),
         ("eastward_wind", "northward_wind"),
