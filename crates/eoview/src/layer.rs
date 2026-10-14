@@ -796,7 +796,10 @@ impl MapLayer {
 
     /// Short name for lists and titles: what the layer shows, then the product name, at most `n` characters.
     pub fn label(&self, n: usize) -> String {
-        let s = format!("{} - {}", self.comp_name(), self.name);
+        // A file with one band: the band has the name of the file, the name of the file is sufficient.
+        let stem = std::path::Path::new(&self.name).file_stem().map_or(String::new(), |x| ident(&x.to_string_lossy()));
+        let comp = self.comp_name();
+        let s = if comp == ident(&self.name) || comp == stem { self.name.clone() } else { format!("{comp} - {}", self.name) };
         if s.chars().count() <= n { s } else { format!("{}...", s.chars().take(n.saturating_sub(3)).collect::<String>()) }
     }
 

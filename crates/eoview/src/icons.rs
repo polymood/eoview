@@ -34,6 +34,10 @@ pub enum Icon {
     Info,
     /// Tools of a view.
     PixelGrid,
+    /// Points mode: a dot at the center of each pixel.
+    Points,
+    /// The color bar of a view.
+    ColorBar,
     Graticule,
     Ruler,
     Transect,
@@ -206,6 +210,26 @@ pub fn draw(p: &Painter, icon: Icon, r: Rect, c: Color32) {
                 line(pos2(l, t + f), pos2(rt, t + f));
             }
             p.rect_filled(Rect::from_min_size(pos2(l + w / 3.0, t + w / 3.0), vec2(w / 3.0, w / 3.0)), 0.0, c);
+        }
+        Icon::Points => {
+            // A dot at the center of each cell of a grid of 3 x 3.
+            for j in 0..3 {
+                for i in 0..3 {
+                    p.circle_filled(pos2(l + (i as f32 + 0.5) / 3.0 * w, t + (j as f32 + 0.5) / 3.0 * w), 0.09 * w, c);
+                }
+            }
+        }
+        Icon::ColorBar => {
+            // A bar from dark to bright, with three ticks under it.
+            let n = 6;
+            for k in 0..n {
+                let a = (60 + 195 * k / (n - 1)) as u8;
+                let cell = Rect::from_min_size(pos2(l + k as f32 / n as f32 * w, t + 0.25 * w), vec2(w / n as f32 + 0.5, 0.35 * w));
+                p.rect_filled(cell, 0.0, Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a));
+            }
+            for k in [0.0, 0.5, 1.0] {
+                line(pos2(l + k * w, t + 0.6 * w), pos2(l + k * w, t + 0.78 * w));
+            }
         }
         Icon::Graticule => {
             // Curved meridians and straight parallels.

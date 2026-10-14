@@ -486,10 +486,33 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         if app.opening(id) {
             ui.painter().text(c, Align2::CENTER_CENTER, t("Opening..."), FontId::proportional(18.0), ui.visuals().weak_text_color());
         } else {
-            ui.painter().text(c - vec2(0.0, 24.0), Align2::CENTER_CENTER, t("Drop files here"), FontId::proportional(18.0), ui.visuals().weak_text_color());
-            let b = ui.put(Rect::from_center_size(c + vec2(0.0, 12.0), vec2(120.0, 26.0)), egui::Button::new(t("Open...  Ctrl+O")));
-            if b.clicked() {
+            // An empty view: the actions that fill it, with the recent products one click away.
+            let recent: Vec<String> = app.recent.iter().take(6).cloned().collect();
+            let h = 26.0 * (2 + recent.len()) as f32 + if recent.is_empty() { 0.0 } else { 22.0 };
+            let top = c.y - h / 2.0 - 12.0;
+            ui.painter().text(egui::pos2(c.x, top), Align2::CENTER_CENTER, t("Drop files or folders here"), FontId::proportional(18.0), ui.visuals().weak_text_color());
+            let mut y = top + 30.0;
+            let row = |ui: &mut egui::Ui, y: &mut f32, text: &str, tip: &str| {
+                let r = ui.put(Rect::from_center_size(egui::pos2(c.x, *y), vec2(260.0, 24.0)), egui::Button::new(text).truncate()).on_hover_text(tip);
+                *y += 28.0;
+                r.clicked()
+            };
+            if row(ui, &mut y, t("Open files...  Ctrl+O"), t("Files of all formats, or a product list")) {
                 cmds.push((Cmd::Open(false, What::Files), id));
+            }
+            if row(ui, &mut y, t("Open workspace..."), t("A project file (.eoview): the views, the layers and their settings")) {
+                cmds.push((Cmd::Load, id));
+            }
+            if !recent.is_empty() {
+                y += 6.0;
+                ui.painter().text(egui::pos2(c.x, y), Align2::CENTER_CENTER, t("Recent"), FontId::proportional(13.0), ui.visuals().weak_text_color());
+                y += 22.0;
+                for r in recent {
+                    let name = r.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(&r).to_string();
+                    if row(ui, &mut y, &name, &r) {
+                        cmds.push((Cmd::Open(false, What::Path(r.clone())), id));
+                    }
+                }
             }
         }
     }
@@ -1725,8 +1748,12 @@ impl App {
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let on = self.animate;
-                if ui.selectable_label(on, t("Animate")).on_hover_text(t("The animate workspace: make the scene of an animation, with a preview, and render it (F6)")).clicked() != ui.selectable_label(!on, t("View")).on_hover_text(t("The view workspace")).clicked() {
+                if ui.selectable_label(on, t("Animate")).on_hover_text(t("The animate workspace: make the scene of an animation, with a preview, and render it (F6)")).clicked() != ui.selectable_label(!on, t("Explore")).on_hover_text(t("The views, the layers and the tools")).clicked() {
                     cmds.push((Cmd::Animate, id));
+                }
+                ui.separator();
+                if ui.selectable_label(self.figure_open, t("Figure")).on_hover_text(t("Maps and plots for a publication: PDF, SVG, PNG, CSV (F8)")).clicked() {
+                    cmds.push((Cmd::Figure, id));
                 }
             });
         });
@@ -1744,13 +1771,15 @@ impl App {
         self.help = open;
     }
 
+    /// The toolbar: groups for the files, the navigation, the views, the tools of a view, the overlays and the
+    /// compare mode. The groups with more choices are menus: the bar fits a window of 1280 pixels.
     fn toolbar(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
         ui.horizontal(|ui| {
             // Split buttons: the button opens files of all formats, the arrow has the product types.
             for (add, icon, name, tip) in [
                 (false, Icon::Open, t("Open"), t("Open files in the active view (Ctrl+O). Drop files or directories on a view to open them there")),
-                (true, Icon::AddLayer, t("Layer"), t("Add files as layers of the active view (Ctrl+Shift+O, or Shift + drop)")),
+                (true, Icon::AddLayer, t("Add layer"), t("Add files as layers of the active view (Ctrl+Shift+O, or Shift + drop)")),
             ] {
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.x = 1.0;
@@ -1761,58 +1790,75 @@ impl App {
                     egui::Popup::menu(&arrow).show(|ui| open_menu(ui, add, id, &self.recent, cmds));
                 });
             }
-            let mut b = |ui: &mut egui::Ui, icon: Icon, text: &str, tip: &str, c: Cmd| {
-                if icons::button(ui, icon, text, false).on_hover_text(tip).clicked() {
+            fn b(ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>, id: u32, icon: Icon, text: &str, tip: &str, on: bool, c: Cmd) {
+                if icons::button(ui, icon, text, on).on_hover_text(tip).clicked() {
                     cmds.push((c, id));
                 }
-            };
-            b(ui, Icon::Save, t("Save"), t("Save the workspace: layout, views, layers, settings (Ctrl+S)"), Cmd::Save);
-            ui.separator();
-            b(ui, Icon::Fit, t("Fit"), t("Show all data of the view (F, or double-click)"), Cmd::Fit);
-            b(ui, Icon::ZoomIn, "", t("Zoom in (+, or the mouse wheel)"), Cmd::Zoom(1.5));
-            b(ui, Icon::ZoomOut, "", t("Zoom out (-)"), Cmd::Zoom(1.0 / 1.5));
-            ui.separator();
-            for (n, c, r, name, k) in [(1, 1, 1, "1 view", "Alt+1"), (2, 2, 1, "2 views", "Alt+2"), (4, 2, 2, "2 x 2 views", "Alt+3"), (9, 3, 3, "3 x 3 views", "Alt+4")] {
-                b(ui, Icon::Grid(c, r), "", &format!("{} ({k})", tf("Layout: {}", &[t(name)])), Cmd::Layout(n));
             }
+            b(ui, cmds, id, Icon::Save, "", t("Save the workspace: layout, views, layers, settings (Ctrl+S)"), false, Cmd::Save);
+            ui.separator();
+            b(ui, cmds, id, Icon::Fit, "", t("Show all data of the view (F, or double-click)"), false, Cmd::Fit);
+            b(ui, cmds, id, Icon::ZoomIn, "", t("Zoom in (+, or the mouse wheel)"), false, Cmd::Zoom(1.5));
+            b(ui, cmds, id, Icon::ZoomOut, "", t("Zoom out (-)"), false, Cmd::Zoom(1.0 / 1.5));
             if ui.button("1:1").on_hover_text(t("One data pixel for each screen pixel (1)")).clicked() {
                 cmds.push((Cmd::OneToOne, id));
             }
             ui.separator();
             let Some(p) = self.pane(id) else { return };
             let (link, cmp, space, globe) = (p.link, p.cmp, p.v.space, p.v.globe);
-            if icons::button(ui, Icon::Link, t("Link"), link > 0).on_hover_text(t("Link the active view: it pans and zooms with the other linked views (L)")).clicked() {
-                cmds.push((Cmd::Link, id));
-            }
-            if icons::button(ui, Icon::Globe, t("Globe"), globe).on_hover_text(t("Show the active view on a 3D globe, or as a 2D map (G)")).clicked() {
-                cmds.push((Cmd::Globe, id));
-            }
-            ui.separator();
-            let (pg, cg) = self.pane(id).map_or((false, false), |p| (p.pixel_grid, p.coord_grid));
-            for (icon, on, tip, c) in [(Icon::PixelGrid, pg, "Pixel grid: the edges of the pixels, and their values in a large zoom (X)", Cmd::PixelGrid), (Icon::Graticule, cg, "Coordinate grid: lines of longitude and latitude (N)", Cmd::CoordGrid)] {
-                if icons::button(ui, icon, "", on).on_hover_text(t(tip)).clicked() {
-                    cmds.push((c, id));
+            let (pg, cg, pts, cbar) = (p.pixel_grid, p.coord_grid, p.v.points, p.colorbar);
+            // The views: the layout (a menu), the link and its mode (a split button), the globe.
+            let lay = icons::button(ui, Icon::Grid(2, 2), "", false).on_hover_text(t("Layout of the views"));
+            egui::Popup::menu(&lay).show(|ui| {
+                for (n, c, r, name, k) in [(1, 1, 1, "1 view", "Alt+1"), (2, 2, 1, "2 views", "Alt+2"), (4, 2, 2, "2 x 2 views", "Alt+3"), (9, 3, 3, "3 x 3 views", "Alt+4")] {
+                    if icons::row(ui, Icon::Grid(c, r), &format!("{}    {k}", t(name)), false).clicked() {
+                        cmds.push((Cmd::Layout(n), id));
+                        ui.close();
+                    }
                 }
-            }
+                ui.separator();
+                for (name, k, c) in [(t("New view"), "Ctrl+N", Cmd::NewView), (t("Duplicate view"), "Ctrl+D", Cmd::Duplicate), (t("Detach view to a window, or attach it"), "Ctrl+Shift+D", Cmd::Detach)] {
+                    if ui.add(egui::Button::new(name).shortcut_text(k)).clicked() {
+                        cmds.push((c, id));
+                        ui.close();
+                    }
+                }
+            });
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.x = 1.0;
+                if icons::button(ui, Icon::Link, t("Link"), link > 0).on_hover_text(t("Link the active view: it pans and zooms with the other linked views (L)")).clicked() {
+                    cmds.push((Cmd::Link, id));
+                }
+                let arrow = icons::button(ui, Icon::Down, "", false).on_hover_text(t("How the linked views follow each other (Shift+L)"));
+                let mut px = self.link_px;
+                egui::Popup::menu(&arrow).show(|ui| {
+                    ui.radio_value(&mut px, false, t("Geographic: the same center and ground resolution")).on_hover_text(t("Views in different CRSs stay aligned"));
+                    ui.radio_value(&mut px, true, t("Pixel: the same pixel region")).on_hover_text(t("For products on the same grid"));
+                });
+                self.link_px = px;
+            });
+            b(ui, cmds, id, Icon::Globe, "", t("Show the active view on a 3D globe, or as a 2D map (G)"), globe, Cmd::Globe);
+            ui.separator();
             for ((tl, n, k), icon) in Tool::ALL.into_iter().zip([Icon::Ruler, Icon::Transect, Icon::Region, Icon::Pin]) {
-                if icons::button(ui, icon, "", self.tool == tl).on_hover_text(format!("{} ({k})", t(n))).clicked() {
-                    cmds.push((Cmd::Tool(tl), id));
-                }
+                b(ui, cmds, id, icon, "", &format!("{} ({k})", t(n)), self.tool == tl, Cmd::Tool(tl));
             }
             ui.separator();
-            let mut px = self.link_px;
-            ui.selectable_value(&mut px, false, t("Geo")).on_hover_text(t("Link by center latitude, longitude and ground resolution: views in different CRSs stay aligned (Shift+L)"));
-            ui.selectable_value(&mut px, true, t("Pixel")).on_hover_text(t("Link by pixel region: for products on the same grid (Shift+L)"));
-            self.link_px = px;
+            b(ui, cmds, id, Icon::PixelGrid, "", t("Pixel grid: the edges of the pixels, and their values in a large zoom (X)"), pg, Cmd::PixelGrid);
+            b(ui, cmds, id, Icon::Points, "", t("Points: a point at the center of each pixel, to see the sampling of the data (Shift+X)"), pts, Cmd::Points);
+            b(ui, cmds, id, Icon::Graticule, "", t("Coordinate grid: lines of longitude and latitude (N)"), cg, Cmd::CoordGrid);
+            b(ui, cmds, id, Icon::ColorBar, "", t("Color bar of the top layer (Shift+B)"), cbar, Cmd::ColorBar);
             ui.separator();
-            let r = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover()).0;
-            icons::draw(ui.painter(), Icon::Compare, r, ui.visuals().text_color());
-            ui.label(t("Compare"));
-            for (c, n, k) in Cmp::ALL {
-                if ui.selectable_label(cmp == c, t(n)).on_hover_text(format!("{} ({k})", tf("{} of the two lowest layers of the active view", &[t(n)]))).clicked() {
-                    cmds.push((Cmd::Compare(c), id));
+            // The compare mode: a menu that shows the mode.
+            let name = Cmp::ALL.iter().find(|x| x.0 == cmp).map_or("", |x| x.1);
+            let cb = icons::button(ui, Icon::Compare, if cmp == Cmp::Off { t("Compare") } else { t(name) }, cmp != Cmp::Off).on_hover_text(t("Compare the two lowest layers of the active view"));
+            egui::Popup::menu(&cb).show(|ui| {
+                for (c, n, k) in Cmp::ALL {
+                    if ui.add(egui::Button::selectable(cmp == c, t(n)).shortcut_text(k)).clicked() {
+                        cmds.push((Cmd::Compare(c), id));
+                        ui.close();
+                    }
                 }
-            }
+            });
             ui.separator();
             let own = self.pane(id).and_then(|p| p.layers.first()).and_then(|l| l.default_space());
             let label = |s: Option<u32>| match SPACES.iter().find(|x| x.0 == s) {
@@ -1820,14 +1866,16 @@ impl App {
                 None => tf("Layer CRS (EPSG:{})", &[&s.unwrap_or(0).to_string()]),
             };
             let mut sp = space;
-            egui::ComboBox::from_id_salt("crs").selected_text(label(sp)).width(210.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("crs").selected_text(label(sp)).width(170.0).show_ui(ui, |ui| {
                 if own.is_some() && SPACES.iter().all(|x| x.0 != own) {
                     ui.selectable_value(&mut sp, own, label(own));
                 }
                 for s in SPACES {
                     ui.selectable_value(&mut sp, s.0, t(s.1));
                 }
-            });
+            })
+            .response
+            .on_hover_text(t("The display CRS of the active view"));
             if sp != space {
                 cmds.push((Cmd::Space(sp), id));
             }
@@ -1906,6 +1954,7 @@ impl App {
 
     pub fn side(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
+        let self_tool = self.tool;
         let smalls = self.smalls.clone();
         // The profile along a dimension: the pixel under the cursor of each layer, and the profile state.
         let cursor_px: std::collections::HashMap<u64, (u64, u64)> = self.probes.iter().filter_map(|(k, p)| p.last.as_ref().map(|l| (*k, (l.0, l.1)))).collect();
@@ -1954,9 +2003,30 @@ impl App {
                         action = Some((k, 1));
                     }
                     let w = ui.available_width();
-                    if ui.add_sized([w, 18.0], egui::Button::selectable(p.sel == k, name).truncate()).on_hover_text(&l.path).clicked() {
+                    let r = ui.add_sized([w, 18.0], egui::Button::selectable(p.sel == k, name).truncate()).on_hover_text(&l.path);
+                    if r.clicked() || r.secondary_clicked() {
                         p.sel = k;
                     }
+                    // Right click: the actions on the layer, as in the layer list of a GIS.
+                    r.context_menu(|ui| {
+                        for (name, key, c) in [
+                            (t("Zoom to the layer"), "F", Cmd::Fit),
+                            (t("Information"), "Ctrl+I", Cmd::Info),
+                            (t("Values"), "Ctrl+Shift+I", Cmd::Values),
+                            (t("Plot"), "", Cmd::Plot(crate::figure::FigKind::Plane)),
+                            (t("Export data (GeoTIFF)..."), "", Cmd::Export),
+                        ] {
+                            if ui.add(egui::Button::new(name).shortcut_text(key)).clicked() {
+                                cmds.push((c, id));
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        if ui.button(t("Remove")).clicked() {
+                            action = Some((k, 0));
+                            ui.close();
+                        }
+                    });
                 });
             });
         }
@@ -1987,281 +2057,306 @@ impl App {
         }
         let Some(l) = p.layers.get_mut(p.sel) else { return };
         let sel = p.sel;
+        // The parts of the selected layer, one tab each: what it shows (Data), how it shows (Display), what to
+        // do with it (Analysis). The tab stays from one session to the next. A new tool opens Analysis: the
+        // results of the tools are there.
+        let (tab_id, tool_id) = (egui::Id::new("side tab"), egui::Id::new("side tool"));
+        let mut tab: u8 = ui.data_mut(|d| *d.get_persisted_mut_or_default::<u8>(tab_id));
+        let tool = self_tool;
+        if ui.data_mut(|d| d.get_temp::<Tool>(tool_id)) != Some(tool) {
+            if tool != Tool::None {
+                tab = 2;
+            }
+            ui.data_mut(|d| d.insert_temp(tool_id, tool));
+        }
 
         ui.separator();
         ui.horizontal(|ui| {
-            ui.strong(l.comp_name());
+            ui.strong(l.label(40)).on_hover_text(&l.path);
             ui.add(egui::Slider::new(&mut l.opacity, 0.0..=1.0).show_value(false)).on_hover_text(t("Opacity"));
         });
-        if let Some(d) = l.any().map(|a| a.ds.product.desc.clone()) {
-            ui.small(d);
-        }
-        let mut changed = false;
         ui.horizontal(|ui| {
-            let k = l.kind;
-            ui.selectable_value(&mut l.kind, Kind::Band, t("Band"));
-            ui.selectable_value(&mut l.kind, Kind::Rgb, "RGB");
-            ui.selectable_value(&mut l.kind, Kind::Expr, t("Band math"));
-            ui.selectable_value(&mut l.kind, Kind::Wind, t("Wind")).on_hover_text(t("A vector field: the speed with the color map, and arrows. It uses the components to the east (U) and to the north (V)"));
-            if k != l.kind {
-                // The wind mode starts with the components that the product has.
-                if l.kind == Kind::Wind && let Some([u, v]) = layer::wind_pair(&l.names()) {
-                    (l.rgb[0], l.rgb[1]) = (u, v);
-                }
-                if l.kind == Kind::Wind && l.cmap == 0 {
-                    l.set_cmap(layer::WIND_CMAP);
-                }
-                l.auto_pending = true;
-                changed = true;
+            for (k, n, tip) in [
+                (0u8, t("Data"), t("The product, its variables and their dimensions: what the layer shows")),
+                (1, t("Display"), t("The stretch and the color map: how the layer shows")),
+                (2, t("Analysis"), t("Aggregates, layer math, the results of the tools, the values under the cursor")),
+            ] {
+                ui.selectable_value(&mut tab, k, n).on_hover_text(tip);
             }
         });
-        match l.kind {
-            Kind::Band => {}
-            Kind::Rgb => {
-                for (k, lbl) in ["R", "G", "B"].iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(*lbl);
-                        let r = ui.add(egui::TextEdit::singleline(&mut l.rgb[k]).desired_width(f32::INFINITY));
-                        changed |= r.lost_focus();
-                    });
-                }
+        ui.data_mut(|d| d.insert_persisted(tab_id, tab));
+        ui.separator();
+        let (mut changed, mut pick_changed) = (false, false);
+        if tab == 0 {
+            if let Some(d) = l.any().map(|a| a.ds.product.desc.clone()) {
+                ui.small(d);
             }
-            Kind::Expr => {
-                let r = ui.add(egui::TextEdit::singleline(&mut l.expr).hint_text("(B08 - B04) / (B08 + B04)").desired_width(f32::INFINITY));
-                changed |= r.lost_focus();
-            }
-            Kind::Wind => {
-                for (k, lbl) in ["U", "V"].iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(*lbl).on_hover_text([t("The component to the east"), t("The component to the north")][k]);
-                        let r = ui.add(egui::TextEdit::singleline(&mut l.rgb[k]).desired_width(f32::INFINITY));
-                        changed |= r.lost_focus();
-                    });
-                }
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut l.particles, t("Particles")).on_hover_text(t("Points that follow the wind, with a trail"));
-                    ui.checkbox(&mut l.arrows, t("Arrows"));
-                    ui.checkbox(&mut l.fill, t("Speed colors")).on_hover_text(t("The speed with the color map. Without it, the layers below show, and the particles have the color of the speed"));
-                });
-            }
-        }
-        ui.horizontal_wrapped(|ui| {
-            for p in PRESETS {
-                if l.preset_ok(p) && ui.small_button(t(p.0)).clicked() {
-                    l.set_preset(p);
+            ui.horizontal(|ui| {
+                let k = l.kind;
+                ui.selectable_value(&mut l.kind, Kind::Band, t("Band"));
+                ui.selectable_value(&mut l.kind, Kind::Rgb, "RGB");
+                ui.selectable_value(&mut l.kind, Kind::Expr, t("Band math"));
+                ui.selectable_value(&mut l.kind, Kind::Wind, t("Wind")).on_hover_text(t("A vector field: the speed with the color map, and arrows. It uses the components to the east (U) and to the north (V)"));
+                if k != l.kind {
+                    // The wind mode starts with the components that the product has.
+                    if l.kind == Kind::Wind && let Some([u, v]) = layer::wind_pair(&l.names()) {
+                        (l.rgb[0], l.rgb[1]) = (u, v);
+                    }
+                    if l.kind == Kind::Wind && l.cmap == 0 {
+                        l.set_cmap(layer::WIND_CMAP);
+                    }
+                    l.auto_pending = true;
                     changed = true;
                 }
-            }
-        });
-        if let Some(e) = &l.err {
-            ui.colored_label(ui.visuals().error_fg_color, e);
-        }
-        // Product tree: a click on a name shows the variable as data. The buttons of a row set a channel
-        // (RGB mode) or add the name to the expression (band math mode).
-        match contents_ui(ui, l, &smalls) {
-            Some(Pick::Insert(c)) => {
-                if !l.expr.is_empty() && !l.expr.ends_with([' ', '(']) {
-                    l.expr.push(' ');
-                }
-                l.expr += &l.chans[c].id;
-                changed = true;
-            }
-            Some(Pick::Chan(c)) => {
-                (l.kind, l.band, l.auto_pending) = (Kind::Band, c, true);
-                changed = true;
-            }
-            Some(Pick::Rgb(k, c)) => {
-                (l.rgb[k], l.auto_pending) = (l.chans[c].id.clone(), true);
-                changed = true;
-            }
-            Some(Pick::Color(c)) => {
-                (l.kind, l.rgb, l.auto_pending) = (Kind::Rgb, c.map(|c| l.chans[c].id.clone()), true);
-                changed = true;
-            }
-            Some(Pick::Show(c, new)) => cmds.push((Cmd::ShowVar(sel, c, new), id)),
-            Some(Pick::Info) => cmds.push((Cmd::Info, id)),
-            Some(Pick::Small(k)) => cmds.push((Cmd::SmallValues(k), id)),
-            None => {}
-        }
-        // The dimensions of the variable of the band: the image axes and the index of the others. The view
-        // shows the old plane until the new one is ready.
-        let mut pick_changed = false;
-        if let Some(a) = l.any().cloned()
-            && let Some(var) = l.chans.get(l.band).map(|c| c.var)
-            && a.ds.product.vars[var].dims.len() >= 2
-        {
-            egui::CollapsingHeader::new(t("Dimensions")).default_open(true).show(ui, |ui| {
-                let mut p = l.pick.clone();
-                let v = &a.ds.product.vars[var];
-                if crate::dims::dims_ui(ui, v, &mut p, &|d, i| smalls.coord(&a, &v.name, d, i)) {
-                    l.set_pick(p);
-                    pick_changed = true;
-                }
-                ui.horizontal(|ui| {
-                    if ui.button(t("Plot")).on_hover_text(t("The plane on its two dimensions, with the axes of their coordinates, in the Figure tab")).clicked() {
-                        cmds.push((Cmd::Plot(crate::figure::FigKind::Plane), id));
+            });
+            match l.kind {
+                Kind::Band => {}
+                Kind::Rgb => {
+                    for (k, lbl) in ["R", "G", "B"].iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(*lbl);
+                            let r = ui.add(egui::TextEdit::singleline(&mut l.rgb[k]).desired_width(f32::INFINITY));
+                            changed |= r.lost_focus();
+                        });
                     }
-                    if prof_dim.is_some() && ui.button(t("Plot the profile")).on_hover_text(t("The profile at the cursor in the Figure tab")).clicked() {
-                        cmds.push((Cmd::Plot(crate::figure::FigKind::Profile), id));
+                }
+                Kind::Expr => {
+                    let r = ui.add(egui::TextEdit::singleline(&mut l.expr).hint_text("(B08 - B04) / (B08 + B04)").desired_width(f32::INFINITY));
+                    changed |= r.lost_focus();
+                }
+                Kind::Wind => {
+                    for (k, lbl) in ["U", "V"].iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(*lbl).on_hover_text([t("The component to the east"), t("The component to the north")][k]);
+                            let r = ui.add(egui::TextEdit::singleline(&mut l.rgb[k]).desired_width(f32::INFINITY));
+                            changed |= r.lost_focus();
+                        });
                     }
-                });
-                if l.shown_pgen != l.pgen {
                     ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.weak(t("Reading the plane. The view shows the old plane until the new one is ready."));
+                        ui.checkbox(&mut l.particles, t("Particles")).on_hover_text(t("Points that follow the wind, with a trail"));
+                        ui.checkbox(&mut l.arrows, t("Arrows"));
+                        ui.checkbox(&mut l.fill, t("Speed colors")).on_hover_text(t("The speed with the color map. Without it, the layers below show, and the particles have the color of the speed"));
                     });
                 }
-                if l.inputs.first().is_some_and(|x| x.sample.is_empty()) && l.shown_pgen == l.pgen {
-                    ui.colored_label(ui.visuals().warn_fg_color, t("No data in this plane: all values of the sample are the fill value."));
+            }
+            ui.horizontal_wrapped(|ui| {
+                for p in PRESETS {
+                    if l.preset_ok(p) && ui.small_button(t(p.0)).clicked() {
+                        l.set_preset(p);
+                        changed = true;
+                    }
                 }
-                // The profile along a dimension at the pixel of the cursor (the spectrum of a pixel).
-                if let Some(inp) = l.inputs.first().filter(|_| l.inputs.len() == 1) {
-                    let ax = inp.var().axes().unwrap_or([usize::MAX; 2]);
-                    let dims: Vec<usize> = (0..v.dims.len()).filter(|&k| !ax.contains(&k) && v.levels[0].shape[k] > 1).collect();
-                    if !dims.is_empty() {
+            });
+            if let Some(e) = &l.err {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            // Product tree: a click on a name shows the variable as data. The buttons of a row set a channel
+            // (RGB mode) or add the name to the expression (band math mode).
+            match contents_ui(ui, l, &smalls) {
+                Some(Pick::Insert(c)) => {
+                    if !l.expr.is_empty() && !l.expr.ends_with([' ', '(']) {
+                        l.expr.push(' ');
+                    }
+                    l.expr += &l.chans[c].id;
+                    changed = true;
+                }
+                Some(Pick::Chan(c)) => {
+                    (l.kind, l.band, l.auto_pending) = (Kind::Band, c, true);
+                    changed = true;
+                }
+                Some(Pick::Rgb(k, c)) => {
+                    (l.rgb[k], l.auto_pending) = (l.chans[c].id.clone(), true);
+                    changed = true;
+                }
+                Some(Pick::Color(c)) => {
+                    (l.kind, l.rgb, l.auto_pending) = (Kind::Rgb, c.map(|c| l.chans[c].id.clone()), true);
+                    changed = true;
+                }
+                Some(Pick::Show(c, new)) => cmds.push((Cmd::ShowVar(sel, c, new), id)),
+                Some(Pick::Info) => cmds.push((Cmd::Info, id)),
+                Some(Pick::Small(k)) => cmds.push((Cmd::SmallValues(k), id)),
+                None => {}
+            }
+            // The dimensions of the variable of the band: the image axes and the index of the others. The view
+            // shows the old plane until the new one is ready.
+            if let Some(a) = l.any().cloned()
+                && let Some(var) = l.chans.get(l.band).map(|c| c.var)
+                && a.ds.product.vars[var].dims.len() >= 2
+            {
+                egui::CollapsingHeader::new(t("Dimensions")).default_open(true).show(ui, |ui| {
+                    let mut p = l.pick.clone();
+                    let v = &a.ds.product.vars[var];
+                    if crate::dims::dims_ui(ui, v, &mut p, &|d, i| smalls.coord(&a, &v.name, d, i)) {
+                        l.set_pick(p);
+                        pick_changed = true;
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button(t("Plot")).on_hover_text(t("The plane on its two dimensions, with the axes of their coordinates, in the Figure tab")).clicked() {
+                            cmds.push((Cmd::Plot(crate::figure::FigKind::Plane), id));
+                        }
+                        if prof_dim.is_some() && ui.button(t("Plot the profile")).on_hover_text(t("The profile at the cursor in the Figure tab")).clicked() {
+                            cmds.push((Cmd::Plot(crate::figure::FigKind::Profile), id));
+                        }
+                    });
+                    if l.shown_pgen != l.pgen {
                         ui.horizontal(|ui| {
-                            ui.label(t("Profile along"));
-                            egui::ComboBox::from_id_salt("profile dim").selected_text(prof_dim.clone().unwrap_or_else(|| t("none").into())).show_ui(ui, |ui| {
-                                ui.selectable_value(&mut prof_dim, None, t("none"));
-                                for &k in &dims {
-                                    ui.selectable_value(&mut prof_dim, Some(v.dims[k].clone()), &v.dims[k]);
+                            ui.spinner();
+                            ui.weak(t("Reading the plane. The view shows the old plane until the new one is ready."));
+                        });
+                    }
+                    if l.inputs.first().is_some_and(|x| x.sample.is_empty()) && l.shown_pgen == l.pgen {
+                        ui.colored_label(ui.visuals().warn_fg_color, t("No data in this plane: all values of the sample are the fill value."));
+                    }
+                    // The profile along a dimension at the pixel of the cursor (the spectrum of a pixel).
+                    if let Some(inp) = l.inputs.first().filter(|_| l.inputs.len() == 1) {
+                        let ax = inp.var().axes().unwrap_or([usize::MAX; 2]);
+                        let dims: Vec<usize> = (0..v.dims.len()).filter(|&k| !ax.contains(&k) && v.levels[0].shape[k] > 1).collect();
+                        if !dims.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.label(t("Profile along"));
+                                egui::ComboBox::from_id_salt("profile dim").selected_text(prof_dim.clone().unwrap_or_else(|| t("none").into())).show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut prof_dim, None, t("none"));
+                                    for &k in &dims {
+                                        ui.selectable_value(&mut prof_dim, Some(v.dims[k].clone()), &v.dims[k]);
+                                    }
+                                });
+                            });
+                        }
+                        if let Some(k) = prof_dim.as_ref().and_then(|n| dims.iter().copied().find(|&k| v.dims[k] == *n)) {
+                            match cursor_px.get(&inp.id) {
+                                Some(&(x, y)) => {
+                                    want_prof = Some((inp.clone(), x, y, k));
+                                    let times = &inp.var().times;
+                                    let name = &v.dims[k];
+                                    let xl = |d: f64| {
+                                        let i = d.round().max(0.0) as u64;
+                                        if inp.var().levels[0].dims[k] == "time" && (i as usize) < times.len() {
+                                            return eo_core::time::text(times[i as usize]);
+                                        }
+                                        smalls.coord(&a, &v.name, name, i).map_or(format!("{name} {i}"), |c| format!("{c} ({i})"))
+                                    };
+                                    match &prof {
+                                        (Some((lid, px, py, pk)), Some(Ok(vals))) if *lid == inp.id && *pk == k => {
+                                            ui.weak(tf("Pixel {}, {}", &[&px.to_string(), &py.to_string()]));
+                                            let pts: Vec<(f64, Vec<f64>)> = vals.iter().enumerate().map(|(i, x)| (i as f64, vec![*x])).collect();
+                                            crate::tools::line_chart(ui, &pts, &[v.units.clone()], 0.0, &xl);
+                                        }
+                                        (_, Some(Err(e))) => drop(ui.colored_label(ui.visuals().error_fg_color, e)),
+                                        _ => drop(ui.spinner()),
+                                    }
+                                }
+                                None => drop(ui.weak(t("Move the cursor over the view."))),
+                            }
+                        }
+                    }
+                    // One view for each index of a dimension, in one link group.
+                    let others: Vec<usize> = (0..v.dims.len()).filter(|&k| l.inputs.first().and_then(|i| i.var().axes()).is_some_and(|ax| !ax.contains(&k)) && v.levels[0].shape[k] > 1).collect();
+                    if !others.is_empty() {
+                        egui::CollapsingHeader::new(t("Views along a dimension")).show(ui, |ui| {
+                            let k = along.0.as_ref().and_then(|n| others.iter().copied().find(|&k| v.dims[k] == *n)).unwrap_or(others[0]);
+                            let size = v.levels[0].shape[k];
+                            if along.0.as_ref() != Some(&v.dims[k]) {
+                                along = (Some(v.dims[k].clone()), 0, size - 1, 1);
+                            }
+                            egui::ComboBox::from_id_salt("along dim").selected_text(&v.dims[k]).show_ui(ui, |ui| {
+                                for &j in &others {
+                                    if ui.selectable_label(j == k, &v.dims[j]).clicked() {
+                                        along = (Some(v.dims[j].clone()), 0, v.levels[0].shape[j] - 1, 1);
+                                    }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(t("From"));
+                                ui.add(egui::DragValue::new(&mut along.1).range(0..=size - 1));
+                                ui.label(t("to"));
+                                ui.add(egui::DragValue::new(&mut along.2).range(0..=size - 1));
+                                ui.label(t("step"));
+                                ui.add(egui::DragValue::new(&mut along.3).range(1..=size.max(1)));
+                            });
+                            let n = if along.2 >= along.1 { (along.2 - along.1) / along.3.max(1) + 1 } else { 0 };
+                            ui.weak(tf("{} views. More than 16 views: the cells of the grid have tabs.", &[&n.to_string()]));
+                            if ui.add_enabled(n > 0, egui::Button::new(t("Open the views"))).clicked() {
+                                cmds.push((Cmd::ViewsAlong(v.dims[k].clone(), along.1, along.2, along.3), id));
+                            }
+                        });
+                        egui::CollapsingHeader::new(t("Aggregate along a dimension")).show(ui, |ui| {
+                            let k = along.0.as_ref().and_then(|n| others.iter().copied().find(|&k| v.dims[k] == *n)).unwrap_or(others[0]);
+                            egui::ComboBox::from_id_salt("agg dim").selected_text(&v.dims[k]).show_ui(ui, |ui| {
+                                for &j in &others {
+                                    if ui.selectable_label(j == k, &v.dims[j]).clicked() {
+                                        along = (Some(v.dims[j].clone()), 0, v.levels[0].shape[j] - 1, 1);
+                                    }
+                                }
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                for (how, name) in eo_cache::Agg::ALL {
+                                    if ui.button(t(name)).on_hover_text(tf("A new layer: the {} of the {} indexes of {}", &[&t(name).to_lowercase(), &v.levels[0].shape[k].to_string(), &v.dims[k]])).clicked() {
+                                        cmds.push((Cmd::AggregateDim(how, v.dims[k].clone()), id));
+                                    }
                                 }
                             });
                         });
                     }
-                    if let Some(k) = prof_dim.as_ref().and_then(|n| dims.iter().copied().find(|&k| v.dims[k] == *n)) {
-                        match cursor_px.get(&inp.id) {
-                            Some(&(x, y)) => {
-                                want_prof = Some((inp.clone(), x, y, k));
-                                let times = &inp.var().times;
-                                let name = &v.dims[k];
-                                let xl = |d: f64| {
-                                    let i = d.round().max(0.0) as u64;
-                                    if inp.var().levels[0].dims[k] == "time" && (i as usize) < times.len() {
-                                        return eo_core::time::text(times[i as usize]);
-                                    }
-                                    smalls.coord(&a, &v.name, name, i).map_or(format!("{name} {i}"), |c| format!("{c} ({i})"))
-                                };
-                                match &prof {
-                                    (Some((lid, px, py, pk)), Some(Ok(vals))) if *lid == inp.id && *pk == k => {
-                                        ui.weak(tf("Pixel {}, {}", &[&px.to_string(), &py.to_string()]));
-                                        let pts: Vec<(f64, Vec<f64>)> = vals.iter().enumerate().map(|(i, x)| (i as f64, vec![*x])).collect();
-                                        crate::tools::line_chart(ui, &pts, &[v.units.clone()], 0.0, &xl);
-                                    }
-                                    (_, Some(Err(e))) => drop(ui.colored_label(ui.visuals().error_fg_color, e)),
-                                    _ => drop(ui.spinner()),
-                                }
-                            }
-                            None => drop(ui.weak(t("Move the cursor over the view."))),
-                        }
-                    }
-                }
-                // One view for each index of a dimension, in one link group.
-                let others: Vec<usize> = (0..v.dims.len()).filter(|&k| l.inputs.first().and_then(|i| i.var().axes()).is_some_and(|ax| !ax.contains(&k)) && v.levels[0].shape[k] > 1).collect();
-                if !others.is_empty() {
-                    egui::CollapsingHeader::new(t("Views along a dimension")).show(ui, |ui| {
-                        let k = along.0.as_ref().and_then(|n| others.iter().copied().find(|&k| v.dims[k] == *n)).unwrap_or(others[0]);
-                        let size = v.levels[0].shape[k];
-                        if along.0.as_ref() != Some(&v.dims[k]) {
-                            along = (Some(v.dims[k].clone()), 0, size - 1, 1);
-                        }
-                        egui::ComboBox::from_id_salt("along dim").selected_text(&v.dims[k]).show_ui(ui, |ui| {
-                            for &j in &others {
-                                if ui.selectable_label(j == k, &v.dims[j]).clicked() {
-                                    along = (Some(v.dims[j].clone()), 0, v.levels[0].shape[j] - 1, 1);
-                                }
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label(t("From"));
-                            ui.add(egui::DragValue::new(&mut along.1).range(0..=size - 1));
-                            ui.label(t("to"));
-                            ui.add(egui::DragValue::new(&mut along.2).range(0..=size - 1));
-                            ui.label(t("step"));
-                            ui.add(egui::DragValue::new(&mut along.3).range(1..=size.max(1)));
-                        });
-                        let n = if along.2 >= along.1 { (along.2 - along.1) / along.3.max(1) + 1 } else { 0 };
-                        ui.weak(tf("{} views. More than 16 views: the cells of the grid have tabs.", &[&n.to_string()]));
-                        if ui.add_enabled(n > 0, egui::Button::new(t("Open the views"))).clicked() {
-                            cmds.push((Cmd::ViewsAlong(v.dims[k].clone(), along.1, along.2, along.3), id));
-                        }
-                    });
-                    egui::CollapsingHeader::new(t("Aggregate along a dimension")).show(ui, |ui| {
-                        let k = along.0.as_ref().and_then(|n| others.iter().copied().find(|&k| v.dims[k] == *n)).unwrap_or(others[0]);
-                        egui::ComboBox::from_id_salt("agg dim").selected_text(&v.dims[k]).show_ui(ui, |ui| {
-                            for &j in &others {
-                                if ui.selectable_label(j == k, &v.dims[j]).clicked() {
-                                    along = (Some(v.dims[j].clone()), 0, v.levels[0].shape[j] - 1, 1);
-                                }
-                            }
-                        });
-                        ui.horizontal_wrapped(|ui| {
-                            for (how, name) in eo_cache::Agg::ALL {
-                                if ui.button(t(name)).on_hover_text(tf("A new layer: the {} of the {} indexes of {}", &[&t(name).to_lowercase(), &v.levels[0].shape[k].to_string(), &v.dims[k]])).clicked() {
-                                    cmds.push((Cmd::AggregateDim(how, v.dims[k].clone()), id));
-                                }
-                            }
-                        });
-                    });
-                }
-            });
-        }
+                });
+            }
 
-        ui.separator();
-        let n = if l.kind == Kind::Rgb { 3 } else { 1 };
-        let colors = if n == 3 { [Color32::from_rgb(230, 80, 80), Color32::from_rgb(90, 200, 90), Color32::from_rgb(90, 140, 255)] } else { [ui.visuals().text_color(); 3] };
-        let mut again = false;
-        let before = l.st;
-        for k in 0..n {
-            if let Some(h) = l.hist.get(k).cloned() {
-                let (_, dbl) = histogram(ui, &h, &mut l.st[k], colors[k]);
-                again |= dbl;
+        }
+        if tab == 1 {
+            let n = if l.kind == Kind::Rgb { 3 } else { 1 };
+            let colors = if n == 3 { [Color32::from_rgb(230, 80, 80), Color32::from_rgb(90, 200, 90), Color32::from_rgb(90, 140, 255)] } else { [ui.visuals().text_color(); 3] };
+            let mut again = false;
+            let before = l.st;
+            for k in 0..n {
+                if let Some(h) = l.hist.get(k).cloned() {
+                    let (_, dbl) = histogram(ui, &h, &mut l.st[k], colors[k]);
+                    again |= dbl;
+                }
+                ui.horizontal(|ui| {
+                    let st = &mut l.st[k];
+                    let speed = ((st.hi - st.lo).abs() / 300.0).max(1e-6) as f64;
+                    ui.add(egui::DragValue::new(&mut st.lo).speed(speed).max_decimals(4)).on_hover_text(t("Minimum"));
+                    ui.add(egui::DragValue::new(&mut st.hi).speed(speed).max_decimals(4)).on_hover_text(t("Maximum"));
+                    ui.add(egui::DragValue::new(&mut st.gamma).speed(0.01).range(0.1..=5.0).prefix("gamma ")).on_hover_text(t("Gamma"));
+                    again |= ui.checkbox(&mut st.db, "dB").changed();
+                });
             }
             ui.horizontal(|ui| {
-                let st = &mut l.st[k];
-                let speed = ((st.hi - st.lo).abs() / 300.0).max(1e-6) as f64;
-                ui.add(egui::DragValue::new(&mut st.lo).speed(speed).max_decimals(4)).on_hover_text(t("Minimum"));
-                ui.add(egui::DragValue::new(&mut st.hi).speed(speed).max_decimals(4)).on_hover_text(t("Maximum"));
-                ui.add(egui::DragValue::new(&mut st.gamma).speed(0.01).range(0.1..=5.0).prefix("gamma ")).on_hover_text(t("Gamma"));
-                again |= ui.checkbox(&mut st.db, "dB").changed();
+                ui.label(t("Clip %"));
+                again |= ui.add(egui::Slider::new(&mut l.clip, 0.0..=10.0)).changed();
+                again |= ui.button(t("Auto")).on_hover_text(t("Automatic stretch (A)")).clicked();
+                if l.is_color() && ui.button(t("As is")).on_hover_text(t("No stretch: the colors of the file")).clicked() {
+                    l.as_is();
+                }
             });
-        }
-        ui.horizontal(|ui| {
-            ui.label(t("Clip %"));
-            again |= ui.add(egui::Slider::new(&mut l.clip, 0.0..=10.0)).changed();
-            again |= ui.button(t("Auto")).on_hover_text(t("Automatic stretch (A)")).clicked();
-            if l.is_color() && ui.button(t("As is")).on_hover_text(t("No stretch: the colors of the file")).clicked() {
-                l.as_is();
+            // A change of the limits by the user: the new layers of the view with the same bands take it.
+            if l.st != before && !again {
+                l.auto_st = false;
             }
-        });
-        // A change of the limits by the user: the new layers of the view with the same bands take it.
-        if l.st != before && !again {
-            l.auto_st = false;
-        }
-        if again {
-            l.auto();
-        }
-        if l.kind != Kind::Rgb {
-            ui.separator();
-            if let Some(i) = swatches(ui, l.cmap, l.invert) {
-                l.set_cmap(i);
+            if again {
+                l.auto();
             }
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut l.invert, t("Invert (I)"));
-                ui.menu_button(t("Edit colors"), |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for s in l.stops.iter_mut() {
-                            ui.color_edit_button_srgb(s);
-                        }
-                        if ui.small_button("+").on_hover_text(t("Add a color")).clicked() {
-                            l.stops.push(*l.stops.last().unwrap());
-                        }
-                        if l.stops.len() > 2 && ui.small_button("-").on_hover_text(t("Remove the last color")).clicked() {
-                            l.stops.pop();
-                        }
+            if l.kind != Kind::Rgb {
+                ui.separator();
+                if let Some(i) = swatches(ui, l.cmap, l.invert) {
+                    l.set_cmap(i);
+                }
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut l.invert, t("Invert (I)"));
+                    ui.menu_button(t("Edit colors"), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for s in l.stops.iter_mut() {
+                                ui.color_edit_button_srgb(s);
+                            }
+                            if ui.small_button("+").on_hover_text(t("Add a color")).clicked() {
+                                l.stops.push(*l.stops.last().unwrap());
+                            }
+                            if l.stops.len() > 2 && ui.small_button("-").on_hover_text(t("Remove the last color")).clicked() {
+                                l.stops.pop();
+                            }
+                        });
                     });
                 });
-            });
+            }
         }
         if changed {
             self.compile(id, sel);
@@ -2279,6 +2374,9 @@ impl App {
             self.profile.req = Some(self.engine.profile(l, x, y, k));
         }
 
+        if tab != 2 {
+            return;
+        }
         if let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)).filter(|l| l.steps.len() > 1) {
             let n = l.steps.len();
             let labels: Vec<String> = (0..n).map(|s| l.step_label(s)).collect();
@@ -2660,6 +2758,8 @@ fn compare_ui(ui: &mut egui::Ui, p: &mut Pane) {
         return;
     }
     let name = |k: usize| p.spec_layer.get(k).map_or(String::new(), |&i| p.layers[i].label(36));
+    let mode = Cmp::ALL.iter().find(|x| x.0 == p.cmp).map_or("", |x| x.1);
+    ui.strong(tf("Compare: {}", &[t(mode)]));
     ui.small(format!("A: {}\nB: {}", name(0), name(1)));
     match p.cmp {
         Cmp::Swipe => {
