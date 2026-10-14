@@ -101,6 +101,8 @@ pub enum Cmd {
     Tool(Tool),
     /// Pixel grid, coordinate grid of the view: on or off.
     PixelGrid,
+    /// Points mode of the view: a point at the center of each pixel of the data.
+    Points,
     CoordGrid,
     /// Escape: the tool off, the shape that the user draws goes, no selected shape. Else the compare mode off.
     Escape,
@@ -206,6 +208,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("3D globe: on or off"), "G", Cmd::Globe),
         (t("Smooth pixels: on or off"), "", Cmd::Smooth),
         (t("Pixel grid: on or off"), "X", Cmd::PixelGrid),
+        (t("Points at the centers of the pixels: on or off"), "Shift+X", Cmd::Points),
         (t("Coordinate grid: on or off"), "N", Cmd::CoordGrid),
         (t("Color bar: on or off"), "Shift+B", Cmd::ColorBar),
         (t("Remove the pinned points"), "", Cmd::ClearPins),
@@ -1222,6 +1225,7 @@ impl App {
             (none, Key::T, Cmd::Tool(Tool::Transect)),
             (none, Key::R, Cmd::Tool(Tool::Region)),
             (none, Key::P, Cmd::Tool(Tool::Pin)),
+            (Modifiers::SHIFT, Key::X, Cmd::Points),
             (none, Key::X, Cmd::PixelGrid),
             (none, Key::N, Cmd::CoordGrid),
             (none, Key::V, Cmd::SwipeOrient),
@@ -1389,6 +1393,10 @@ impl App {
                         p.pixel_grid ^= true;
                         false
                     }
+                    Cmd::Points => {
+                        p.v.points ^= true;
+                        false
+                    }
                     Cmd::CoordGrid => {
                         p.coord_grid ^= true;
                         false
@@ -1537,6 +1545,7 @@ impl App {
         let (cmap, has_layer) = (sel.map_or(0, |l| l.cmap), sel.is_some());
         let (panel, link_px) = (self.panel, self.link_px);
         let grids = self.pane(id).map_or((false, false), |p| (p.pixel_grid, p.coord_grid));
+        let points = self.pane(id).is_some_and(|p| p.v.points);
         let cbar = self.pane(id).is_some_and(|p| p.colorbar);
         let (tool, pins) = (self.tool, !self.pins.is_empty());
         egui::MenuBar::new().ui(ui, |ui| {
@@ -1594,6 +1603,7 @@ impl App {
                 ui.separator();
                 check(ui, cmds, id, panel, t("Side panel"), "H", Cmd::Panel);
                 check(ui, cmds, id, grids.0, t("Pixel grid"), "X", Cmd::PixelGrid);
+                check(ui, cmds, id, points, t("Points"), "Shift+X", Cmd::Points);
                 check(ui, cmds, id, grids.1, t("Coordinate grid"), "N", Cmd::CoordGrid);
                 check(ui, cmds, id, cbar, t("Color bar"), "Shift+B", Cmd::ColorBar);
                 ui.separator();

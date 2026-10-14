@@ -106,6 +106,9 @@ pub struct View {
     /// Globe view: the display CRS is EPSG:4326, `center` is the point below the camera, and `scale` is
     /// the scale at this point.
     pub globe: bool,
+    /// Points mode: a colored point at the center of each pixel of the data, when the pixels are large on
+    /// the screen (DESIGN section 16.5b).
+    pub points: bool,
     pub inputs: Vec<Input>,
     /// Inputs of the next time steps, the nearest step first.
     pub ahead: Vec<Ahead>,
@@ -131,6 +134,7 @@ impl View {
             px: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1.0, 1.0)),
             fit: false,
             globe: false,
+            points: false,
             inputs: vec![],
             ahead: vec![],
             gpu: None,
@@ -395,7 +399,7 @@ impl View {
                         wsize: [lw as f32, lh as f32],
                         fill: fill.unwrap_or(-1.0),
                         // 16: the display is in longitude and latitude (2D or globe).
-                        flags: (fill.is_some() as u32) << 2 | (self.globe as u32) << 3 | ((self.space == Some(4326) || self.globe) as u32) << 4,
+                        flags: (fill.is_some() as u32) << 2 | (self.globe as u32) << 3 | ((self.space == Some(4326) || self.globe) as u32) << 4 | (self.points as u32) << 5,
                         grid: [wp.nx as u32, wp.ny as u32],
                         lat0: self.center[1].to_radians() as f32,
                         dist: self.globe_cam().dist as f32,

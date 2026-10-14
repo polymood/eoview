@@ -569,5 +569,7 @@
  "An aggregate uses one band: show one band of the layer.": "Un agrégat utilise une bande : affichez une bande de la couche.",
  "along {}": "selon {}",
  "A new layer: the {} of the {} indexes of {}": "Une nouvelle couche : {} des {} indices de {}",
- "Reading the plane. The view shows the old plane until the new one is ready.": "Lecture du plan. La vue montre l'ancien plan jusqu'à ce que le nouveau soit prêt."
+ "Reading the plane. The view shows the old plane until the new one is ready.": "Lecture du plan. La vue montre l'ancien plan jusqu'à ce que le nouveau soit prêt.",
+ "Points at the centers of the pixels: on or off": "Points au centre des pixels : oui ou non",
+ "Points": "Points"
 }

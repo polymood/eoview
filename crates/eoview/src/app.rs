@@ -547,6 +547,9 @@ struct PaneSave {
     overlays: crate::outlines::Overlays,
     #[serde(default)]
     pixel_grid: bool,
+    /// Points mode: a point at the center of each pixel.
+    #[serde(default)]
+    points: bool,
     #[serde(default)]
     coord_grid: bool,
     /// The color bar of the view is off.
@@ -967,7 +970,7 @@ impl App {
         let Some(src) = self.pane(id) else { return };
         let (layers, space, center, scale, link, globe) = (src.layers.clone(), src.v.space, src.v.center, src.v.scale, src.link.max(1), src.v.globe);
         let cmp = (src.cmp, src.swipe, src.vertical, src.blend, src.flicker_hz, src.diff, src.dlo, src.dhi, src.dcmap, src.dinvert);
-        let (smooth, overlays, grids) = (src.smooth, src.overlays, (src.pixel_grid, src.coord_grid));
+        let (smooth, overlays, grids, points) = (src.smooth, src.overlays, (src.pixel_grid, src.coord_grid), src.v.points);
         let uids: Vec<u64> = (0..layers.len()).map(|_| self.uid()).collect();
         let p = self.pane_mut(n).unwrap();
         p.layers = layers;
@@ -975,7 +978,7 @@ impl App {
         p.sel = p.layers.len().saturating_sub(1);
         (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe) = (space, center, scale, link, globe);
         (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz, p.diff, p.dlo, p.dhi, p.dcmap, p.dinvert) = cmp;
-        (p.smooth, p.overlays, (p.pixel_grid, p.coord_grid)) = (smooth, overlays, grids);
+        (p.smooth, p.overlays, (p.pixel_grid, p.coord_grid), p.v.points) = (smooth, overlays, grids, points);
         // The copy asks for the channels that were not ready in the source view: their results go to the
         // source view, not to the copy.
         for li in 0..p.layers.len() {
@@ -1865,6 +1868,7 @@ impl App {
                 smooth: p.smooth,
                 overlays: p.overlays,
                 pixel_grid: p.pixel_grid,
+                points: p.v.points,
                 coord_grid: p.coord_grid,
                 no_colorbar: !p.colorbar,
                 shapes: p.shapes.iter().filter(|s| s.done).cloned().collect(),
@@ -1940,7 +1944,7 @@ impl App {
             let mut p = Pane::new(id);
             if let Some(s) = ws_panes.iter().find(|s| s.id == id) {
                 (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe, p.smooth) = (s.space, s.center, s.scale, s.link, s.globe, s.smooth);
-                (p.overlays, p.pixel_grid, p.coord_grid, p.colorbar) = (s.overlays, s.pixel_grid, s.coord_grid, !s.no_colorbar);
+                (p.overlays, p.pixel_grid, p.coord_grid, p.colorbar, p.v.points) = (s.overlays, s.pixel_grid, s.coord_grid, !s.no_colorbar, s.points);
                 p.shapes = s.shapes.iter().chain(&s.shape).cloned().collect();
                 crate::tools::name_shapes(&mut p);
                 p.sel_shape = p.shapes.len().checked_sub(1);

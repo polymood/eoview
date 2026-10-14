@@ -145,8 +145,18 @@ fn near(x: f32, a: f32) -> f32 {
 }
 
 @fragment fn fs(v: VO) -> @location(0) vec4f {
-    let s = textureSample(tiles, smp, min(v.uv, v.uvmax), v.layer).r;
+    let uv = min(v.uv, v.uvmax);
+    // Points mode (flag 32): the position in the pixel of the data and the size of a pixel on the screen.
+    // The derivatives come before the first discard (uniform control flow).
+    // Not the clamped position: the clamp stops at the center of the last pixel of a tile.
+    let tc = v.uv * vec2f(textureDimensions(tiles).xy);
+    let px = fwidth(tc);
+    let s = textureSample(tiles, smp, uv, v.layer).r;
     if (v.facing < 0.0) { discard; }
+    // A disc of 3 screen pixels of radius at the center of each pixel of the data, when the pixels are
+    // large on the screen: the user sees the sampling of the data. Small pixels show as they are.
+    let r = 3.0 * max(px.x, px.y);
+    if ((u.flags & 32u) != 0u && r < 0.4 && length(fract(tc) - 0.5) > r) { discard; }
     // NaN is no data. Test the bits: a compiler can remove the test s != s.
     if ((bitcast<u32>(s) & 0x7fffffffu) > 0x7f800000u) { discard; }
     if ((u.flags & 4u) != 0u && abs(s - u.fill) < 0.5 / 255.0) { discard; }
@@ -454,6 +464,7 @@ pub struct LayerUniforms {
     pub wsize: [f32; 2],
     pub fill: f32,
     /// 4: u8 fill value is no data. 8: globe view (the display coordinates are longitude and latitude).
+    /// 16: the display is in longitude and latitude. 32: points mode (a point at the center of each pixel).
     pub flags: u32,
     pub grid: [u32; 2],
     /// Globe view: latitude of the view center in radians, and distance of the camera from the surface
