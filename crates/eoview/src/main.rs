@@ -66,6 +66,7 @@ pub struct Win {
     offscreen: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// For the surfaces of the windows of the detached views.
     instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
 }
 
 /// The window of a detached view. It has its own egui context. It uses the GPU device of the main window.
@@ -136,6 +137,11 @@ fn open_detached(el: &ActiveEventLoop, main: &Win, pane: u32) -> Option<Detached
     // Same format as the main window: the pipelines of the views draw to the two windows.
     let mut config = main.config.clone();
     (config.width, config.height) = (size.width.max(1), size.height.max(1));
+    // The windows draw one after the other on one thread. With vsync in each window, each present waits
+    // for a vertical blank: two windows get half of the frame rate, and the linked views lag. The main
+    // window keeps vsync and sets the rate. A detached window does not wait (mailbox: no tearing).
+    let modes = surface.get_capabilities(&main.adapter).present_modes;
+    config.present_mode = [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate].into_iter().find(|m| modes.contains(m)).unwrap_or(config.present_mode);
     surface.configure(device, &config);
     let ctx = egui::Context::default();
     let egui = egui_wgpu::Renderer::new(device, config.format, egui_wgpu::RendererOptions::default());
@@ -453,7 +459,7 @@ fn init_gpu(el: &ActiveEventLoop, ctx: &egui::Context, budget: usize, bench: boo
         (t, v)
     });
     let gpu = Gpu::new(device, queue, config.format, budget);
-    Win { window, surface, config, egui, egui_state, gpu, name, offscreen, instance }
+    Win { window, surface, config, egui, egui_state, gpu, name, offscreen, instance, adapter }
 }
 
 impl ApplicationHandler<Ev> for App {
