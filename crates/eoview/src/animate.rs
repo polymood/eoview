@@ -149,8 +149,24 @@ impl App {
     /// Settings of the animation: preview, camera, overlays, time, output, and the render.
     fn animation_panel(&mut self, ui: &mut egui::Ui, scene: u32, cmds: &mut Vec<(Cmd, u32)>) {
         let busy = self.job.is_some();
-        let n = self.pane(scene).and_then(|p| p.timed()).map_or(1, |l| l.steps.len());
-        let label = |s: usize| self.pane(scene).and_then(|p| p.timed()).map_or(String::new(), |l| l.step_label(s));
+        // The dimensions of the selected layer that a render can go along (not the image axes, not time).
+        let along: Vec<String> = self.pane(scene).and_then(|p| p.layers.get(p.sel)).and_then(|l| {
+            let (a, var) = (l.any()?, l.chans.get(l.band)?.var);
+            let (v, ax) = (&a.ds.product.vars[var], l.inputs.first()?.var().axes()?);
+            Some((0..v.dims.len()).filter(|&k| !ax.contains(&k) && v.levels[0].shape[k] > 1 && v.levels[0].dims[k] != "time").map(|k| v.dims[k].clone()).collect())
+        }).unwrap_or_default();
+        if self.render_set.dim.as_ref().is_some_and(|d| !along.contains(d)) {
+            self.render_set.dim = None;
+        }
+        let dim = self.render_set.dim.clone();
+        let n = match &dim {
+            Some(d) => self.dim_size(scene, d).unwrap_or(1),
+            None => self.pane(scene).and_then(|p| p.timed()).map_or(1, |l| l.steps.len()),
+        };
+        let label = |s: usize| match &dim {
+            Some(d) => format!("{d} {s}"),
+            None => self.pane(scene).and_then(|p| p.timed()).map_or(String::new(), |l| l.step_label(s)),
+        };
         let (first, last) = (self.render_set.first.min(n - 1), self.render_set.last.unwrap_or(n - 1).min(n - 1));
         let (first_label, last_label) = (label(first), label(last));
         let (globe, mut overlays, empty) = self.pane(scene).map_or((false, Default::default(), true), |p| (p.v.globe, p.overlays, p.layers.is_empty()));
@@ -213,6 +229,21 @@ impl App {
             ui.checkbox(&mut smooth, t("Smooth pixels")).on_hover_text(t("Linear between the pixels of the data, not squares: for data at a low resolution"));
 
             section(ui, t("Time"));
+            if !along.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(t("Frames along"));
+                    egui::ComboBox::from_id_salt("render dim").selected_text(set.dim.clone().unwrap_or_else(|| t("time").into())).show_ui(ui, |ui| {
+                        let d = set.dim.clone();
+                        ui.selectable_value(&mut set.dim, None, t("time"));
+                        for name in &along {
+                            ui.selectable_value(&mut set.dim, Some(name.clone()), name);
+                        }
+                        if d != set.dim {
+                            (set.first, set.last) = (0, None);
+                        }
+                    });
+                });
+            }
             egui::Grid::new("time").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 // The interface counts the steps from 1.
                 // The step as a number, or as a date: the step nearest to the date that the user types.

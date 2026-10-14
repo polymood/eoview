@@ -1065,10 +1065,12 @@ impl App {
         p.v.cursor = None;
         p.no_scale = !stamp;
         // The time of the frame: between the times of two steps for a frame that is a blend of them.
-        let label = p.timed().filter(|_| stamp).map(|l| {
+        // Along a dimension: the index of the frame. Else the time.
+        let along = Some(p.note.clone()).filter(|n| stamp && !n.is_empty());
+        let label = along.or_else(|| p.timed().filter(|_| stamp).map(|l| {
             let (a, b) = (l.steps[l.shown].t, l.steps[(l.shown + l.stride.max(1)) % l.steps.len()].t);
             if l.blend && p.tmix > 0.0 && a.is_finite() && b.is_finite() { eo_core::time::text(a + (b - a) * p.tmix as f64) } else { l.step_label(l.shown) }
-        });
+        }));
         // The legend of the frame: the color bar of the top data layer (the text of the settings, if any).
         let legend = colorbar_layer(p).filter(|_| stamp).map(|(s, i, st, name)| (s, i, st, if legend_text.is_empty() { name } else { legend_text.to_string() }));
         // The view does not draw its own color bar on the frame.

@@ -54,11 +54,14 @@ pub struct Settings {
     /// Degrees of longitude that the camera goes to the west for each frame: the globe turns as the Earth
     /// does. 0: the camera does not move.
     pub spin: f64,
+    /// The frames go along this dimension of the selected layer (its indexes are the steps), in place of
+    /// time: a video along the wavelength, the cameras, the levels. None: time.
+    pub dim: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, legend: String::new(), keep: false, fit: false, view: None, spin: 0.0 }
+        Settings { width: 1920, height: 1080, fps: 24.0, first: 0, last: None, stride: 1, sub: 1, out: "eoview.mp4".into(), stamp: true, proxy: 4, legend: String::new(), keep: false, fit: false, view: None, spin: 0.0, dim: None }
     }
 }
 
@@ -251,7 +254,13 @@ impl App {
         if p.layers.is_empty() {
             return Err(t("the view has no layer").into());
         }
-        let steps = set.steps(p.timed().map_or(1, |l| l.steps.len()));
+        let n = match &set.dim {
+            Some(d) => self.dim_size(src, d).ok_or_else(|| tf("the layer has no dimension {}", &[d]))?,
+            None => p.timed().map_or(1, |l| l.steps.len()),
+        };
+        // Along a dimension: no blend of two steps.
+        let set = Settings { sub: if set.dim.is_some() { 1 } else { set.sub }, ..set };
+        let steps = set.steps(n);
         if steps.is_empty() {
             return Err(t("no time step in the range").into());
         }
@@ -365,7 +374,10 @@ impl App {
                 job.stepped = true;
                 let (spin, c0, done) = (job.set.spin, job.center0, job.done);
                 if f == 0 {
-                    self.set_time(pane, s);
+                    match job.set.dim.clone() {
+                        Some(d) => self.set_dim_index(pane, &d, s as u64),
+                        None => self.set_time(pane, s),
+                    }
                 }
                 if let Some(p) = self.pane_mut(pane) {
                     p.tmix = f as f32 / sub as f32;

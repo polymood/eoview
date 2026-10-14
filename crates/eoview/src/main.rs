@@ -871,6 +871,7 @@ const RENDER_USAGE: &str = "usage: eoview --render [--out FILE or DIRECTORY] [--
   --overlays LIST  map overlays on the frames: coasts, borders, names (for example coasts,borders,names)
   --keep    keep the frames as PNG files next to the video. A render that stopped continues after its last frame
   --spin DEGREES  the camera goes this number of degrees of longitude to the west for each frame: the globe turns as the Earth does
+  --dim NAME  the frames go along this dimension of the selected layer (its indexes are the steps of --steps), in place of time
   --sub N   frames for each time step. More than 1: the frames between two steps are a blend of the steps
   --stretch LOW,HIGH  limits of the color map, in the units of the data. Without it and without a project file: the automatic stretch of the first frame
   --bbox    the frame shows this area, in the units of the display CRS (degrees for longitude and latitude). The height of the area is the height of the frame at this width
@@ -889,7 +890,7 @@ fn render_args(args: &[String]) -> Result<RenderArgs, String> {
             "--no-stamp" => opts.push(("--no-stamp", String::new())),
             "--keep" => opts.push(("--keep", String::new())),
             "--smooth" => opts.push(("--smooth", String::new())),
-            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" | "--sub" | "--overlays" | "--cmap" | "--legend" | "--spin" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
+            "--out" | "--size" | "--fps" | "--steps" | "--bbox" | "--stretch" | "--sub" | "--overlays" | "--cmap" | "--legend" | "--spin" | "--dim" => opts.push((a, it.next().ok_or(format!("{a}: no value"))?.clone())),
             _ => files.push(a.clone()),
         }
     }
@@ -927,6 +928,7 @@ fn render_args(args: &[String]) -> Result<RenderArgs, String> {
             "--overlays" => overlays = Some(outlines::Overlays { coasts: v.contains("coasts"), borders: v.contains("borders"), names: v.contains("names") }),
             "--sub" => set.sub = v.parse().ok().filter(|n| *n >= 1).ok_or(bad(o, &v))?,
             "--spin" => set.spin = v.parse().ok().filter(|d: &f64| d.is_finite()).ok_or(bad(o, &v))?,
+            "--dim" => set.dim = Some(v.clone()),
             "--size" => {
                 let (w, h) = v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).ok_or(bad(o, &v))?;
                 (set.width, set.height) = (w, h);

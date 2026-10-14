@@ -1007,6 +1007,9 @@ impl App {
             if l.inputs.is_empty() || (l.steps.len() > 1 && l.shown != l.step) {
                 return Some(tf("the data of step {}", &[&(l.step + 1).to_string()]));
             }
+            if l.shown_pgen != l.pgen {
+                return Some(t("the plane of the new index").into());
+            }
             if l.blend && l.steps.len() > 1 && l.next_inputs().is_none() {
                 return Some(t("the data of the next step").into());
             }
@@ -1560,6 +1563,28 @@ impl App {
             l.set_pick(pick);
             self.load_steps(id, sel);
         }
+    }
+
+    /// The size of dimension `dim` of the variable of the selected layer of view `id`.
+    pub fn dim_size(&self, id: u32, dim: &str) -> Option<usize> {
+        let l = self.pane(id).and_then(|p| p.layers.get(p.sel))?;
+        let (a, var) = (l.any()?, l.chans.get(l.band)?.var);
+        let v = &a.ds.product.vars[var];
+        v.dims.iter().position(|d| d == dim).map(|k| v.levels[0].shape[k] as usize)
+    }
+
+    /// The selected layer of view `id` shows index `i` of dimension `dim` (a frame of a render along a
+    /// dimension). The tab and the frame show the index.
+    pub fn set_dim_index(&mut self, id: u32, dim: &str, i: u64) {
+        let Some(p) = self.pane_mut(id) else { return };
+        let sel = p.sel;
+        p.note = format!("{dim} {i}");
+        let Some(l) = p.layers.get_mut(sel) else { return };
+        let mut pk = l.pick.clone();
+        pk.at.retain(|x| x.0 != dim);
+        pk.at.push((dim.to_string(), i));
+        l.set_pick(pk);
+        self.load_steps(id, sel);
     }
 
     /// A product is open: make its layer in the target view.

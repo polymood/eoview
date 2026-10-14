@@ -571,5 +571,9 @@
  "A new layer: the {} of the {} indexes of {}": "Une nouvelle couche : {} des {} indices de {}",
  "Reading the plane. The view shows the old plane until the new one is ready.": "Lecture du plan. La vue montre l'ancien plan jusqu'à ce que le nouveau soit prêt.",
  "Points at the centers of the pixels: on or off": "Points au centre des pixels : oui ou non",
- "Points": "Points"
+ "Points": "Points",
+ "Frames along": "Images selon",
+ "time": "temps",
+ "the plane of the new index": "le plan du nouvel indice",
+ "the layer has no dimension {}": "la couche n'a pas de dimension {}"
 }
