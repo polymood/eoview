@@ -923,6 +923,19 @@ pub fn cmaps_of(all: &[crate::colormaps::Cmap], g: &str) -> Vec<usize> {
     (0..all.len()).filter(|&i| all[i].group == g || (g == "Classic" && !known.contains(&all[i].group.as_str()))).collect()
 }
 
+/// A row of a menu of color maps: the gradient of the map, then its name. `on`: the map of the layer.
+fn cmap_row(ui: &mut egui::Ui, c: &crate::colormaps::Cmap, on: bool, invert: bool) -> egui::Response {
+    let name_w = ui.painter().layout_no_wrap(c.name.clone(), FontId::proportional(13.0), Color32::WHITE).size().x;
+    let w = ui.available_width().max(130.0 + name_w + 16.0);
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 20.0), Sense::click());
+    if resp.hovered() || on {
+        ui.painter().rect_filled(r, 1.0, if on { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill });
+    }
+    gradient(ui, Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(120.0, 12.0)), &c.stops, invert);
+    ui.painter().text(egui::pos2(r.left() + 134.0, r.center().y), Align2::LEFT_CENTER, &c.name, FontId::proportional(13.0), ui.visuals().text_color());
+    resp.on_hover_text(&c.source)
+}
+
 /// The color map of a layer: a button with the gradient and the name of the map. Its menu has a search field
 /// and the maps by group, each with its gradient. Some(i): the user selected map i.
 fn cmap_picker(ui: &mut egui::Ui, cur: usize, invert: bool) -> Option<usize> {
@@ -955,14 +968,7 @@ fn cmap_picker(ui: &mut egui::Ui, cur: usize, invert: bool) -> Option<usize> {
                 ui.add_space(4.0);
                 ui.weak(gname);
                 for i in ids {
-                    let c = &all[i];
-                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
-                    if resp.hovered() || i == cur {
-                        ui.painter().rect_filled(r, 1.0, if i == cur { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill });
-                    }
-                    gradient(ui, Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(150.0, 12.0)), &c.stops, invert);
-                    ui.painter().text(egui::pos2(r.left() + 164.0, r.center().y), Align2::LEFT_CENTER, &c.name, FontId::proportional(13.0), ui.visuals().text_color());
-                    if resp.on_hover_text(&c.source).clicked() {
+                    if cmap_row(ui, &all[i], i == cur, invert).clicked() {
                         out = Some(i);
                         ui.close();
                     }
@@ -1775,7 +1781,10 @@ impl App {
                             if !ids.is_empty() {
                                 ui.menu_button(gname, |ui| {
                                     for i in ids {
-                                        check(ui, cmds, id, i == cmap, &all[i].name, "", Cmd::Cmap(i));
+                                        if cmap_row(ui, &all[i], i == cmap, false).clicked() {
+                                            cmds.push((Cmd::Cmap(i), id));
+                                            ui.close();
+                                        }
                                     }
                                 });
                             }
