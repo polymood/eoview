@@ -216,7 +216,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     attrs.push(("Overviews".into(), (var.levels.len() - 1).to_string()));
     let dims = vec![("band".to_string(), nb as u64), ("y".to_string(), h), ("x".to_string(), w)];
     let meta = Meta { name: name.clone(), dims: dims.clone(), dtype: format!("{:?}", var.levels[0].dtype).to_lowercase(), attrs: vec![] };
-    Ok(Product { name, desc, vars: vec![var], valid: None, info: Info { attrs, dims, vars: vec![meta] } })
+    Ok(Product { name, desc, vars: vec![var], small: vec![], valid: None, info: Info { attrs, dims, vars: vec![meta] } })
 }
 
 fn array(rd: &Rd, ifd: &Ifd, src: u32) -> Result<Array> {

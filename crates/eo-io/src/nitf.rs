@@ -296,7 +296,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
         units: String::new(),
         georef,
     };
-    Ok(Product { name, desc, vars: vec![var], valid: None, info: Default::default() })
+    Ok(Product { name, desc, vars: vec![var], small: vec![], valid: None, info: Default::default() })
 }
 
 /// Georeferencing: SIDD plane projection, else SICD/SIDD image corners, else IGEOLO. Grid positions are

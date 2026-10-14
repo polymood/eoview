@@ -441,6 +441,10 @@ pub struct Product {
     /// Short format description for the user.
     pub desc: String,
     pub vars: Vec<Variable>,
+    /// The variables with less than two dimensions: scalars and 1D arrays (coordinates, along-track data,
+    /// time series). They are not images: the values window and the charts show them. Their `levels[0]`
+    /// has the dimensions of the file (no "y" and no "x"); a scalar has no dimension.
+    pub small: Vec<Variable>,
     /// Metadata for the user (attributes, dimensions, all variables). Empty when the format has none.
     pub info: Info,
     /// The first time and the last time with data (see `time`), if the product gives them. A data cube

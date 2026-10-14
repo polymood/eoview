@@ -569,7 +569,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     let day = |k: &str| nodes.get("").and_then(|n| n.2.get(k)).and_then(Value::as_str).and_then(time::parse);
     let valid = day("valid_time_start").zip(day("valid_time_stop")).map(|(a, b)| (a, b + 86_399.0));
     let info = info(&nodes, &shown);
-    Ok(Dataset { product: Product { name, desc, vars, valid, info }, sources })
+    Ok(Dataset { product: Product { name, desc, vars, small: vec![], valid, info }, sources })
 }
 
 /// A JSON attribute as text: a string as it is, a list of numbers or strings with commas, other values as JSON.

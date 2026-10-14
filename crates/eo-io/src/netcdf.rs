@@ -8,15 +8,36 @@ use crate::hdf5::{self, Dataset as H5};
 use crate::{Source, codec};
 use eo_core::*;
 
-/// Variables of one file. `idx` is the index of `src` in the dataset sources. The 1D datasets come back too
-/// (coordinates), and the metadata of the file for the user (`info`).
-pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>, Info)> {
+/// Variables of one file. `idx` is the index of `src` in the dataset sources. The scalars and the 1D
+/// variables come back as `Product::small`, the 1D datasets as datasets too (coordinates), and the
+/// metadata of the file for the user (`info`).
+pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<Variable>, Vec<H5>, Info)> {
     let (ds, groups) = hdf5::file(src, 0)?;
     let info = info(&ds, &groups);
     let mut vars = vec![];
+    let mut small = vec![];
     let mut one_d = vec![];
+    let names = |d: &H5| -> Vec<String> { info.vars.iter().find(|m| m.name == d.path).map(|m| m.dims.iter().map(|x| x.0.clone()).collect()).unwrap_or_default() };
     for d in ds {
         if d.shape.len() < 2 {
+            // A dimension without a coordinate variable is not a variable.
+            let phony = d.text("NAME").is_some_and(|n| n.starts_with("This is a netCDF dimension"));
+            if let (false, Ok(mut a)) = (phony, d.array(idx)) {
+                a.dims = names(&d);
+                small.push(Variable {
+                    bands: vec![d.path.rsplit('/').next().unwrap_or(&d.path).to_string()],
+                    name: d.path.clone(),
+                    group: String::new(),
+                    levels: vec![a],
+                    fill: d.num("_FillValue"),
+                    scale: d.num("scale_factor").unwrap_or(1.0),
+                    offset: d.num("add_offset").unwrap_or(0.0),
+                    units: d.text("units").unwrap_or("").to_string(),
+                    georef: Georef::None,
+                    times: Default::default(),
+                    dims: names(&d),
+                });
+            }
             if d.shape.len() == 1 {
                 one_d.push(d);
             }
@@ -41,7 +62,7 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>, Info
             units: d.text("units").unwrap_or("").to_string(),
             georef: Georef::None,
             times: Default::default(),
-            dims: info.vars.iter().find(|m| m.name == d.path).map(|m| m.dims.iter().map(|x| x.0.clone()).collect()).unwrap_or_default(),
+            dims: names(&d),
         });
     }
     // Time dimension: the reader does not read the dimension lists of HDF5, it compares the lengths.
@@ -59,7 +80,7 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<H5>, Info
             v.times = std::sync::Arc::new(vals.into_iter().map(|x| t0 + x * unit).collect());
         }
     }
-    Ok((vars, one_d, info))
+    Ok((vars, small, one_d, info))
 }
 
 /// Attributes that the NetCDF-4 library writes for itself: not for the user.
@@ -92,7 +113,9 @@ pub fn info(ds: &[H5], groups: &[hdf5::Group]) -> Info {
         }
         let g = dir(&d.path);
         // The dimension scales of `DIMENSION_LIST`, by their addresses. Without it: the scale of the same length.
+        // A dimension scale (a coordinate variable) is its own dimension.
         let listed: Vec<Option<String>> = match d.attrs.get("DIMENSION_LIST") {
+            _ if scale(d) => vec![Some(leaf(&d.path))],
             Some(hdf5::Attr::Num(a)) if a.len() == d.shape.len() => a.iter().map(|&x| ds.iter().find(|s| s.addr as f64 == x).map(|s| leaf(&s.path))).collect(),
             _ => vec![None; d.shape.len()],
         };

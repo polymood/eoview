@@ -295,6 +295,11 @@ fn any_two_dimensions_are_the_image() {
     };
     assert_eq!(l.size(), (20, 6));
     assert_eq!(l.pick(), pick);
+    // The scalars and the 1D variables: the values of a dimension (a coordinate variable) and a scalar.
+    let small = |n: &str| first.ds.product.small.iter().find(|v| v.name.ends_with(n)).unwrap_or_else(|| panic!("no small variable {n}"));
+    assert_eq!(eo_io::read_all(&first.ds, small("MAP_6/dim_wavelength")).unwrap(), [400.0, 402.5, 405.0, 407.5]);
+    assert_eq!(eo_io::read_all(&first.ds, small("MAP_1/wavelength_start")).unwrap(), [400.0]);
+    assert_eq!(small("MAP_6/dim_wavelength").dims, ["dim_wavelength"]);
     let flat = |alt: u64, act: u64| [2, 1, alt, act, 1, 2, 3, 1].iter().zip(&shape).fold(0, |i, (p, n)| i * n + p) as f64;
     for (x, y) in [(1, 0), (7, 3), (19, 5)] {
         e.probe(l.clone(), x, y);

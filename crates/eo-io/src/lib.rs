@@ -61,11 +61,11 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         let (w, h) = (levels[0].len_of("x"), levels[0].len_of("y"));
         let desc = format!("JPEG 2000 {:?}, {w} x {h}, {} level(s)", levels[0].dtype, levels.len());
         let var = Variable { name: name.clone(), group: String::new(), levels, bands, fill: None, scale: 1.0, offset: 0.0, units: String::new(), georef: Georef::None, times: Default::default(), dims: vec![] };
-        Product { name, desc, vars: vec![var], valid: None, info: Default::default() }
+        Product { name, desc, vars: vec![var], small: vec![], valid: None, info: Default::default() }
     } else if nitf::is_nitf(&head) {
         nitf::open(&src, 0)?
     } else if head.starts_with(&[0x89, b'H', b'D', b'F']) {
-        let (mut vars, one_d, info) = netcdf::variables(&src, 0)?;
+        let (mut vars, small, one_d, info) = netcdf::variables(&src, 0)?;
         let all = vars.clone();
         for v in &mut vars {
             v.georef = netcdf::georef(&src, v, &one_d, &all);
@@ -74,9 +74,52 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
             return Err(format!("{url}: no dataset with 2 or more dimensions").into());
         }
         let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len());
-        Product { name, desc, vars, valid: None, info }
+        Product { name, desc, vars, small, valid: None, info }
     } else {
         return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-4, HDF5, Zarr or SAFE expected)").into());
     };
     Ok(Dataset { product, sources: vec![Arc::new(src)] })
+}
+
+/// All physical values of variable `v` of `ds` at level 0, in C order, with NaN for the fill value. For the
+/// small variables (`Product::small`): this reads the full array. This function blocks.
+pub fn read_all(ds: &Dataset, v: &Variable) -> Result<Vec<f64>> {
+    let a = &v.levels[0];
+    let n = a.shape.iter().product::<u64>() as usize;
+    if n > 50_000_000 {
+        return Err(format!("{}: {n} values, more than the limit of 50 million", v.name).into());
+    }
+    let (grid, cs) = (a.grid(), a.chunk.clone());
+    let mut out = vec![f64::NAN; n];
+    for i in 0..a.chunks.len() {
+        let c = a.chunks.at(i);
+        let src = ds.sources.get(c.src as usize).ok_or("no such source")?;
+        let raw = if c.len == 0 { bytes::Bytes::new() } else { src.read_chunk(c)? };
+        if raw.is_empty() {
+            continue;
+        }
+        let vals = codec::to_f64(a, &codec::decode(a, &raw)?);
+        // Position of the chunk in the grid, then each value of the chunk in the array (edge chunks are padded).
+        let mut pos = vec![0u64; grid.len()];
+        let mut r = i as u64;
+        for k in (0..grid.len()).rev() {
+            pos[k] = r % grid[k];
+            r /= grid[k];
+        }
+        for (j, x) in vals.iter().enumerate() {
+            let (mut q, mut at, mut inside) = (j as u64, 0u64, true);
+            let mut stride = 1u64;
+            for k in (0..cs.len()).rev() {
+                let p = pos[k] * cs[k] + q % cs[k];
+                q /= cs[k];
+                inside &= p < a.shape[k];
+                at += p * stride;
+                stride *= a.shape[k];
+            }
+            if inside && x.is_finite() && Some(*x) != v.fill {
+                out[at as usize] = x * v.scale + v.offset;
+            }
+        }
+    }
+    Ok(out)
 }
