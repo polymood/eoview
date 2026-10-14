@@ -1730,9 +1730,9 @@ impl App {
         self.opens.insert(req, Open { pane, save: None, order: usize::MAX, path, series: vec![], band: None, op: None, to: None, replace: None, var: None });
     }
 
-    /// Number of products that open now, time steps included.
+    /// Number of products that open now, time steps and channel layers (other bands, picks) included.
     pub fn opens_pending(&self) -> usize {
-        self.opens.len() + self.step_opens.len()
+        self.opens.len() + self.step_opens.len() + self.requests.len()
     }
 
     /// True if a product opens in view `pane`.
