@@ -101,6 +101,8 @@ pub struct Probe {
 /// A view of the dock: camera, layers and compare mode.
 pub struct Pane {
     pub id: u32,
+    /// A text after the title of the tab (the index of a view along a dimension).
+    pub note: String,
     pub v: View,
     /// Layers, lowest first.
     pub layers: Vec<MapLayer>,
@@ -180,6 +182,7 @@ impl Pane {
     pub fn new(id: u32) -> Pane {
         Pane {
             id,
+            note: String::new(),
             v: View::new(id),
             layers: vec![],
             sel: 0,
@@ -252,11 +255,12 @@ impl Pane {
     }
 
     pub fn title(&self) -> String {
-        match self.layers.last() {
+        let t = match self.layers.last() {
             Some(l) if self.layers.len() > 1 => format!("{} (+{})", l.label(40), self.layers.len() - 1),
             Some(l) => l.label(48),
             None => t("Empty view").into(),
-        }
+        };
+        if self.note.is_empty() { t } else { format!("{t} · {}", self.note) }
     }
 
     pub fn has_warp(&self) -> bool {
@@ -614,6 +618,8 @@ pub struct App {
     pub smalls: crate::dims::Smalls,
     /// The profile along a dimension at the cursor (layer panel).
     pub profile: crate::dims::Profile,
+    /// The form "Views along a dimension" of the layer panel: dimension, first index, last index, step.
+    pub along: (Option<String>, u64, u64, u64),
     last_pick: eo_cache::Pick,
     pub palette: Option<crate::ui::Palette>,
     /// URL field of the "open URL" dialog: text, add as a layer, view.
@@ -716,6 +722,7 @@ impl App {
             win: None,
             smalls: crate::dims::Smalls::new(ctx.clone()),
             profile: Default::default(),
+            along: (None, 0, 0, 1),
             ctx,
             engine,
             events,
@@ -1116,37 +1123,40 @@ impl App {
     /// Layout preset: 1, 2 side by side, 2 x 2 or 3 x 3 views. It adds empty views if necessary. More
     /// views go as tabs in the last cell.
     pub fn layout(&mut self, n: usize) {
-        let (cols, rows) = match n {
-            1 => (1, 1),
-            2 => (2, 1),
-            4 => (2, 2),
-            _ => (3, 3),
+        let cols = match n {
+            1 => 1,
+            2 | 4 => 2,
+            _ => 3,
         };
-        let n = cols * rows;
+        let n = match n {
+            1 | 2 | 4 => n,
+            _ => 9,
+        };
         let mut ids: Vec<u32> = vec![self.active];
         ids.extend(self.view_tabs().into_iter().filter(|&i| i != self.active));
-        // The other tabs (Python, charts, figure) stay, to the right of the views.
-        let others: Vec<u32> = self.dock.iter_all_tabs().map(|t| *t.1).filter(|&i| !is_view(i)).collect();
         ids.extend(self.panes.iter().map(|p| p.id).filter(|i| !ids.contains(i) && !self.floating.contains(i)).collect::<Vec<_>>());
         while ids.len() < n {
             let id = self.new_pane();
             ids.push(id);
         }
         let extra = ids.split_off(n);
-        let cell = |k: usize| {
-            let mut v = vec![ids[k]];
-            if k == n - 1 {
-                v.extend(&extra);
-            }
-            v
-        };
-        let mut dock = DockState::new(cell(0));
+        let mut cells: Vec<Vec<u32>> = ids.into_iter().map(|i| vec![i]).collect();
+        cells.last_mut().unwrap().extend(extra);
+        self.grid(cells, cols);
+    }
+
+    /// Put the views in a grid of `cols` columns: one list of tabs for each cell, row after row. The other
+    /// tabs (Python, charts, figure) stay, to the right of the views.
+    fn grid(&mut self, cells: Vec<Vec<u32>>, cols: usize) {
+        let others: Vec<u32> = self.dock.iter_all_tabs().map(|t| *t.1).filter(|&i| !is_view(i)).collect();
+        let rows = cells.len().div_ceil(cols);
+        let mut dock = DockState::new(cells[0].clone());
         let tree = dock.main_surface_mut();
         let mut row_nodes = vec![];
         let mut cur = NodeIndex::root();
         for r in 0..rows {
             if r + 1 < rows {
-                let [a, b] = tree.split_below(cur, 1.0 / (rows - r) as f32, cell((r + 1) * cols));
+                let [a, b] = tree.split_below(cur, 1.0 / (rows - r) as f32, cells[(r + 1) * cols].clone());
                 row_nodes.push(a);
                 cur = b;
             } else {
@@ -1154,9 +1164,10 @@ impl App {
             }
         }
         for (r, node) in row_nodes.into_iter().enumerate() {
+            let n = cols.min(cells.len() - r * cols);
             let mut cur = node;
-            for c in 0..cols - 1 {
-                let [_, b] = tree.split_right(cur, 1.0 / (cols - c) as f32, cell(r * cols + c + 1));
+            for c in 0..n - 1 {
+                let [_, b] = tree.split_right(cur, 1.0 / (n - c) as f32, cells[r * cols + c + 1].clone());
                 cur = b;
             }
         }
@@ -1164,6 +1175,46 @@ impl App {
         for t in others {
             self.show_tab(t, true);
         }
+    }
+
+    /// Views along a dimension (DESIGN section 16.4): view `id` and copies of it show the selected layer at
+    /// the indexes `first` to `last` of dimension `dim`, at an interval `step`, in one link group. More than 16
+    /// views: a grid of 4 x 4 cells, with tabs in each cell.
+    pub fn views_along(&mut self, id: u32, dim: String, first: u64, last: u64, step: u64) {
+        let Some(sel) = self.pane(id).map(|p| p.sel) else { return };
+        let idx: Vec<u64> = (first..=last).step_by(step.max(1) as usize).collect();
+        if idx.is_empty() {
+            return;
+        }
+        if let Some(p) = self.pane_mut(id) {
+            p.link = p.link.max(1);
+        }
+        let mut ids = vec![];
+        for (n, &i) in idx.iter().enumerate() {
+            let v = if n == 0 { id } else {
+                let v = self.new_pane();
+                self.copy_to(id, v);
+                v
+            };
+            let Some(p) = self.pane_mut(v) else { continue };
+            if let Some(l) = p.layers.get_mut(sel) {
+                let mut pk = l.pick.clone();
+                pk.at.retain(|x| x.0 != dim);
+                pk.at.push((dim.clone(), i));
+                l.set_pick(pk);
+            }
+            p.note = format!("{dim} {i}");
+            self.load_steps(v, sel);
+            ids.push(v);
+        }
+        let n = ids.len().min(16);
+        let cols = (n as f64).sqrt().ceil() as usize;
+        let mut cells = vec![vec![]; n];
+        for (k, v) in ids.into_iter().enumerate() {
+            cells[k % n].push(v);
+        }
+        self.grid(cells, cols);
+        self.active = id;
     }
 
     /// Make the inputs of view `id` again, and ask for the missing warps.
@@ -2333,6 +2384,23 @@ mod workspace_tests {
         assert_eq!((b.layers.len(), b.layers[0].band, b.layers[0].kind), (1, c, Kind::Band));
         assert!(a.link > 0 && a.link == b.link && app.active == b.id);
         assert_eq!(app.view_tabs().len(), 2);
+    }
+
+    /// Views along a dimension: one linked view for each camera of an 8D variable, each with its index.
+    #[test]
+    fn views_along_a_dimension() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, format!("{dir}nc4_nd.nc"), false);
+        wait(&mut app, |a| a.panes[0].layers.first().is_some_and(|l| !l.inputs.is_empty()));
+        app.run(crate::ui::Cmd::ViewsAlong("dim_camera".into(), 0, 3, 1), 1);
+        let cam = |l: &Arc<Layer>| l.pick().at.iter().find(|p| p.0 == "dim_camera").map(|p| p.1);
+        wait(&mut app, |a| a.panes.len() == 4 && a.panes.iter().all(|p| p.layers[0].inputs.first().is_some_and(|l| l.var().name == p.layers[0].inputs[0].var().name && p.layers[0].shown_pgen == p.layers[0].pgen)));
+        let got: Vec<(Option<u64>, String)> = app.panes.iter().map(|p| (cam(&p.layers[0].inputs[0]), p.note.clone())).collect();
+        assert_eq!(got, (0..4).map(|i| (Some(i), format!("dim_camera {i}"))).collect::<Vec<_>>());
+        assert!(app.panes.iter().all(|p| p.link == app.panes[0].link && p.link > 0));
+        assert_eq!(app.view_tabs().len(), 4);
     }
 
     /// Same display for all layers: the stretch of the selected layer goes to the other layers.

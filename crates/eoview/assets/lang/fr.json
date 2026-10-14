@@ -558,5 +558,11 @@
  "The values that the table has read: the visible cells and a margin": "Les valeurs que le tableau a lues : les cellules visibles et une marge",
  "No data.": "Pas de données.",
  "Profile along": "Profil selon",
- "Pixel {}, {}": "Pixel {}, {}"
+ "Pixel {}, {}": "Pixel {}, {}",
+ "Views along a dimension": "Vues selon une dimension",
+ "From": "De",
+ "to": "à",
+ "step": "pas",
+ "{} views. More than 16 views: the cells of the grid have tabs.": "{} vues. Plus de 16 vues : les cellules de la grille ont des onglets.",
+ "Open the views": "Ouvrir les vues"
 }

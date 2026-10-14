@@ -69,6 +69,8 @@ pub enum Cmd {
     DimIndex(i32),
     /// Show the values of a scalar or a 1D variable of the selected layer in the values window.
     SmallValues(usize),
+    /// Views along a dimension: the dimension, the first index, the last index, the step.
+    ViewsAlong(String, u64, u64, u64),
     /// Copy the limits of the view (west, south, east, north) to the clipboard.
     CopyExtent,
     Help,
@@ -1245,6 +1247,7 @@ impl App {
             Cmd::Open(add, What::Url) => self.url = Some((String::new(), add, id)),
             Cmd::DimIndex(d) => self.step_dim(id, d),
             Cmd::SmallValues(k) => (self.values.open, self.values.small) = (true, Some(k)),
+            Cmd::ViewsAlong(d, a, b, s) => self.views_along(id, d, a, b, s),
             Cmd::Open(add, What::Path(p)) => self.open(id, p, add),
             Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
@@ -1866,6 +1869,7 @@ impl App {
         let mut prof_dim = self.profile.dim.clone();
         let prof = (self.profile.key, self.profile.values.clone());
         let mut want_prof = None;
+        let mut along = self.along.clone();
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.strong(t("Layers"));
@@ -2095,6 +2099,37 @@ impl App {
                         }
                     }
                 }
+                // One view for each index of a dimension, in one link group.
+                let others: Vec<usize> = (0..v.dims.len()).filter(|&k| l.inputs.first().and_then(|i| i.var().axes()).is_some_and(|ax| !ax.contains(&k)) && v.levels[0].shape[k] > 1).collect();
+                if !others.is_empty() {
+                    egui::CollapsingHeader::new(t("Views along a dimension")).show(ui, |ui| {
+                        let k = along.0.as_ref().and_then(|n| others.iter().copied().find(|&k| v.dims[k] == *n)).unwrap_or(others[0]);
+                        let size = v.levels[0].shape[k];
+                        if along.0.as_ref() != Some(&v.dims[k]) {
+                            along = (Some(v.dims[k].clone()), 0, size - 1, 1);
+                        }
+                        egui::ComboBox::from_id_salt("along dim").selected_text(&v.dims[k]).show_ui(ui, |ui| {
+                            for &j in &others {
+                                if ui.selectable_label(j == k, &v.dims[j]).clicked() {
+                                    along = (Some(v.dims[j].clone()), 0, v.levels[0].shape[j] - 1, 1);
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(t("From"));
+                            ui.add(egui::DragValue::new(&mut along.1).range(0..=size - 1));
+                            ui.label(t("to"));
+                            ui.add(egui::DragValue::new(&mut along.2).range(0..=size - 1));
+                            ui.label(t("step"));
+                            ui.add(egui::DragValue::new(&mut along.3).range(1..=size.max(1)));
+                        });
+                        let n = if along.2 >= along.1 { (along.2 - along.1) / along.3.max(1) + 1 } else { 0 };
+                        ui.weak(tf("{} views. More than 16 views: the cells of the grid have tabs.", &[&n.to_string()]));
+                        if ui.add_enabled(n > 0, egui::Button::new(t("Open the views"))).clicked() {
+                            cmds.push((Cmd::ViewsAlong(v.dims[k].clone(), along.1, along.2, along.3), id));
+                        }
+                    });
+                }
             });
         }
 
@@ -2161,6 +2196,7 @@ impl App {
             self.load_steps(id, sel);
         }
         self.profile.dim = prof_dim;
+        self.along = along;
         if let Some((l, x, y, k)) = want_prof
             && self.profile.key != Some((l.id, x, y, k))
             && self.profile.req.is_none()
