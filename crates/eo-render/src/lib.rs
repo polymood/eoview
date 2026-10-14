@@ -311,7 +311,7 @@ pub enum Compare {
     Swipe,
     /// A or B, one after the other.
     Flicker,
-    /// A - B, A / B or 10 log10(A / B) with the difference color map.
+    /// A - B, A / B, 10 log10(A / B) or 100 (A - B) / B (percent) with the difference color map.
     Difference,
 }
 
@@ -335,7 +335,7 @@ fn program_body(layers: &[LayerSpec], cmp: Compare) -> String {
             "if (!({}) && !({})) {{
         let xa = f32({});
         let xb = f32({});
-        let d = select(select(xa - xb, xa / xb, u.diff == 1u), 10.0 * log2(xa / xb) * 0.30103, u.diff == 2u);
+        let d = select(select(select(xa - xb, xa / xb, u.diff == 1u), 10.0 * log2(xa / xb) * 0.30103, u.diff == 2u), 100.0 * (xa - xb) / xb, u.diff == 3u);
         if (finite(d)) {{
             let t = clamp((d - u.dlo) / (u.dhi - u.dlo), 0.0, 1.0);
             col = vec4f(cmap(t, 4u, (u.dflags & 8u) != 0u), 1.0);

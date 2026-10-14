@@ -63,6 +63,8 @@ pub enum StepIn {
     Time(u64),
     Path(String),
     Layer(Arc<Layer>),
+    /// An index of an other dimension of the base layer (an aggregate along any dimension).
+    Pick(crate::Pick),
 }
 
 /// The operation of a computed layer.
@@ -194,6 +196,7 @@ impl Inner {
             match s {
                 StepIn::Layer(l) => Ok(l.clone()),
                 StepIn::Time(t) => self.layer(base.ds.clone(), base.ds_id, var, choice, *t, &base.pick()),
+                StepIn::Pick(p) => self.layer(base.ds.clone(), base.ds_id, var, choice, base.time, p),
                 StepIn::Path(p) => {
                     let ds = eo_io::open(p, &self.rt)?;
                     let var = ds.product.vars.iter().position(|v| v.name == name).ok_or_else(|| Error(format!("{p}: no variable {name}")))?;

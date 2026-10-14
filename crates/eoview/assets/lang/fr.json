@@ -564,5 +564,10 @@
  "to": "à",
  "step": "pas",
  "{} views. More than 16 views: the cells of the grid have tabs.": "{} vues. Plus de 16 vues : les cellules de la grille ont des onglets.",
- "Open the views": "Ouvrir les vues"
+ "Open the views": "Ouvrir les vues",
+ "Aggregate along a dimension": "Agréger selon une dimension",
+ "An aggregate uses one band: show one band of the layer.": "Un agrégat utilise une bande : affichez une bande de la couche.",
+ "along {}": "selon {}",
+ "A new layer: the {} of the {} indexes of {}": "Une nouvelle couche : {} des {} indices de {}",
+ "Reading the plane. The view shows the old plane until the new one is ready.": "Lecture du plan. La vue montre l'ancien plan jusqu'à ce que le nouveau soit prêt."
 }

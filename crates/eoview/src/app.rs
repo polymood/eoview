@@ -337,6 +337,7 @@ impl Pane {
                 (-h, h)
             }
             1 => (0.0, 2.0),
+            3 => (-50.0, 50.0),
             _ => (-6.0, 6.0),
         };
     }
@@ -1571,6 +1572,16 @@ impl App {
             }
             return;
         }
+        if let Some(OpSave::AggDim { how, source, dim }) = o.op.clone().filter(|_| l.op.is_none()) {
+            let mut m = MapLayer::new(0, source.path.clone(), l);
+            m.apply(&source);
+            let how = eo_cache::Agg::ALL.iter().find(|a| a.1 == how).map_or(eo_cache::Agg::Mean, |a| a.0);
+            match agg_dim_start(&self.engine, &m, how, &dim) {
+                Ok((req, _, _)) => drop(self.opens.insert(req, o)),
+                Err(e) => self.error = Some(format!("{}: {e}", o.path)),
+            }
+            return;
+        }
         if let Some((mid, k)) = o.to {
             return self.math_input(mid, k, o, l);
         }
@@ -1658,6 +1669,16 @@ impl App {
     pub fn aggregate(&mut self, id: u32, how: eo_cache::Agg, range: (usize, usize)) {
         let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
         match agg_start(&self.engine, l, how, range) {
+            Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None, replace: None, var: None })),
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Make a new layer in view `id`: the aggregate `how` of all the indexes of dimension `dim` of the
+    /// selected band of the selected layer (the "Avg" of Panoply, and more).
+    pub fn aggregate_dim(&mut self, id: u32, how: eo_cache::Agg, dim: String) {
+        let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
+        match agg_dim_start(&self.engine, l, how, &dim) {
             Ok((req, path, op)) => drop(self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None, replace: None, var: None })),
             Err(e) => self.error = Some(e),
         }
@@ -1899,7 +1920,7 @@ impl App {
             }
             s.series.iter_mut().for_each(|x| fix(&mut x.0));
             match &mut s.op {
-                Some(OpSave::Agg { source, .. }) => fix_save(source, fix),
+                Some(OpSave::Agg { source, .. } | OpSave::AggDim { source, .. }) => fix_save(source, fix),
                 Some(OpSave::Math { inputs, .. }) => inputs.iter_mut().for_each(|i| fix_save(i, fix)),
                 None => {}
             }
@@ -1949,7 +1970,7 @@ impl App {
             }
             op => {
                 let src = match op {
-                    Some(OpSave::Agg { source, .. }) => &source.path,
+                    Some(OpSave::Agg { source, .. } | OpSave::AggDim { source, .. }) => &source.path,
                     _ => &s.path,
                 };
                 let req = self.engine.open(src.clone());
@@ -2150,6 +2171,30 @@ fn agg_start(engine: &Engine, l: &MapLayer, how: eo_cache::Agg, range: (usize, u
         .collect();
     let path = format!("{} {} {} - {}", l.chan_label(l.band), t(how.name()).to_lowercase(), l.step_label(a), l.step_label(b));
     let op = OpSave::Agg { how: how.name().into(), source: Box::new(l.save()), first: a, last: b };
+    Ok((engine.aggregate(base, var, choice, steps, how), path, op))
+}
+
+/// Start the aggregate `how` of all the indexes of dimension `dim` of the band of layer `l`, with the
+/// index of its other dimensions. Return the engine request, the name of the new layer and its operation.
+fn agg_dim_start(engine: &Engine, l: &MapLayer, how: eo_cache::Agg, dim: &str) -> Result<(u64, String, crate::layer::OpSave), String> {
+    if l.kind != crate::layer::Kind::Band {
+        return Err(t("An aggregate uses one band: show one band of the layer.").into());
+    }
+    let c = l.chans.get(l.band).ok_or("no band")?;
+    let (var, choice) = (c.var, c.choice);
+    let base = l.cache.values().find(|x| x.0 == l.pgen).map(|x| x.1.clone()).ok_or_else(|| t("The band is not open yet.").to_string())?;
+    let v = &base.ds.product.vars[var];
+    let k = v.dims.iter().position(|d| d == dim).ok_or_else(|| format!("{}: no dimension {dim}", v.name))?;
+    let steps: Vec<eo_cache::StepIn> = (0..v.levels[0].shape[k])
+        .map(|i| {
+            let mut p = l.pick.clone();
+            p.at.retain(|x| x.0 != dim);
+            p.at.push((dim.to_string(), i));
+            eo_cache::StepIn::Pick(p)
+        })
+        .collect();
+    let path = format!("{} {} {}", l.chan_label(l.band), t(how.name()).to_lowercase(), tf("along {}", &[dim]));
+    let op = OpSave::AggDim { how: how.name().into(), source: Box::new(l.save()), dim: dim.into() };
     Ok((engine.aggregate(base, var, choice, steps, how), path, op))
 }
 
@@ -2401,6 +2446,32 @@ mod workspace_tests {
         assert_eq!(got, (0..4).map(|i| (Some(i), format!("dim_camera {i}"))).collect::<Vec<_>>());
         assert!(app.panes.iter().all(|p| p.link == app.panes[0].link && p.link > 0));
         assert_eq!(app.view_tabs().len(), 4);
+    }
+
+    /// The mean along dim_camera of the 8D test file is the mean of the four cameras at each pixel.
+    #[test]
+    fn mean_along_a_dimension() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, format!("{dir}nc4_nd.nc"), false);
+        wait(&mut app, |a| a.panes[0].layers.first().is_some_and(|l| !l.inputs.is_empty()));
+        // MAP_1/stokes_vector: wavelength by Stokes parameter, at ACT 1 (ACT 0 is fill).
+        let mut p = app.panes[0].layers[0].pick.clone();
+        p.at.retain(|x| x.0 != "dim_ACT");
+        p.at.push(("dim_ACT".into(), 1));
+        app.panes[0].layers[0].set_pick(p);
+        app.load_steps(1, 0);
+        wait(&mut app, |a| a.panes[0].layers[0].shown_pgen == a.panes[0].layers[0].pgen);
+        app.run(crate::ui::Cmd::AggregateDim(eo_cache::Agg::Mean, "dim_camera".into()), 1);
+        wait(&mut app, |a| a.panes[0].layers.len() == 2 && !a.panes[0].layers[1].inputs.is_empty());
+        let l = app.panes[0].layers[1].inputs[0].clone();
+        app.engine.probe(l.clone(), 2, 3);
+        wait(&mut app, |a| a.probes.get(&l.id).is_some_and(|p| p.last.is_some()));
+        let got = app.probes[&l.id].last.as_ref().unwrap().2[0].unwrap();
+        // Flat index of [camera, 0, 0, 1, 0, 0, 3, 2] in [4, 1, 6, 20, 3, 3, 5, 3], mean over the cameras.
+        let flat = |c: f64| ((((c * 6.0 * 20.0 + 1.0) * 3.0 * 3.0) * 5.0 + 3.0) * 3.0) + 2.0;
+        assert!((got - flat(1.5)).abs() < 1e-3 * flat(1.5), "{got} {}", flat(1.5));
     }
 
     /// Same display for all layers: the stretch of the selected layer goes to the other layers.

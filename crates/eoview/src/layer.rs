@@ -857,6 +857,8 @@ pub enum OpSave {
     /// An aggregate over time (`how`: the English name of `eo_cache::Agg`) of the steps `first` to `last`
     /// of the layer `source`.
     Agg { how: String, source: Box<LayerSave>, first: usize, last: usize },
+    /// An aggregate along dimension `dim` (all its indexes) of the layer `source`.
+    AggDim { how: String, source: Box<LayerSave>, dim: String },
     /// Layer math: the expression `expr` of the layers `inputs`, with the names `names` in the expression.
     Math { expr: String, names: Vec<String>, inputs: Vec<LayerSave> },
 }

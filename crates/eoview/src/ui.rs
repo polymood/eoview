@@ -71,6 +71,8 @@ pub enum Cmd {
     SmallValues(usize),
     /// Views along a dimension: the dimension, the first index, the last index, the step.
     ViewsAlong(String, u64, u64, u64),
+    /// A new layer: the aggregate of all the indexes of a dimension of the selected band.
+    AggregateDim(eo_cache::Agg, String),
     /// Copy the limits of the view (west, south, east, north) to the clipboard.
     CopyExtent,
     Help,
@@ -1248,6 +1250,7 @@ impl App {
             Cmd::DimIndex(d) => self.step_dim(id, d),
             Cmd::SmallValues(k) => (self.values.open, self.values.small) = (true, Some(k)),
             Cmd::ViewsAlong(d, a, b, s) => self.views_along(id, d, a, b, s),
+            Cmd::AggregateDim(how, d) => self.aggregate_dim(id, how, d),
             Cmd::Open(add, What::Path(p)) => self.open(id, p, add),
             Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
@@ -2054,6 +2057,12 @@ impl App {
                     l.set_pick(p);
                     pick_changed = true;
                 }
+                if l.shown_pgen != l.pgen {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.weak(t("Reading the plane. The view shows the old plane until the new one is ready."));
+                    });
+                }
                 if l.inputs.first().is_some_and(|x| x.sample.is_empty()) && l.shown_pgen == l.pgen {
                     ui.colored_label(ui.visuals().warn_fg_color, t("No data in this plane: all values of the sample are the fill value."));
                 }
@@ -2128,6 +2137,23 @@ impl App {
                         if ui.add_enabled(n > 0, egui::Button::new(t("Open the views"))).clicked() {
                             cmds.push((Cmd::ViewsAlong(v.dims[k].clone(), along.1, along.2, along.3), id));
                         }
+                    });
+                    egui::CollapsingHeader::new(t("Aggregate along a dimension")).show(ui, |ui| {
+                        let k = along.0.as_ref().and_then(|n| others.iter().copied().find(|&k| v.dims[k] == *n)).unwrap_or(others[0]);
+                        egui::ComboBox::from_id_salt("agg dim").selected_text(&v.dims[k]).show_ui(ui, |ui| {
+                            for &j in &others {
+                                if ui.selectable_label(j == k, &v.dims[j]).clicked() {
+                                    along = (Some(v.dims[j].clone()), 0, v.levels[0].shape[j] - 1, 1);
+                                }
+                            }
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            for (how, name) in eo_cache::Agg::ALL {
+                                if ui.button(t(name)).on_hover_text(tf("A new layer: the {} of the {} indexes of {}", &[&t(name).to_lowercase(), &v.levels[0].shape[k].to_string(), &v.dims[k]])).clicked() {
+                                    cmds.push((Cmd::AggregateDim(how, v.dims[k].clone()), id));
+                                }
+                            }
+                        });
                     });
                 }
             });
@@ -2612,6 +2638,7 @@ fn compare_ui(ui: &mut egui::Ui, p: &mut Pane) {
                 ui.selectable_value(&mut p.diff, 0, "A - B");
                 ui.selectable_value(&mut p.diff, 1, "A / B");
                 ui.selectable_value(&mut p.diff, 2, "10 log10(A / B)");
+                ui.selectable_value(&mut p.diff, 3, "% (A - B) / B");
                 if d != p.diff {
                     p.diff_range();
                 }
@@ -2671,7 +2698,7 @@ fn overlays(p: &Pane, pt: &egui::Painter, ppp: f32, mpp: Option<f64>, cross: Opt
             }
             Cmp::Blend => label(r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &format!("{}  B {}  {:.0} %", t("Blend"), name(1), p.blend * 100.0), Color32::WHITE),
             Cmp::Difference => {
-                let op = ["A - B", "A / B", "10 log10(A / B)"][p.diff as usize % 3];
+                let op = ["A - B", "A / B", "10 log10(A / B)", "100 (A - B) / B %"][p.diff as usize % 4];
                 label(r.left_top() + vec2(8.0, 8.0), Align2::LEFT_TOP, &format!("{op}   A {}   B {}", name(0), name(1)), Color32::WHITE);
             }
             Cmp::Off => {}
