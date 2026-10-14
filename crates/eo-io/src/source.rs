@@ -8,6 +8,7 @@
 use bytes::Bytes;
 use eo_core::{Error, Result};
 use eo_core::ChunkLoc;
+use futures_util::future::BoxFuture;
 use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt, path::Path};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -31,7 +32,11 @@ pub struct Source {
     index: tokio::sync::OnceCell<Vec<u64>>,
     /// A keyed source (the chunk objects of a Zarr array): the path or URL of object `i`.
     keys: Option<Box<dyn Fn(u64) -> String + Send + Sync>>,
+    /// A computed source (the chunks of an OPeNDAP variable): `fetch(i)` gives the bytes of object `i`.
+    fetch: Option<Fetch>,
 }
+
+type Fetch = Box<dyn Fn(u64) -> BoxFuture<'static, Result<Option<Bytes>>> + Send + Sync>;
 
 enum Inner {
     File { map: Bytes, mmap: Option<Arc<memmap2::Mmap>> },
@@ -143,7 +148,7 @@ pub fn is_remote(url: &str) -> bool {
 impl Source {
     /// Source for a local path or an HTTP(S) URL. No I/O: the source opens at the first use.
     pub fn new(url: &str, rt: &Handle) -> Source {
-        Source { name: url.into(), rt: rt.clone(), state: OnceLock::new(), len: OnceLock::new(), shard: None, index: Default::default(), keys: None }
+        Source { name: url.into(), rt: rt.clone(), state: OnceLock::new(), len: OnceLock::new(), shard: None, index: Default::default(), keys: None, fetch: None }
     }
 
     /// Keyed source for the chunk objects of the array at `url`: `key(i)` is the path or URL of object
@@ -152,8 +157,17 @@ impl Source {
         Source { keys: Some(Box::new(key)), ..Source::new(url, rt) }
     }
 
+    /// Keyed source whose object `i` is the result of `fetch(i)` (for example one OPeNDAP request for chunk
+    /// `i`). `name` identifies the objects in the disk cache. No I/O.
+    pub fn fetched(name: &str, rt: &Handle, fetch: impl Fn(u64) -> BoxFuture<'static, Result<Option<Bytes>>> + Send + Sync + 'static) -> Source {
+        Source { fetch: Some(Box::new(fetch)), ..Source::new(name, rt) }
+    }
+
     /// All bytes of object `i` of a keyed source. None: the object does not exist (fill value).
     pub async fn get_keyed(&self, i: u64) -> Result<Option<Bytes>> {
+        if let Some(f) = &self.fetch {
+            return f(i).await;
+        }
         let key = self.keys.as_ref().ok_or_else(|| Error(format!("{}: not a keyed source", self.name)))?;
         Source::new(&key(i), &self.rt).get_whole().await
     }
