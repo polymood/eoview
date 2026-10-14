@@ -81,6 +81,8 @@ pub enum Cmd {
     Plot(crate::figure::FigKind),
     /// The colors of the selected layer in the color map editor of the preferences.
     EditCmap,
+    /// The color maps of the preferences.
+    CmapPrefs,
     /// Copy the limits of the view (west, south, east, north) to the clipboard.
     CopyExtent,
     Help,
@@ -233,6 +235,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Country borders: on or off"), "", Cmd::Overlay(1)),
         (t("Country names: on or off"), "", Cmd::Overlay(2)),
         (t("Preferences..."), "Ctrl+,", Cmd::Prefs),
+        (t("Color maps: import, edit, library"), "", Cmd::CmapPrefs),
         (t("Animate workspace: on or off"), "F6", Cmd::Animate),
         (t("Render video or frames..."), "Ctrl+R", Cmd::Render),
         (t("Render: start with the settings of the render window"), "", Cmd::RenderStart),
@@ -1361,6 +1364,7 @@ impl App {
             Cmd::ViewsAlong(d, a, b, s) => self.views_along(id, d, a, b, s),
             Cmd::AggregateDim(how, d) => self.aggregate_dim(id, how, d),
             Cmd::Plot(k) => (self.figure.kind, self.figure_open) = (k, true),
+            Cmd::CmapPrefs => self.prefs_open = Some(crate::prefs::PrefsWin { section: crate::prefs::Section::ColorMaps, search: String::new() }),
             Cmd::EditCmap => {
                 if let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) {
                     self.cmap_edit = Some((tf("{} edited", &[&crate::colormaps::name(l.cmap)]), l.stops.clone()));

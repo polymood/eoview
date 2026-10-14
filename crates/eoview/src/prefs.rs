@@ -225,7 +225,7 @@ impl App {
             if ids.is_empty() {
                 continue;
             }
-            egui::CollapsingHeader::new(format!("{gname}  ({})", ids.len())).id_salt(("cmaps", g)).default_open(*g == "User").show(ui, |ui| {
+            egui::CollapsingHeader::new(format!("{gname}  ({})", ids.len())).id_salt(("cmaps", g)).default_open(*g == "User" || *g == "Perceptual").show(ui, |ui| {
                 for i in ids {
                     let c = &all[i];
                     ui.horizontal(|ui| {

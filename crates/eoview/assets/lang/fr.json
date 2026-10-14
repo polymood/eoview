@@ -670,5 +670,6 @@
  "The open products, their variables and their metadata": "Les produits ouverts, leurs variables et leurs métadonnées",
  "Value: {}": "Valeur : {}",
  "The last point of the cursor. Click: copy its coordinates": "Le dernier point du curseur. Clic : copier ses coordonnées",
- "The scale of the active view at its center": "L'échelle de la vue active en son centre"
+ "The scale of the active view at its center": "L'échelle de la vue active en son centre",
+ "Color maps: import, edit, library": "Palettes : importer, modifier, bibliothèque"
 }
