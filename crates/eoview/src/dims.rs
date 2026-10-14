@@ -240,3 +240,14 @@ pub fn coord_var(p: &Product, var: &str, dim: &str) -> Option<usize> {
         .filter(|&k| p.small[k].dims.len() == 1 && p.small[k].dims[0] == dim && leaf(&p.small[k].name) == dim && vd.starts_with(&dir(&p.small[k].name)))
         .max_by_key(|&k| dir(&p.small[k].name).len())
 }
+
+/// The profile along a dimension at the cursor (the spectrum of a pixel): the request and its values.
+#[derive(Default)]
+pub struct Profile {
+    /// The name of the dimension that the user selected. None: no profile.
+    pub dim: Option<String>,
+    /// (layer id, x, y, dimension position) of the values, or of the request in progress.
+    pub key: Option<(u64, u64, u64, usize)>,
+    pub req: Option<u64>,
+    pub values: Option<Result<Vec<f64>, String>>,
+}

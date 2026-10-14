@@ -232,6 +232,8 @@ pub enum Event {
     Warp { layer: u64, dst: Option<u32>, res: Result<Arc<Warp>> },
     /// Values of a window of a layer (see `Engine::read`), and the georeferencing of the window.
     Read { req: u64, res: Result<(Arc<Vec<f32>>, Georef)> },
+    /// Physical values along one dimension at one pixel (see `Engine::profile`). NaN: no data.
+    Profile { req: u64, res: Result<Vec<f64>> },
     /// Progress of an export (see `Engine::export`): tiles written and tiles in total. `res`: the end, with a
     /// note for the user.
     Export { req: u64, done: u64, total: u64, res: Option<Result<String>> },
@@ -474,6 +476,19 @@ impl Engine {
                 Err(e) => i.send(Event::Error(e.0)),
             }
         });
+    }
+
+    /// Read the physical values at level-0 pixel (x, y) of `l` for each index of dimension `k` (a position
+    /// in the array), with the index of the other dimensions of `l`: the profile along a dimension (the
+    /// spectrum of a pixel). The result comes as `Event::Profile`.
+    pub fn profile(&self, l: Arc<Layer>, x: u64, y: u64, k: usize) -> u64 {
+        let i = self.inner.clone();
+        let req = i.next.fetch_add(1, Relaxed);
+        self.rt.spawn(async move {
+            let res = i.profile_at(&l, x, y, k).await;
+            i.send(Event::Profile { req, res });
+        });
+        req
     }
 
     /// Make the warp grid of `l` to the display CRS `dst` (EPSG code; None: pixel space).
@@ -1116,6 +1131,42 @@ impl Inner {
             }
         }
         Ok((sum, cnt))
+    }
+
+    async fn profile_at(&self, l: &Layer, x: u64, y: u64, k: usize) -> Result<Vec<f64>> {
+        let v = l.var();
+        let a = v.levels[0].clone();
+        let n = *a.shape.get(k).ok_or("no such dimension")?;
+        if n > 1_000_000 || ["y", "x"].contains(&a.dims[k].as_str()) {
+            return Err("this dimension cannot be a profile".into());
+        }
+        let (ch, cw) = chunk_size(&a);
+        let ats: Vec<Vec<u64>> = (0..n).map(|i| {
+            let mut at = l.at.clone();
+            at[k] = i;
+            at
+        }).collect();
+        // Each chunk once: the values of a profile are often in one chunk.
+        let idx: Vec<usize> = ats.iter().map(|at| chunk_at(&a, at, y / ch, x / cw)).collect();
+        let mut uniq = idx.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        let raws = self.raw_many(l, &uniq.iter().map(|&i| a.chunks.at(i)).collect::<Vec<_>>()).await?;
+        let (fill, scale, offset, part) = (v.fill, v.scale, v.offset, l.part);
+        self.on_pool(0, move || {
+            let dec: Vec<Result<std::borrow::Cow<[u8]>>> = raws.iter().map(|r| if r.is_empty() { Ok(Default::default()) } else { readable(&a, r) }).collect();
+            let mut out = Vec::with_capacity(ats.len());
+            for (at, i) in ats.iter().zip(&idx) {
+                let d = dec[uniq.binary_search(i).unwrap()].as_ref().map_err(Clone::clone)?;
+                let p = PlaneAt::new(&a, at);
+                let e = p.base + (y % ch) as usize * p.sy + (x % cw) as usize * p.sx;
+                let raw = if (e + 1) * a.dtype.size() <= d.len() { value_f64(&a, d, e, part) } else { f64::NAN };
+                let phys = if matches!(part, Part::Amp | Part::Phase) { raw } else { raw * scale + offset };
+                out.push(if raw.is_finite() && Some(raw) != fill { phys } else { f64::NAN });
+            }
+            Ok(out)
+        })
+        .await
     }
 
     async fn probe_at(&self, l: &Layer, x: u64, y: u64) -> Result<Vec<Option<f64>>> {

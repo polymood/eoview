@@ -1094,21 +1094,31 @@ pub fn results_ui(app: &mut App, ui: &mut egui::Ui, id: u32) {
 
 /// A line chart of a transect: the values of each channel against the distance.
 fn chart(ui: &mut egui::Ui, prof: &[(f64, Vec<f64>)], geo: bool, names: &[String], err: f64) {
+    if !prof.iter().flat_map(|p| p.1.iter()).any(|v| v.is_finite()) {
+        ui.weak(t("No data along the line."));
+        return;
+    }
+    line_chart(ui, prof, names, err, &|d| length(d, geo));
+}
+
+/// A line chart: the values of each series against x (in increasing order). `xl`: the text of an x value.
+pub fn line_chart(ui: &mut egui::Ui, prof: &[(f64, Vec<f64>)], names: &[String], err: f64, xl: &dyn Fn(f64) -> String) {
     let n = prof.first().map_or(0, |p| p.1.len());
     let all = || prof.iter().flat_map(|p| p.1.iter().copied()).filter(|v| v.is_finite());
     let (lo, hi) = (all().fold(f64::INFINITY, f64::min), all().fold(f64::NEG_INFINITY, f64::max));
     if !lo.is_finite() {
-        ui.weak(t("No data along the line."));
+        ui.weak(t("No data."));
         return;
     }
     let (lo, hi) = if hi > lo { (lo, hi) } else { (lo - 1.0, hi + 1.0) };
-    let dmax = prof.last().map_or(1.0, |p| p.0).max(1e-9);
+    let dmin = prof.first().map_or(0.0, |p| p.0);
+    let dmax = prof.last().map_or(1.0, |p| p.0).max(dmin + 1e-9);
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 160.0), egui::Sense::hover());
     let vis = ui.visuals().clone();
     let pt = ui.painter_at(rect);
     pt.rect_filled(rect, 2.0, vis.extreme_bg_color);
     let plot = Rect::from_min_max(rect.min + vec2(6.0, 16.0), rect.max - vec2(6.0, 16.0));
-    let x = |d: f64| plot.left() + (d / dmax) as f32 * plot.width();
+    let x = |d: f64| plot.left() + ((d - dmin) / (dmax - dmin)) as f32 * plot.width();
     let y = |v: f64| plot.bottom() - ((v - lo) / (hi - lo)) as f32 * plot.height();
     let colors = if n == 3 { [Color32::from_rgb(230, 80, 80), Color32::from_rgb(90, 200, 90), Color32::from_rgb(90, 140, 255)] } else { [vis.hyperlink_color; 3] };
     for k in 0..n {
@@ -1125,13 +1135,16 @@ fn chart(ui: &mut egui::Ui, prof: &[(f64, Vec<f64>)], geo: bool, names: &[String
     let small = FontId::proportional(11.0);
     pt.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, num_p(hi, err), small.clone(), vis.text_color());
     pt.text(rect.left_bottom() + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, num_p(lo, err), small.clone(), vis.text_color());
-    pt.text(rect.right_bottom() + vec2(-4.0, -2.0), Align2::RIGHT_BOTTOM, length(dmax, geo), small, vis.text_color());
+    if dmin != 0.0 {
+        pt.text(rect.center_bottom() + vec2(0.0, -2.0), Align2::CENTER_BOTTOM, xl(dmin), small.clone(), vis.weak_text_color());
+    }
+    pt.text(rect.right_bottom() + vec2(-4.0, -2.0), Align2::RIGHT_BOTTOM, xl(dmax), small, vis.text_color());
     if let Some(h) = resp.hover_pos() {
-        let d = ((h.x - plot.left()) / plot.width()).clamp(0.0, 1.0) as f64 * dmax;
+        let d = dmin + ((h.x - plot.left()) / plot.width()).clamp(0.0, 1.0) as f64 * (dmax - dmin);
         let k = prof.partition_point(|p| p.0 < d).min(prof.len() - 1);
         pt.line_segment([egui::pos2(x(prof[k].0), plot.top()), egui::pos2(x(prof[k].0), plot.bottom())], Stroke::new(1.0, vis.weak_text_color()));
         let vals: Vec<String> = prof[k].1.iter().enumerate().map(|(c, v)| format!("{} {}", names.get(c).map_or("", |s| s.as_str()), num_p(*v, err))).collect();
-        resp.on_hover_text_at_pointer(format!("{}\n{}", length(prof[k].0, geo), vals.join("\n")));
+        resp.on_hover_text_at_pointer(format!("{}\n{}", xl(prof[k].0), vals.join("\n")));
     }
 }
 

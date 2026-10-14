@@ -612,6 +612,8 @@ pub struct App {
     asking: Option<(Open, crate::dims::Asking)>,
     /// The values of the scalars and the 1D variables of the products.
     pub smalls: crate::dims::Smalls,
+    /// The profile along a dimension at the cursor (layer panel).
+    pub profile: crate::dims::Profile,
     last_pick: eo_cache::Pick,
     pub palette: Option<crate::ui::Palette>,
     /// URL field of the "open URL" dialog: text, add as a layer, view.
@@ -713,6 +715,7 @@ impl App {
         App {
             win: None,
             smalls: crate::dims::Smalls::new(ctx.clone()),
+            profile: Default::default(),
             ctx,
             engine,
             events,
@@ -1455,6 +1458,11 @@ impl App {
                         self.request_probe(layer, x, y);
                     }
                 }
+                Event::Profile { req, res } if self.profile.req == Some(req) => {
+                    self.profile.req = None;
+                    self.profile.values = Some(res.map_err(|e| e.0));
+                }
+                Event::Profile { .. } => {}
                 Event::Read { req, res } if self.values.req.is_some_and(|r| r.0 == req) => self.values_read(res),
                 Event::Read { req, res } => self.py_read(req, res),
                 Event::Export { req, done, total, res } => {

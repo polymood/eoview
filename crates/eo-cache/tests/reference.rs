@@ -310,6 +310,15 @@ fn any_two_dimensions_are_the_image() {
         };
         assert_eq!(got, vec![Some(flat(y, x))], "pixel ({x}, {y})");
     }
+    // The profile along dim_wavelength (position 6) at pixel (7, 3): the spectrum of the pixel.
+    e.profile(l.clone(), 7, 3, 6);
+    let got = loop {
+        if let Event::Profile { res, .. } = rx.recv_timeout(Duration::from_secs(20)).unwrap() {
+            break res.unwrap();
+        }
+    };
+    let exp: Vec<f64> = (0..4).map(|w| [2, 1, 3, 7, 1, 2, w, 1].iter().zip(&shape).fold(0, |i, (p, n)| i * n + p) as f64).collect();
+    assert_eq!(got, exp);
     // The tile of the view: the first ACT column is fill (the margin of the product).
     let k = TileKey { layer: l.id, lv: 0, tx: 0, ty: 0 };
     let (w, px) = &tiles(&e, &rx, &l, &[k])[&k];

@@ -1861,6 +1861,11 @@ impl App {
     pub fn side(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
         let smalls = self.smalls.clone();
+        // The profile along a dimension: the pixel under the cursor of each layer, and the profile state.
+        let cursor_px: std::collections::HashMap<u64, (u64, u64)> = self.probes.iter().filter_map(|(k, p)| p.last.as_ref().map(|l| (*k, (l.0, l.1)))).collect();
+        let mut prof_dim = self.profile.dim.clone();
+        let prof = (self.profile.key, self.profile.values.clone());
+        let mut want_prof = None;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.strong(t("Layers"));
@@ -2048,6 +2053,48 @@ impl App {
                 if l.inputs.first().is_some_and(|x| x.sample.is_empty()) && l.shown_pgen == l.pgen {
                     ui.colored_label(ui.visuals().warn_fg_color, t("No data in this plane: all values of the sample are the fill value."));
                 }
+                // The profile along a dimension at the pixel of the cursor (the spectrum of a pixel).
+                if let Some(inp) = l.inputs.first().filter(|_| l.inputs.len() == 1) {
+                    let ax = inp.var().axes().unwrap_or([usize::MAX; 2]);
+                    let dims: Vec<usize> = (0..v.dims.len()).filter(|&k| !ax.contains(&k) && v.levels[0].shape[k] > 1).collect();
+                    if !dims.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.label(t("Profile along"));
+                            egui::ComboBox::from_id_salt("profile dim").selected_text(prof_dim.clone().unwrap_or_else(|| t("none").into())).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut prof_dim, None, t("none"));
+                                for &k in &dims {
+                                    ui.selectable_value(&mut prof_dim, Some(v.dims[k].clone()), &v.dims[k]);
+                                }
+                            });
+                        });
+                    }
+                    if let Some(k) = prof_dim.as_ref().and_then(|n| dims.iter().copied().find(|&k| v.dims[k] == *n)) {
+                        match cursor_px.get(&inp.id) {
+                            Some(&(x, y)) => {
+                                want_prof = Some((inp.clone(), x, y, k));
+                                let times = &inp.var().times;
+                                let name = &v.dims[k];
+                                let xl = |d: f64| {
+                                    let i = d.round().max(0.0) as u64;
+                                    if inp.var().levels[0].dims[k] == "time" && (i as usize) < times.len() {
+                                        return eo_core::time::text(times[i as usize]);
+                                    }
+                                    smalls.coord(&a, &v.name, name, i).map_or(format!("{name} {i}"), |c| format!("{c} ({i})"))
+                                };
+                                match &prof {
+                                    (Some((lid, px, py, pk)), Some(Ok(vals))) if *lid == inp.id && *pk == k => {
+                                        ui.weak(tf("Pixel {}, {}", &[&px.to_string(), &py.to_string()]));
+                                        let pts: Vec<(f64, Vec<f64>)> = vals.iter().enumerate().map(|(i, x)| (i as f64, vec![*x])).collect();
+                                        crate::tools::line_chart(ui, &pts, &[v.units.clone()], 0.0, &xl);
+                                    }
+                                    (_, Some(Err(e))) => drop(ui.colored_label(ui.visuals().error_fg_color, e)),
+                                    _ => drop(ui.spinner()),
+                                }
+                            }
+                            None => drop(ui.weak(t("Move the cursor over the view."))),
+                        }
+                    }
+                }
             });
         }
 
@@ -2112,6 +2159,14 @@ impl App {
         }
         if pick_changed && !changed {
             self.load_steps(id, sel);
+        }
+        self.profile.dim = prof_dim;
+        if let Some((l, x, y, k)) = want_prof
+            && self.profile.key != Some((l.id, x, y, k))
+            && self.profile.req.is_none()
+        {
+            self.profile.key = Some((l.id, x, y, k));
+            self.profile.req = Some(self.engine.profile(l, x, y, k));
         }
 
         if let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)).filter(|l| l.steps.len() > 1) {

@@ -381,6 +381,13 @@ fn small_table(ui: &mut egui::Ui, smalls: &crate::dims::Smalls, inp: &Arc<Layer>
     }
     let dim = v.dims.first().cloned();
     let coord = |i: u64| dim.as_ref().filter(|d| !v.name.ends_with(d.as_str())).and_then(|d| smalls.coord(inp, &v.name, d, i));
+    // ponytail: one point in `step` for a long array; a min-max envelope if the peaks matter.
+    let step = vals.len().div_ceil(4000).max(1);
+    let pts: Vec<(f64, Vec<f64>)> = vals.iter().enumerate().step_by(step).map(|(i, x)| (i as f64, vec![*x])).collect();
+    crate::tools::line_chart(ui, &pts, &[v.units.clone()], 0.0, &|d| {
+        let i = d.round().max(0.0) as u64;
+        coord(i).map_or(i.to_string(), |c| format!("{c} ({i})"))
+    });
     if ui.button(t("Copy as CSV")).clicked() {
         let mut s = String::from("index,value");
         for (i, x) in vals.iter().enumerate() {

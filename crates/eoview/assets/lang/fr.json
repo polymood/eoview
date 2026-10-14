@@ -555,5 +555,8 @@
  "Indexes": "Indices",
  "Rows: {} ({}), columns: {} ({})": "Lignes : {} ({}), colonnes : {} ({})",
  "Show the values in the values window": "Afficher les valeurs dans la fenêtre des valeurs",
- "The values that the table has read: the visible cells and a margin": "Les valeurs que le tableau a lues : les cellules visibles et une marge"
+ "The values that the table has read: the visible cells and a margin": "Les valeurs que le tableau a lues : les cellules visibles et une marge",
+ "No data.": "Pas de données.",
+ "Profile along": "Profil selon",
+ "Pixel {}, {}": "Pixel {}, {}"
 }
