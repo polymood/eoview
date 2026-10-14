@@ -138,12 +138,36 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
     of values, profiles, the 1D and scalar variables. Test file: `scripts/testdata_nd.py`. Also all the
     formats of Panoply users (NetCDF-3, OPeNDAP, GRIB 2, HDF4), and a points mode that shows the sampling
     of the data (a colored point at the center of each pixel, 16.5b).
-    Done (steps 1 and 2, 2026-10-14): the readers keep the dimension names (`Variable::dims`), the engine
-    reads any two dimensions as the image (`Pick`, `Layer::at`), an open dialog for a product with more
-    than one variable or more than two dimensions, a "Dimensions" part of the layer panel (rows,
-    columns, a slider for each other dimension), the workspace file keeps the choice. To do: the open
-    dialog seen on a screen (the shot mode does not show it), keys for the index, a check with the real
-    product on the network share (speed of a plane that is not in file order).
+    Done (2026-10-14, all the steps of DESIGN 16.8):
+    - Readers: the dimension names of the file (`Variable::dims`, HDF5 `DIMENSION_LIST`), the scalars and
+      1D variables (`Product::small`, `eo_io::read_all`). New readers: NetCDF-3 (classic, 64-bit offset,
+      64-bit data), HDF4 (SDS, HDF-EOS 2 geographic grids), GRIB 1 and 2 (simple, complex, IEEE, JPEG
+      2000, PNG and CCSDS packing, regular and Gaussian grids), OPeNDAP DAP2 (a chunk is a hyperslab).
+    - Engine: any two dimensions as the image (`Pick`, `Layer::at`), the profile along a dimension
+      (`Engine::profile`), the aggregate along any dimension (`StepIn::Pick`).
+    - Interface: the open dialog, the "Dimensions" part of the layer panel (rows, columns, a slider with
+      the coordinate value for each other dimension, Page Up and Page Down, a profile chart at the
+      cursor, views along a dimension, aggregate along a dimension, a spinner while a plane loads), the
+      scalars and 1D variables in the product tree, the values window as a table of the whole plane
+      with coordinate headers, 1D line charts, 100 (A - B) / B in the Difference mode, the points mode
+      (Shift+X), the render along a dimension (`--render --dim NAME`). The workspace file keeps the
+      choices.
+    - Checks: the real CO2M `SPECTRA.nc` on the network share (read only, 2 GB memory cap): open in
+      0.5 s, an ALT by ACT plane in 1.3 to 1.9 s, the values of `MAP_6` agree with the netCDF4 library.
+      In this product only `MAP_6` has data: `glint_flag` is 2 for all ALT positions of the other groups,
+      thus their `stokes_vector` is not filled.
+
+    To do:
+    - Seen on a screen: the open dialog and the profile chart (the shot mode shows neither of them).
+    - A progress bar with a percentage for a slow plane (now: a spinner in the layer panel).
+    - The size of the points in the points mode (now: 3 screen pixels of radius).
+    - The notes of the views along a dimension in the workspace file.
+    - OPeNDAP: DAP4, THREDDS catalogs, overview levels from strided requests.
+    - GRIB: Lambert, polar stereographic, Mercator and rotated grids (now in pixel space), reduced
+      Gaussian grids, spectral fields, GRIB 1 second-order packing.
+    - HDF4: RLE, skipping Huffman, NBIT, SZIP and JPEG compression, GCTP projections other than
+      geographic (MODIS sinusoidal), a block cache for remote files.
+    - NetCDF-4: the time dimension from `DIMENSION_LIST` (now from the length of the time coordinate).
 14. **A DEM in 3D on the globe (2026-10-09).** Camera tilt and heading, depth buffer, terrain mesh from a
     DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
 15. **Panoply parity, other items.** DESIGN section 16.7 has the full list, with a decision for each

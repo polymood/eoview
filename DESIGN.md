@@ -343,7 +343,7 @@ look at a mountain from the side. A slider sets the vertical exaggeration (1 to 
 
 ## 16. Any variable, any dimensions (users of Panoply)
 
-Status: a proposal for review (2026-10-14). It replaces section 13.
+Status: done (2026-10-14), see NEXT.md item 13. It replaces section 13.
 
 ### 16.1 What a tester found
 
@@ -513,7 +513,7 @@ The list comes from `Panoply.jar` 5.x (menus, classes and resources, 2026-10-14)
 | 6b | Points mode: the sampling of the data (16.5b) | Swath test file `nc4_swath.nc` |
 | 7 | `DIMENSION_LIST`, NetCDF-3, OPeNDAP, GRIB 2, HDF4 (16.6) | A test file for each format |
 
-Steps 1 and 2 solve the problem of the tester. They are done (2026-10-14), see NEXT.md item 13. `scripts/testdata_nd.py` writes `testdata/nc4_nd.nc`: the
+All the steps are done (2026-10-14). NEXT.md item 13 has what stays to do. `scripts/testdata_nd.py` writes `testdata/nc4_nd.nc`: the
 structure of the CO2M product with small sizes, contiguous storage, and the flat index as the value.
 
 ### 16.9 Decisions (the maintainer, 2026-10-14)
