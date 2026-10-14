@@ -29,8 +29,9 @@ fn axes(v: &Variable, pick: &Pick) -> Option<[usize; 2]> {
 }
 
 /// Controls for variable `v` (as the reader gives it): the dimension of the rows, of the columns, and a
-/// slider for the index of each other dimension. Time has the timeline. Return true if `pick` changed.
-pub fn dims_ui(ui: &mut egui::Ui, v: &Variable, pick: &mut Pick) -> bool {
+/// slider for the index of each other dimension, with the value of its coordinate (`coord`: dimension name
+/// and index to text). Time has the timeline. Return true if `pick` changed.
+pub fn dims_ui(ui: &mut egui::Ui, v: &Variable, pick: &mut Pick, coord: &dyn Fn(&str, u64) -> Option<String>) -> bool {
     let (n, kind) = (v.dims.len(), &v.levels[0].dims);
     let Some([r0, c0]) = axes(v, pick).filter(|_| n >= 2 && kind.len() == n) else { return false };
     let (mut r, mut c) = (r0, c0);
@@ -57,7 +58,12 @@ pub fn dims_ui(ui: &mut egui::Ui, v: &Variable, pick: &mut Pick) -> bool {
             let (name, size) = (&v.dims[k], v.levels[0].shape[k]);
             let mut i = pick.at.iter().find(|p| p.0 == *name).map_or(0, |p| p.1).min(size - 1);
             ui.label(name);
-            changed |= ui.add_enabled(size > 1, egui::Slider::new(&mut i, 0..=size - 1).suffix(format!(" / {}", size - 1))).changed();
+            ui.horizontal(|ui| {
+                changed |= ui.add_enabled(size > 1, egui::Slider::new(&mut i, 0..=size - 1).suffix(format!(" / {}", size - 1))).changed();
+                if let Some(c) = coord(name, i) {
+                    ui.strong(c);
+                }
+            });
             ui.end_row();
             at.push((name.clone(), i));
         }
@@ -66,6 +72,23 @@ pub fn dims_ui(ui: &mut egui::Ui, v: &Variable, pick: &mut Pick) -> bool {
         *pick = Pick { axes: Some([v.dims[r].clone(), v.dims[c].clone()]), at };
     }
     changed
+}
+
+/// The pick with the index of the first dimension that is not an image axis or time moved by `d` (Page Up
+/// and Page Down). None: no such dimension, or the index is at its end.
+pub fn step(v: &Variable, pick: &Pick, d: i32) -> Option<Pick> {
+    let [r, c] = axes(v, pick)?;
+    let kind = &v.levels[0].dims;
+    let k = (0..v.dims.len()).find(|&k| k != r && k != c && kind.get(k).is_some_and(|x| x != "time" && x != "band") && v.levels[0].shape[k] > 1)?;
+    let (name, size) = (&v.dims[k], v.levels[0].shape[k] as i64);
+    let i = pick.at.iter().find(|p| p.0 == *name).map_or(0, |p| p.1 as i64);
+    let j = (i + d as i64).clamp(0, size - 1);
+    if j == i {
+        return None;
+    }
+    let mut at: Vec<(String, u64)> = pick.at.iter().filter(|p| p.0 != *name).cloned().collect();
+    at.push((name.clone(), j as u64));
+    Some(Pick { axes: Some([v.dims[r].clone(), v.dims[c].clone()]), at })
 }
 
 /// A product that waits for the choice of the user: its first layer, the selected variable and its pick.
@@ -106,7 +129,7 @@ pub fn propose(v: &Variable) -> Pick {
 }
 
 /// The open dialog. Some(true): open the variable, Some(false): cancel, None: the dialog stays.
-pub fn ask_ui(ctx: &egui::Context, a: &mut Asking) -> Option<bool> {
+pub fn ask_ui(ctx: &egui::Context, a: &mut Asking, smalls: &Smalls) -> Option<bool> {
     let l = a.l.clone();
     let p = &l.ds.product;
     let mut out = None;
@@ -135,7 +158,8 @@ pub fn ask_ui(ctx: &egui::Context, a: &mut Asking) -> Option<bool> {
             ui.strong(&v.name);
             ui.small(shape_text(v));
             ui.add_space(4.0);
-            dims_ui(ui, v, &mut a.pick);
+            let l = a.l.clone();
+            dims_ui(ui, v, &mut a.pick, &|d, i| smalls.coord(&l, &v.name, d, i));
         });
         ui.separator();
         ui.horizontal(|ui| {
@@ -151,4 +175,68 @@ pub fn ask_ui(ctx: &egui::Context, a: &mut Asking) -> Option<bool> {
         out = Some(false);
     }
     out
+}
+
+/// The values of the small variables (scalars and 1D, `Product::small`), read in a thread when the interface
+/// needs them first: by (dataset id, index in `Product::small`). None: the read is in progress.
+pub type SmallValues = Option<Result<Arc<Vec<f64>>, String>>;
+
+#[derive(Clone)]
+pub struct Smalls {
+    map: Arc<std::sync::Mutex<std::collections::HashMap<(u64, usize), SmallValues>>>,
+    ctx: egui::Context,
+}
+
+impl Smalls {
+    pub fn new(ctx: egui::Context) -> Smalls {
+        Smalls { map: Default::default(), ctx }
+    }
+
+    /// The values of small variable `k` of the product of `l`. The first call starts the read.
+    pub fn get(&self, l: &Arc<Layer>, k: usize) -> SmallValues {
+        let key = (l.ds_id, k);
+        let mut m = self.map.lock().unwrap();
+        if let Some(v) = m.get(&key) {
+            return v.clone();
+        }
+        m.insert(key, None);
+        let (map, ctx, ds) = (self.map.clone(), self.ctx.clone(), l.ds.clone());
+        std::thread::spawn(move || {
+            let r = ds.product.small.get(k).ok_or_else(|| "no such variable".to_string()).and_then(|v| eo_io::read_all(&ds, v).map_err(|e| e.0));
+            map.lock().unwrap().insert(key, Some(r.map(Arc::new)));
+            ctx.request_repaint();
+        });
+        None
+    }
+
+    /// The value of index `i` of the coordinate variable of dimension `dim` (for variable `var` of the
+    /// product of `l`), with its unit. None: no coordinate variable, or its values are not here yet.
+    pub fn coord(&self, l: &Arc<Layer>, var: &str, dim: &str, i: u64) -> Option<String> {
+        let k = coord_var(&l.ds.product, var, dim)?;
+        let v = self.get(l, k)?.ok()?;
+        let x = *v.get(i as usize)?;
+        let u = &l.ds.product.small[k].units;
+        Some(if u.is_empty() { num(x) } else { format!("{} {u}", num(x)) })
+    }
+}
+
+/// A short text of a value: 6 significant digits.
+pub fn num(x: f64) -> String {
+    if x.is_nan() {
+        return "-".into();
+    }
+    let s = format!("{x:.6}");
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    if s.len() > 12 { format!("{x:.5e}") } else { s }
+}
+
+/// The coordinate variable of dimension `dim`: a 1D small variable with this dimension and this name, in
+/// the group of `var` or the nearest parent group.
+pub fn coord_var(p: &Product, var: &str, dim: &str) -> Option<usize> {
+    let dir = |n: &str| n.rsplit_once('/').map_or(String::new(), |d| d.0.to_string());
+    let leaf = |n: &str| n.rsplit('/').next().unwrap_or(n).to_string();
+    let vd = dir(var);
+    (0..p.small.len())
+        .filter(|&k| p.small[k].dims.len() == 1 && p.small[k].dims[0] == dim && leaf(&p.small[k].name) == dim && vd.starts_with(&dir(&p.small[k].name)))
+        .max_by_key(|&k| dir(&p.small[k].name).len())
 }

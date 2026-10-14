@@ -610,6 +610,8 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// A product that waits in the open dialog (DESIGN section 16), and the last choice of the user.
     asking: Option<(Open, crate::dims::Asking)>,
+    /// The values of the scalars and the 1D variables of the products.
+    pub smalls: crate::dims::Smalls,
     last_pick: eo_cache::Pick,
     pub palette: Option<crate::ui::Palette>,
     /// URL field of the "open URL" dialog: text, add as a layer, view.
@@ -707,9 +709,11 @@ pub struct App {
 
 impl App {
     pub fn new(engine: Engine, events: mpsc::Receiver<Event>, gpu_budget: usize, bench: Option<Bench>) -> App {
+        let ctx = egui::Context::default();
         App {
             win: None,
-            ctx: egui::Context::default(),
+            smalls: crate::dims::Smalls::new(ctx.clone()),
+            ctx,
             engine,
             events,
             pending: VecDeque::new(),
@@ -1470,7 +1474,7 @@ impl App {
     /// The open dialog: the user opens the selected variable with its pick, or cancels.
     pub fn ask_ui(&mut self, ctx: &egui::Context) {
         let Some((_, a)) = &mut self.asking else { return };
-        match crate::dims::ask_ui(ctx, a) {
+        match crate::dims::ask_ui(ctx, a, &self.smalls) {
             Some(true) => {
                 let (o, a) = self.asking.take().unwrap();
                 self.last_pick = a.pick.clone();
@@ -1479,6 +1483,19 @@ impl App {
             }
             Some(false) => self.asking = None,
             None => {}
+        }
+    }
+
+    /// Page Up and Page Down: the next or the previous index of the first dimension of the selected layer
+    /// that is not an image axis or time.
+    pub fn step_dim(&mut self, id: u32, d: i32) {
+        let Some(p) = self.pane_mut(id) else { return };
+        let sel = p.sel;
+        let Some(l) = p.layers.get_mut(sel) else { return };
+        let (Some(a), Some(var)) = (l.any().cloned(), l.chans.get(l.band).map(|c| c.var)) else { return };
+        if let Some(pick) = crate::dims::step(&a.ds.product.vars[var], &l.pick, d) {
+            l.set_pick(pick);
+            self.load_steps(id, sel);
         }
     }
 

@@ -65,6 +65,10 @@ pub enum Cmd {
     Play,
     /// Multiply the scale of the view.
     Zoom(f64),
+    /// The next or the previous index of the first dimension that is not an image axis (DESIGN section 16).
+    DimIndex(i32),
+    /// Show the values of a scalar or a 1D variable of the selected layer in the values window.
+    SmallValues(usize),
     /// Copy the limits of the view (west, south, east, north) to the clipboard.
     CopyExtent,
     Help,
@@ -190,6 +194,8 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Time: next step"), ".", Cmd::Step(1)),
         (t("Time: previous step"), ",", Cmd::Step(-1)),
         (t("Time: play or pause"), "Space", Cmd::Play),
+        (t("Dimensions: next index"), "Page Up", Cmd::DimIndex(1)),
+        (t("Dimensions: previous index"), "Page Down", Cmd::DimIndex(-1)),
         (t("Zoom in"), "+", Cmd::Zoom(1.5)),
         (t("Zoom out"), "-", Cmd::Zoom(1.0 / 1.5)),
         (t("Copy view extent (west, south, east, north)"), "Ctrl+Shift+C", Cmd::CopyExtent),
@@ -706,10 +712,12 @@ enum Pick {
     Show(usize, bool),
     /// Open the information window.
     Info,
+    /// Show the values of a scalar or a 1D variable (index in `Product::small`).
+    Small(usize),
 }
 
 /// Product tree of a layer: the groups and the variables of the product, with a filter.
-fn contents_ui(ui: &mut egui::Ui, l: &mut MapLayer) -> Option<Pick> {
+fn contents_ui(ui: &mut egui::Ui, l: &mut MapLayer, smalls: &crate::dims::Smalls) -> Option<Pick> {
     let mut pick = None;
     ui.horizontal(|ui| {
         ui.strong(t("Product"));
@@ -722,7 +730,7 @@ fn contents_ui(ui: &mut egui::Ui, l: &mut MapLayer) -> Option<Pick> {
     egui::ScrollArea::vertical().id_salt(("contents", l.uid)).max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
         let f = l.filter.trim().to_lowercase();
         if f.is_empty() {
-            group_ui(ui, l, &l.contents, "", &mut pick);
+            group_ui(ui, l, &l.contents, "", &mut pick, smalls);
         } else {
             // With a filter: a flat list of the names that contain the text.
             for c in 0..l.chans.len() {
@@ -731,12 +739,17 @@ fn contents_ui(ui: &mut egui::Ui, l: &mut MapLayer) -> Option<Pick> {
                     leaf_ui(ui, l, c, &name, &mut pick);
                 }
             }
+            if let Some(a) = l.any() {
+                for (k, v) in a.ds.product.small.iter().enumerate().filter(|(_, v)| v.name.to_lowercase().contains(&f)) {
+                    small_ui(ui, a, k, &v.name, &mut pick, smalls);
+                }
+            }
         }
     });
     pick
 }
 
-fn group_ui(ui: &mut egui::Ui, l: &MapLayer, g: &layer::Group, path: &str, pick: &mut Option<Pick>) {
+fn group_ui(ui: &mut egui::Ui, l: &MapLayer, g: &layer::Group, path: &str, pick: &mut Option<Pick>, smalls: &crate::dims::Smalls) {
     for sub in &g.groups {
         let p = format!("{path}/{}", sub.name);
         // Open at the start: the groups of the bands in use, and all groups of a small product.
@@ -748,11 +761,34 @@ fn group_ui(ui: &mut egui::Ui, l: &MapLayer, g: &layer::Group, path: &str, pick:
                     *pick = Some(Pick::Color(c));
                 }
             }
-            group_ui(ui, l, sub, &p, pick);
+            group_ui(ui, l, sub, &p, pick, smalls);
         });
     }
     for &c in &g.chans {
         leaf_ui(ui, l, c, &l.chan_leaf(c), pick);
+    }
+    if let Some(a) = l.any() {
+        for &k in &g.small {
+            let n = &a.ds.product.small[k].name;
+            small_ui(ui, a, k, n.rsplit('/').next().unwrap_or(n), pick, smalls);
+        }
+    }
+}
+
+/// A scalar or a 1D variable in the product tree: a scalar shows its value, a 1D variable its size. A click
+/// shows its values in the values window.
+fn small_ui(ui: &mut egui::Ui, a: &std::sync::Arc<eo_cache::Layer>, k: usize, label: &str, pick: &mut Option<Pick>, smalls: &crate::dims::Smalls) {
+    let v = &a.ds.product.small[k];
+    let shape = &v.levels[0].shape;
+    let text = if shape.is_empty() {
+        let val = smalls.get(a, k).and_then(|r| r.ok()).and_then(|x| x.first().copied());
+        format!("{label} = {}{}", val.map_or("...".into(), crate::dims::num), if v.units.is_empty() { String::new() } else { format!(" {}", v.units) })
+    } else {
+        format!("{label}  [{}]", crate::dims::shape_text(v))
+    };
+    let r = ui.add(egui::Button::new(egui::RichText::new(text).weak()).frame(false)).on_hover_text(t("Show the values in the values window"));
+    if r.clicked() {
+        *pick = Some(Pick::Small(k));
     }
 }
 
@@ -1188,6 +1224,8 @@ impl App {
             (none, Key::Period, Cmd::Step(1)),
             (none, Key::Comma, Cmd::Step(-1)),
             (none, Key::Space, Cmd::Play),
+            (none, Key::PageUp, Cmd::DimIndex(1)),
+            (none, Key::PageDown, Cmd::DimIndex(-1)),
         ];
         ctx.input_mut(|i| {
             for (m, k, c) in table {
@@ -1205,6 +1243,8 @@ impl App {
     pub fn run(&mut self, c: Cmd, id: u32) {
         match c {
             Cmd::Open(add, What::Url) => self.url = Some((String::new(), add, id)),
+            Cmd::DimIndex(d) => self.step_dim(id, d),
+            Cmd::SmallValues(k) => (self.values.open, self.values.small) = (true, Some(k)),
             Cmd::Open(add, What::Path(p)) => self.open(id, p, add),
             Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
@@ -1820,6 +1860,7 @@ impl App {
 
     pub fn side(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
+        let smalls = self.smalls.clone();
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.strong(t("Layers"));
@@ -1965,7 +2006,7 @@ impl App {
         }
         // Product tree: a click on a name shows the variable as data. The buttons of a row set a channel
         // (RGB mode) or add the name to the expression (band math mode).
-        match contents_ui(ui, l) {
+        match contents_ui(ui, l, &smalls) {
             Some(Pick::Insert(c)) => {
                 if !l.expr.is_empty() && !l.expr.ends_with([' ', '(']) {
                     l.expr.push(' ');
@@ -1987,6 +2028,7 @@ impl App {
             }
             Some(Pick::Show(c, new)) => cmds.push((Cmd::ShowVar(sel, c, new), id)),
             Some(Pick::Info) => cmds.push((Cmd::Info, id)),
+            Some(Pick::Small(k)) => cmds.push((Cmd::SmallValues(k), id)),
             None => {}
         }
         // The dimensions of the variable of the band: the image axes and the index of the others. The view
@@ -1998,9 +2040,13 @@ impl App {
         {
             egui::CollapsingHeader::new(t("Dimensions")).default_open(true).show(ui, |ui| {
                 let mut p = l.pick.clone();
-                if crate::dims::dims_ui(ui, &a.ds.product.vars[var], &mut p) {
+                let v = &a.ds.product.vars[var];
+                if crate::dims::dims_ui(ui, v, &mut p, &|d, i| smalls.coord(&a, &v.name, d, i)) {
                     l.set_pick(p);
                     pick_changed = true;
+                }
+                if l.inputs.first().is_some_and(|x| x.sample.is_empty()) && l.shown_pgen == l.pgen {
+                    ui.colored_label(ui.visuals().warn_fg_color, t("No data in this plane: all values of the sample are the fill value."));
                 }
             });
         }

@@ -550,5 +550,8 @@
  "Dimensions": "Dimensions",
  "Filter": "Filtre",
  "Cancel": "Annuler",
- "Select the variable, the dimensions of the image, and the index of the other dimensions.": "Choisissez la variable, les dimensions de l'image et l'indice des autres dimensions."
+ "Select the variable, the dimensions of the image, and the index of the other dimensions.": "Choisissez la variable, les dimensions de l'image et l'indice des autres dimensions.",
+ "Dimensions: next index": "Dimensions : indice suivant",
+ "Dimensions: previous index": "Dimensions : indice précédent",
+ "No data in this plane: all values of the sample are the fill value.": "Pas de données dans ce plan : toutes les valeurs de l'échantillon sont la valeur de remplissage."
 }

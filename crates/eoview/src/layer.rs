@@ -158,6 +158,8 @@ pub struct Group {
     pub name: String,
     pub groups: Vec<Group>,
     pub chans: Vec<usize>,
+    /// The scalars and the 1D variables of the group (indexes in `Product::small`).
+    pub small: Vec<usize>,
     /// The group is a color image (see `is_color_var`): its red, green and blue channels.
     pub color: Option<[usize; 3]>,
 }
@@ -176,7 +178,7 @@ impl Group {
 
     /// Number of channels in the group and its groups.
     pub fn count(&self) -> usize {
-        self.chans.len() + self.groups.iter().map(Group::count).sum::<usize>()
+        self.chans.len() + self.small.len() + self.groups.iter().map(Group::count).sum::<usize>()
     }
 
     /// True if the group or one of its groups contains one of `chans`.
@@ -210,6 +212,14 @@ fn contents(p: &eo_core::Product, chans: &[Chan]) -> Group {
         } else {
             g.chans.extend(cs);
         }
+    }
+    for (k, v) in p.small.iter().enumerate() {
+        let dir = v.name.rsplit_once('/').map_or("", |d| d.0);
+        let mut g = &mut root;
+        for part in (if v.group.is_empty() { dir } else { &v.group }).split('/').filter(|s| !s.is_empty()) {
+            g = g.child(part);
+        }
+        g.small.push(k);
     }
     root
 }
