@@ -668,5 +668,7 @@
  "Storage": "Stockage",
  "The layers of the active view": "Les couches de la vue active",
  "The open products, their variables and their metadata": "Les produits ouverts, leurs variables et leurs métadonnées",
- "Value: {}": "Valeur : {}"
+ "Value: {}": "Valeur : {}",
+ "The last point of the cursor. Click: copy its coordinates": "Le dernier point du curseur. Clic : copier ses coordonnées",
+ "The scale of the active view at its center": "L'échelle de la vue active en son centre"
 }

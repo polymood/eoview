@@ -624,6 +624,8 @@ pub struct App {
     pub smalls: crate::dims::Smalls,
     /// The Products panel.
     pub products: crate::products::Products,
+    /// The last point under the cursor: its coordinates to copy, and the text of the status bar.
+    pub last_point: Option<(String, String)>,
     /// The profile along a dimension at the cursor (layer panel).
     pub profile: crate::dims::Profile,
     /// The form "Views along a dimension" of the layer panel: dimension, first index, last index, step.
@@ -734,6 +736,7 @@ impl App {
             smalls: crate::dims::Smalls::new(ctx.clone()),
             profile: Default::default(),
             products: Default::default(),
+            last_point: None,
             along: (None, 0, 0, 1),
             ctx,
             engine,

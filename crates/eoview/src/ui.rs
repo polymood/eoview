@@ -1983,21 +1983,38 @@ impl App {
                 ui.label(tf("eoview {} is installed. It runs at the next start.", &[&v]));
                 ui.separator();
             }
+            // The point under the cursor. The last point stays (weak) when the cursor leaves the views: a click
+            // copies its coordinates.
             if let Some(id) = self.hovered
                 && let Some(c) = self.pane(id).and_then(|p| p.v.cursor)
             {
                 let space = self.pane(id).and_then(|p| p.v.space);
+                let mut text = String::new();
                 if let Some((lon, lat)) = self.lonlat(id, c) {
-                    ui.monospace(format!("lat {lat:.6}  lon {lon:.6}"));
-                    ui.separator();
+                    text = format!("lat {lat:.6}  lon {lon:.6}");
+                    self.last_point = Some((format!("{lat:.6}, {lon:.6}"), String::new()));
                 }
-                ui.monospace(match space {
+                let xy = match space {
                     Some(e) => format!("EPSG:{e}  {:.3}  {:.3}", c[0], c[1]),
                     None => format!("pixel {:.1}  {:.1}", c[0], -c[1]),
-                });
-                if let Some(v) = self.inspect(id).1 {
+                };
+                text = if text.is_empty() { xy.clone() } else { format!("{text}   {xy}") };
+                if space.is_none() || self.last_point.is_none() {
+                    self.last_point = Some((xy, String::new()));
+                }
+                let v = self.inspect(id).1;
+                if let Some(lp) = &mut self.last_point {
+                    lp.1 = format!("{text}{}", v.as_ref().map_or(String::new(), |v| format!("   {v}")));
+                }
+                ui.monospace(text);
+                if let Some(v) = v {
                     ui.separator();
                     ui.monospace(v);
+                }
+            } else if let Some((copy, shown)) = &self.last_point {
+                let r = ui.add(egui::Label::new(egui::RichText::new(shown).monospace().weak()).sense(Sense::click())).on_hover_text(t("The last point of the cursor. Click: copy its coordinates"));
+                if r.clicked() {
+                    ui.ctx().copy_text(copy.clone());
                 }
             }
             if let Some(x) = &self.export {
@@ -2019,10 +2036,26 @@ impl App {
                 }
                 ui.separator();
             }
+            let id = self.active;
+            let space = self.pane(id).map(|p| p.v.space);
+            let scale = self.meters_per_px(id).map(|m| m * self.ctx.pixels_per_point() as f64 / 0.00028);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let st = self.engine.stats();
                 let (alloc, _) = self.win.as_ref().map_or((0, 0), |w| w.gpu.usage());
                 ui.monospace(format!("RAM {} / {}   GPU {} / {}", mb(st.raw + st.dec + st.probe + st.work), mb(st.limit), mb(alloc), mb(self.gpu_budget)));
+                // The CRS of the active view and its scale (an OGC pixel of 0.28 mm).
+                if let Some(sp) = space {
+                    ui.separator();
+                    if let Some(n) = scale.filter(|n| n.is_finite() && *n > 0.0) {
+                        let r = 10f64.powf(n.log10().floor() - 1.0);
+                        let n = ((n / r).round() * r) as u64;
+                        let digits = n.to_string();
+                        let grouped: String = digits.chars().rev().collect::<Vec<_>>().chunks(3).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join(" ").chars().rev().collect();
+                        ui.monospace(format!("1:{grouped}")).on_hover_text(t("The scale of the active view at its center"));
+                        ui.separator();
+                    }
+                    ui.monospace(SPACES.iter().find(|x| x.0 == sp).map_or_else(|| format!("EPSG:{}", sp.unwrap_or(0)), |x| t(x.1).to_string()));
+                }
                 if st.running + st.wanted > 0 {
                     ui.separator();
                     ui.monospace(tf("loading {} tiles", &[&(st.running + st.wanted).to_string()]));
