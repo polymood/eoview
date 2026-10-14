@@ -553,5 +553,10 @@
  "Select the variable, the dimensions of the image, and the index of the other dimensions.": "Choisissez la variable, les dimensions de l'image et l'indice des autres dimensions.",
  "Dimensions: next index": "Dimensions : indice suivant",
  "Dimensions: previous index": "Dimensions : indice précédent",
- "No data in this plane: all values of the sample are the fill value.": "Pas de données dans ce plan : toutes les valeurs de l'échantillon sont la valeur de remplissage."
+ "No data in this plane: all values of the sample are the fill value.": "Pas de données dans ce plan : toutes les valeurs de l'échantillon sont la valeur de remplissage.",
+ "Back to the layer": "Retour à la couche",
+ "Indexes": "Indices",
+ "Rows: {} ({}), columns: {} ({})": "Lignes : {} ({}), colonnes : {} ({})",
+ "Show the values in the values window": "Afficher les valeurs dans la fenêtre des valeurs",
+ "The values that the table has read: the visible cells and a margin": "Les valeurs que le tableau a lues : les cellules visibles et une marge"
 }
