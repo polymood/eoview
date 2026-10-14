@@ -5,6 +5,7 @@ pub mod dap;
 pub mod hdf4;
 pub mod hdf5;
 pub mod netcdf;
+pub mod netcdf3;
 pub mod nitf;
 pub mod codec;
 mod jp2;
@@ -87,8 +88,10 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         Product { name, desc, vars, small, valid: None, info }
     } else if head.starts_with(&hdf4::MAGIC) {
         hdf4::open(&src, 0, name)?
+    } else if netcdf3::is_netcdf3(&head) {
+        netcdf3::open(&src, 0)?
     } else {
-        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-4, HDF5, Zarr or SAFE expected)").into());
+        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-3, NetCDF-4, HDF4, HDF5, Zarr, SAFE or OPeNDAP expected)").into());
     };
     Ok(Dataset { product, sources: vec![Arc::new(src)] })
 }
