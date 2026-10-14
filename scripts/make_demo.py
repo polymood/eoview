@@ -221,8 +221,8 @@ def climate():
     import netCDF4
     log("climate: global cube")
     h, w = 1800, 3600
-    lat = 89.95 - 0.1 * np.arange(h)
-    lon = -179.95 + 0.1 * np.arange(w)
+    lat = 89.95 - 0.1 * np.arange(h, dtype=np.float64)
+    lon = -179.95 + 0.1 * np.arange(w, dtype=np.float64)
     phi = np.radians(lat)[:, None].astype(np.float32)
     land = continents(h, w)
     levels = [1000.0, 850.0, 500.0, 250.0]
@@ -238,9 +238,9 @@ def climate():
         tv[:] = [(np.datetime64(f"2024-{m + 1:02}-15") - np.datetime64("2024-01-01")).astype(int) for m in range(12)]
         lv = f.createVariable("level", "f4", ("level",))
         lv.units, lv.long_name, lv[:] = "hPa", "pressure level", levels
-        la = f.createVariable("lat", "f4", ("lat",))
+        la = f.createVariable("lat", "f8", ("lat",))
         la.units, la[:] = "degrees_north", lat
-        lo = f.createVariable("lon", "f4", ("lon",))
+        lo = f.createVariable("lon", "f8", ("lon",))
         lo.units, lo[:] = "degrees_east", lon
         kw = dict(zlib=True, complevel=1, shuffle=True)
         t = f.createVariable("t", "f4", ("time", "level", "lat", "lon"), chunksizes=(1, 1, 600, 600), **kw)
@@ -262,9 +262,9 @@ def climate():
             k = [math.cos(s + q * math.pi / 2) for q in range(4)]
             wx = sum(k[q] * noise[q] for q in range(4)) / 2
             season = math.cos(s) * np.sin(phi)
-            sfc = 300.0 - 45.0 * np.sin(phi) ** 2 + np.where(land, 14.0, 6.0) * season + 3.0 * wx - np.where(land, 4.0, 0.0)
+            sfc = 300.0 - 45.0 * np.sin(phi) ** 2 + np.where(land, 16.0, 6.0) * season + 9.0 * wx - np.where(land, 5.0, 0.0)
             for li in range(4):
-                t[m, li] = sfc + lapse[li] + (2.0 + li) * wx
+                t[m, li] = sfc + lapse[li] + (4.0 + 2.0 * li) * wx
             ps = sum(k[q] * psi[q] for q in range(4))
             gy, gx = np.gradient(ps)
             u[m] = uz + 900.0 * -gy
@@ -416,9 +416,9 @@ def ocean():
         tv.units = "days since 2024-01-01"
         dv = f.createVariable("depth", "f4", ("depth",))
         dv.units, dv.positive, dv[:] = "m", "down", depth
-        la = f.createVariable("lat", "f4", ("lat",))
+        la = f.createVariable("lat", "f8", ("lat",))
         la.units, la[:] = "degrees_north", lat
-        lo = f.createVariable("lon", "f4", ("lon",))
+        lo = f.createVariable("lon", "f8", ("lon",))
         lo.units, lo[:] = "degrees_east", lon
         th = f.createVariable("thetao", "f4", ("time", "depth", "lat", "lon"), fill_value=fill)
         th.units, th.long_name = "degC", "sea water potential temperature"
@@ -509,7 +509,9 @@ def st(lo, hi, db=False):
 
 
 def layer(path, band, lo, hi, cmap="Viridis", kind="Band", rgb=("", "", ""), **kw):
-    d = {"path": path, "kind": kind, "band": band, "rgb": list(rgb), "expr": "", "st": st(lo, hi), "clip": 2.0, "cmap": cmap, "stops": [],
+    # RGB: the same stretch for the three channels.
+    sts = [{"lo": lo, "hi": hi, "gamma": 1.0, "db": False}] * 3 if kind == "Rgb" else st(lo, hi)
+    d = {"path": path, "kind": kind, "band": band, "rgb": list(rgb), "expr": "", "st": sts, "clip": 2.0, "cmap": cmap, "stops": [],
          "invert": False, "opacity": 1.0, "visible": True, "series": [], "step": 0, "wind": [True, False, True]}
     d.update(kw)
     return d
@@ -566,7 +568,7 @@ def projects():
     s2 = layer(f"{S2}/TCI.tif", "red", 0.0, 255.0, "Gray", kind="Rgb", rgb=("red", "green", "blue"))
     nir = layer(f"{S2}/B08.tif", "B08.tif", 0.0, 6000.0, "Gray")
     dem = layer(DEM, "Copernicus_DSM_COG_10_N45_00_E006_00_DEM.tif", 500.0, 4800.0, "Terrain")
-    project("06_real_sentinel2_copernicus_dem.eoview", [pane(1, [s2], (6.87, 45.85), 0.4, px=600), pane(2, [nir], (6.87, 45.85), 0.4, px=600), pane(3, [dem], (6.87, 45.85), 0.4, px=600)])
+    project("06_real_sentinel2_copernicus_dem.eoview", [pane(1, [s2], (6.86, 45.8), 0.4, px=600), pane(2, [nir], (6.86, 45.8), 0.4, px=600), pane(3, [dem], (6.86, 45.8), 0.4, px=600)])
 
 
 for part in PARTS:
