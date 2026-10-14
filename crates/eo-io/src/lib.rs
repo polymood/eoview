@@ -8,6 +8,7 @@ pub mod netcdf;
 pub mod netcdf3;
 pub mod nitf;
 pub mod codec;
+pub mod grib;
 mod jp2;
 pub mod safe;
 pub mod xml;
@@ -90,8 +91,10 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         hdf4::open(&src, 0, name)?
     } else if netcdf3::is_netcdf3(&head) {
         netcdf3::open(&src, 0)?
+    } else if grib::is_grib(&src) {
+        grib::open(&src, 0, name)?
     } else {
-        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-3, NetCDF-4, HDF4, HDF5, Zarr, SAFE or OPeNDAP expected)").into());
+        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-3, NetCDF-4, HDF4, HDF5, GRIB, Zarr, SAFE or OPeNDAP expected)").into());
     };
     Ok(Dataset { product, sources: vec![Arc::new(src)] })
 }

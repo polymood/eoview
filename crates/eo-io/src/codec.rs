@@ -101,6 +101,7 @@ fn step<'a>(a: &Array, c: &Codec, cur: Cow<'a, [u8]>, need: usize) -> Result<Cow
         }
         Codec::Jpeg2000 { reduce, header } => owned(crate::jp2::decode_tile(a, s, *reduce, header)?),
         Codec::Jpeg { tables } => owned(jpeg(a, s, tables)?),
+        Codec::Grib { edition } => owned(crate::grib::decode(a, s, *edition)?),
     }
 }
 

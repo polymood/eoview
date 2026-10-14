@@ -351,10 +351,11 @@ pub const OPEN_KINDS: &[(&str, bool, &[&str])] = &[
     ("JPEG 2000", false, &["jp2", "j2k", "jpx"]),
     ("NITF (SICD, SIDD)", false, &["ntf", "nitf", "nsf"]),
     ("NetCDF, HDF4, HDF5", false, &["nc", "nc3", "nc4", "cdf", "h5", "hdf5", "he5", "hdf", "hdf4", "hd4", "he4"]),
+    ("GRIB", false, &["grib", "grib2", "grb", "grb2", "gr2"]),
 ];
 
 /// File extensions of the dialog for files of all formats.
-const ALL_EXT: &[&str] = &["tif", "tiff", "gtiff", "cog", "jp2", "j2k", "ntf", "nitf", "nsf", "nc", "nc3", "nc4", "cdf", "h5", "hdf5", "he5", "hdf", "hdf4", "hd4", "he4", "xml", "safe", "zarr", "txt", WORKSPACE_EXT];
+const ALL_EXT: &[&str] = &["tif", "tiff", "gtiff", "cog", "jp2", "j2k", "ntf", "nitf", "nsf", "nc", "nc3", "nc4", "cdf", "h5", "hdf5", "he5", "hdf", "hdf4", "hd4", "he4", "grib", "grib2", "grb", "grb2", "gr2", "xml", "safe", "zarr", "txt", WORKSPACE_EXT];
 
 /// Open menu: files of all formats, directories, a URL, the product types, the recent products.
 /// `add`: the products are new layers of the view.

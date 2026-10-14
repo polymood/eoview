@@ -109,6 +109,10 @@ pub enum Codec {
     /// JPEG 2000 tile: the chunk has the tile parts of one tile. `header` is the main header of the
     /// codestream. `reduce`: number of resolution levels to discard.
     Jpeg2000 { reduce: u8, header: std::sync::Arc<[u8]> },
+    /// One GRIB field. Edition 2: the chunk has sections 5 to 7 of the field (and the sections of an earlier
+    /// field if the field uses its bitmap). Edition 1: the message without section 0. The values are f32,
+    /// NaN where the bitmap has no data.
+    Grib { edition: u8 },
 }
 
 /// Location of the encoded bytes of one chunk. `len` 0 means that the chunk does not exist:
