@@ -3,6 +3,7 @@
 mod blosc;
 pub mod hdf5;
 pub mod netcdf;
+pub mod netcdf3;
 pub mod nitf;
 pub mod codec;
 mod jp2;
@@ -75,6 +76,8 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         }
         let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len());
         Product { name, desc, vars, small, valid: None, info }
+    } else if netcdf3::is_netcdf3(&head) {
+        netcdf3::open(&src, 0)?
     } else {
         return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-4, HDF5, Zarr or SAFE expected)").into());
     };

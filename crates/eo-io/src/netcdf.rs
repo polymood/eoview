@@ -156,15 +156,22 @@ pub fn read_1d(src: &Source, d: &H5) -> Result<Vec<f64>> {
 /// Georeferencing from CF coordinates: 1D latitude and longitude (a regular grid), or 2D latitude and
 /// longitude variables of the same shape as `v` (geolocation arrays).
 pub fn georef(src: &Source, v: &Variable, one_d: &[H5], vars: &[Variable]) -> Georef {
+    let names: Vec<(&str, u64)> = one_d.iter().map(|d| (d.path.as_str(), d.shape[0])).collect();
+    cf_georef(v, &names, |i| read_1d(src, &one_d[i]).ok(), vars)
+}
+
+/// `georef` for all formats: `one_d` has the name and the length of each 1D variable, and `read(i)` gives the
+/// values of 1D variable `i`.
+pub fn cf_georef(v: &Variable, one_d: &[(&str, u64)], read: impl Fn(usize) -> Option<Vec<f64>>, vars: &[Variable]) -> Georef {
     let is = |n: &str, k: &str| {
         let n = n.rsplit('/').next().unwrap_or(n).to_lowercase();
         n == k || n == &k[..3] || n.starts_with(&format!("{k}_"))
     };
     let (w, h) = v.size();
-    let lat = one_d.iter().find(|d| is(&d.path, "latitude") && d.shape[0] == h);
-    let lon = one_d.iter().find(|d| is(&d.path, "longitude") && d.shape[0] == w);
+    let lat = one_d.iter().position(|d| is(d.0, "latitude") && d.1 == h);
+    let lon = one_d.iter().position(|d| is(d.0, "longitude") && d.1 == w);
     if let (Some(la), Some(lo)) = (lat, lon)
-        && let (Ok(la), Ok(lo)) = (read_1d(src, la), read_1d(src, lo))
+        && let (Some(la), Some(lo)) = (read(la), read(lo))
         && la.len() > 1
         && lo.len() > 1
     {
