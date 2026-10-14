@@ -42,7 +42,7 @@ impl Default for Theme {
             accent: [90, 170, 255],
             warning: [225, 165, 40],
             error: [255, 110, 110],
-            radius: 3.0,
+            radius: 1.0,
             spacing: 6.0,
             font: 13.0,
         }
@@ -74,8 +74,8 @@ pub fn all(dir: Option<&std::path::Path>) -> Vec<Theme> {
 }
 
 impl Theme {
-    /// The egui style of the theme.
-    pub fn style(&self) -> egui::Style {
+    /// The egui style of the theme. `compact`: less space between the items (the density of a GIS).
+    pub fn style(&self, compact: bool) -> egui::Style {
         let mut s = egui::Style { visuals: if self.dark { egui::Visuals::dark() } else { egui::Visuals::light() }, ..Default::default() };
         let (bg, field, text, border, accent) = (rgb(self.background), rgb(self.field), rgb(self.text), rgb(self.border), rgb(self.accent));
         let v = &mut s.visuals;
@@ -87,6 +87,9 @@ impl Theme {
         v.window_stroke = Stroke::new(1.0, border);
         let r = CornerRadius::same(self.radius.round().clamp(0.0, 255.0) as u8);
         (v.window_corner_radius, v.menu_corner_radius) = (r, r);
+        // Thin shadows: the windows and the menus stay crisp.
+        v.window_shadow = egui::Shadow { offset: [0, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(if self.dark { 90 } else { 40 }) };
+        v.popup_shadow = egui::Shadow { offset: [0, 1], blur: 4, spread: 0, color: Color32::from_black_alpha(if self.dark { 80 } else { 30 }) };
         let w = &mut v.widgets;
         w.noninteractive.bg_fill = bg;
         w.noninteractive.weak_bg_fill = bg;
@@ -102,7 +105,7 @@ impl Theme {
         for x in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
             x.corner_radius = r;
         }
-        let sp = self.spacing.clamp(0.0, 30.0).round();
+        let sp = (self.spacing * if compact { 0.67 } else { 1.0 }).clamp(0.0, 30.0).round();
         s.spacing.item_spacing = egui::vec2(sp + 2.0, (sp * 0.66).round());
         s.spacing.button_padding = egui::vec2(sp, (sp * 0.33).round());
         let f = self.font.clamp(8.0, 30.0);
@@ -118,10 +121,10 @@ impl Theme {
     }
 
     /// Use the theme in context `ctx` (the main window or the window of a detached view).
-    pub fn apply(&self, ctx: &egui::Context) {
+    pub fn apply(&self, ctx: &egui::Context, compact: bool) {
         let t = if self.dark { egui::Theme::Dark } else { egui::Theme::Light };
         ctx.set_theme(t);
-        ctx.set_style_of(t, self.style());
+        ctx.set_style_of(t, self.style(compact));
     }
 
     /// The color of the background of a frame, for the clear of the GPU target.
@@ -138,6 +141,6 @@ mod tests {
     fn built_in_themes_read() {
         let t = super::all(None);
         assert_eq!(t.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Dark", "Light", "High contrast"]);
-        assert!(!t[1].dark && t[1].style().visuals.panel_fill != t[0].style().visuals.panel_fill);
+        assert!(!t[1].dark && t[1].style(false).visuals.panel_fill != t[0].style(false).visuals.panel_fill);
     }
 }

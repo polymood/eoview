@@ -8,20 +8,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub const CMAPS: &[(&str, &[u32])] = &[
-    ("Gray", &[0x000000, 0xFFFFFF]),
-    ("Viridis", &[0x440154, 0x482878, 0x3E4A89, 0x31688E, 0x26828E, 0x1F9E89, 0x35B779, 0x6DCD59, 0xB4DE2C, 0xFDE725]),
-    ("Magma", &[0x000004, 0x180F3D, 0x440F76, 0x721F81, 0x9E2F7F, 0xCD4071, 0xF1605D, 0xFD9668, 0xFECA8D, 0xFCFDBF]),
-    ("Inferno", &[0x000004, 0x1B0C41, 0x4A0C6B, 0x781C6D, 0xA52C60, 0xCF4446, 0xED6925, 0xFB9B06, 0xF7D13D, 0xFCFFA4]),
-    ("Plasma", &[0x0D0887, 0x46039F, 0x7201A8, 0x9C179E, 0xBD3786, 0xD8576B, 0xED7953, 0xFB9F3A, 0xFDCA26, 0xF0F921]),
-    ("Cividis", &[0x00224E, 0x123570, 0x3B496C, 0x575D6D, 0x707173, 0x8A8779, 0xA69D75, 0xC4B56C, 0xE4CF5B, 0xFEE838]),
-    ("Turbo", &[0x30123B, 0x4662D7, 0x36AAF9, 0x1AE4B6, 0x72FE5E, 0xC8EF34, 0xFABA39, 0xF66B19, 0xCA2A04, 0x7A0403]),
-    ("Jet", &[0x00007F, 0x0000FF, 0x007FFF, 0x00FFFF, 0x7FFF7F, 0xFFFF00, 0xFF7F00, 0xFF0000, 0x7F0000]),
-    ("Hot", &[0x000000, 0xE60000, 0xFFD200, 0xFFFFFF]),
-    ("Terrain", &[0x333399, 0x0294FA, 0x20D073, 0xFEFE98, 0x805C54, 0xFFFFFF]),
-    ("RdBu", &[0x67001F, 0xB2182B, 0xD6604D, 0xF4A582, 0xFDDBC7, 0xF7F7F7, 0xD1E5F0, 0x92C5DE, 0x4393C3, 0x2166AC, 0x053061]),
-    ("RdYlGn", &[0xA50026, 0xD73027, 0xF46D43, 0xFDAE61, 0xFEE08B, 0xFFFFBF, 0xD9EF8B, 0xA6D96A, 0x66BD63, 0x1A9850, 0x006837]),
-];
+// The color maps are in `colormaps.rs` (a library of more than 100 maps, and the maps of the user).
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Kind {
@@ -391,7 +378,7 @@ impl MapLayer {
             st: [Stretch::default(); 3],
             clip: if stretch_init().1 > 0.0 { stretch_init().1 } else { 2.0 },
             cmap: 0,
-            stops: CMAPS[0].1.iter().map(|&c| hex(c)).collect(),
+            stops: crate::colormaps::stops(0),
             invert: false,
             opacity: 1.0,
             visible: true,
@@ -546,7 +533,7 @@ impl MapLayer {
             Kind::Rgb => self.rgb = p.2.map(String::from),
             _ => self.expr = p.2[0].into(),
         }
-        if let Some(i) = CMAPS.iter().position(|c| c.0 == p.3) {
+        if let Some(i) = crate::colormaps::find(p.3) {
             self.set_cmap(i);
         }
         self.st.iter_mut().for_each(|s| s.db = p.4);
@@ -554,8 +541,8 @@ impl MapLayer {
     }
 
     pub fn set_cmap(&mut self, i: usize) {
-        self.cmap = i % CMAPS.len();
-        self.stops = CMAPS[self.cmap].1.iter().map(|&c| hex(c)).collect();
+        self.cmap = i % crate::colormaps::all().len();
+        self.stops = crate::colormaps::stops(self.cmap);
     }
 
     /// Show the next or the previous band (one band mode).
@@ -898,7 +885,7 @@ impl MapLayer {
             expr: self.expr.clone(),
             st: self.st,
             clip: self.clip,
-            cmap: CMAPS[self.cmap].0.into(),
+            cmap: crate::colormaps::name(self.cmap),
             stops: self.stops.clone(),
             invert: self.invert,
             opacity: self.opacity,
@@ -920,7 +907,7 @@ impl MapLayer {
         self.expr = s.expr.clone();
         self.st = s.st;
         self.clip = s.clip;
-        self.set_cmap(CMAPS.iter().position(|c| c.0 == s.cmap).unwrap_or(0));
+        self.set_cmap(crate::colormaps::find(&s.cmap).unwrap_or(0));
         if s.stops.len() >= 2 {
             self.stops = s.stops.clone();
         }

@@ -809,7 +809,7 @@ fn pane_screen(app: &App, i: usize, c: [f64; 2]) -> Pos2 {
 fn tag(pt: &egui::Painter, at: Pos2, align: Align2, s: &str, c: Color32) {
     let g = pt.layout_no_wrap(s.to_string(), FontId::proportional(12.0), c);
     let rr = align.anchor_size(at, g.size()).expand(3.0);
-    pt.rect_filled(rr, 3.0, Color32::from_black_alpha(160));
+    pt.rect_filled(rr, 1.0, Color32::from_black_alpha(160));
     pt.galley(rr.min + vec2(3.0, 3.0), g, c);
 }
 

@@ -8,7 +8,7 @@ use crate::app::{App, Cmp, Dialog, Pane, WORKSPACE_EXT, What};
 use crate::icons::{self, Icon};
 use crate::lang::{t, tf};
 use crate::tools::Tool;
-use crate::layer::{self, BINS, CMAPS, Kind, MapLayer, PRESETS, Stretch};
+use crate::layer::{self, BINS, Kind, MapLayer, PRESETS, Stretch};
 use eo_render::{Compare, CompositeUniforms, View2d};
 use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, vec2};
 use egui_dock::tab_viewer::OnCloseResponse;
@@ -79,6 +79,8 @@ pub enum Cmd {
     AggregateDim(eo_cache::Agg, String),
     /// Open the Figure tab with a plot of this kind.
     Plot(crate::figure::FigKind),
+    /// The colors of the selected layer in the color map editor of the preferences.
+    EditCmap,
     /// Copy the limits of the view (west, south, east, north) to the clipboard.
     CopyExtent,
     Help,
@@ -255,8 +257,8 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     for (a, n) in eo_cache::Agg::ALL {
         v.push((tf("Aggregate over time: {}", &[t(n)]), "", Cmd::Aggregate(a)));
     }
-    for (i, (n, _)) in CMAPS.iter().enumerate() {
-        v.push((tf("Color map: {}", &[n]), "", Cmd::Cmap(i)));
+    for (i, c) in crate::colormaps::all().iter().enumerate() {
+        v.push((tf("Color map: {}", &[&c.name]), "", Cmd::Cmap(i)));
     }
     for s in SPACES {
         v.push((tf("Display CRS: {}", &[t(s.1)]), "", Cmd::Space(s.0)));
@@ -887,20 +889,74 @@ fn leaf_ui(ui: &mut egui::Ui, l: &MapLayer, c: usize, label: &str, pick: &mut Op
 }
 
 /// Color map swatches: one click selects.
-fn swatches(ui: &mut egui::Ui, cur: usize, invert: bool) -> Option<usize> {
+/// The groups of the color maps, in the order of the menus, with their names for the user.
+pub fn cmap_groups() -> [(&'static str, &'static str); 10] {
+    [
+        ("Perceptual", t("Perceptual")),
+        ("Sequential", t("Sequential")),
+        ("Diverging", t("Diverging")),
+        ("Cyclic", t("Cyclic")),
+        ("Qualitative", t("Qualitative")),
+        ("Oceanography", t("Oceanography (cmocean)")),
+        ("Scientific", t("Scientific (Crameri)")),
+        ("Multi-sequential", t("Multi-sequential")),
+        ("Classic", t("Classic")),
+        ("User", t("Your color maps")),
+    ]
+}
+
+/// The indexes of the color maps of group `g`, in the order of the library.
+pub fn cmaps_of(all: &[crate::colormaps::Cmap], g: &str) -> Vec<usize> {
+    let known = cmap_groups().map(|x| x.0);
+    (0..all.len()).filter(|&i| all[i].group == g || (g == "Classic" && !known.contains(&all[i].group.as_str()))).collect()
+}
+
+/// The color map of a layer: a button with the gradient and the name of the map. Its menu has a search field
+/// and the maps by group, each with its gradient. Some(i): the user selected map i.
+fn cmap_picker(ui: &mut egui::Ui, cur: usize, invert: bool) -> Option<usize> {
+    let all = crate::colormaps::all();
     let mut out = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-        for (i, (n, c)) in CMAPS.iter().enumerate() {
-            let (r, resp) = ui.allocate_exact_size(vec2(44.0, 14.0), Sense::click());
-            gradient(ui, r, &c.iter().map(|&c| layer::hex(c)).collect::<Vec<_>>(), invert);
-            if i == cur {
-                ui.painter().rect_stroke(r.expand(1.5), 2.0, Stroke::new(2.0, ui.visuals().hyperlink_color), egui::StrokeKind::Outside);
+    let w = ui.available_width().min(320.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
+    let vis = ui.style().interact(&resp).clone();
+    ui.painter().rect(rect, vis.corner_radius, vis.weak_bg_fill, vis.bg_stroke, egui::StrokeKind::Inside);
+    let g = Rect::from_min_max(rect.min + vec2(4.0, 5.0), egui::pos2(rect.left() + (w * 0.55).max(60.0), rect.bottom() - 5.0));
+    if let Some(c) = all.get(cur) {
+        gradient(ui, g, &c.stops, invert);
+        ui.painter().text(egui::pos2(g.right() + 8.0, rect.center().y), Align2::LEFT_CENTER, &c.name, FontId::proportional(13.0), vis.text_color());
+    }
+    icons::draw(ui.painter(), Icon::Down, Rect::from_center_size(egui::pos2(rect.right() - 11.0, rect.center().y), vec2(9.0, 9.0)), vis.text_color());
+    let resp = resp.on_hover_text(t("Color map: all the maps, with a search field"));
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(340.0);
+        let qid = egui::Id::new("cmap search");
+        let mut q: String = ui.data_mut(|d| d.get_temp(qid).unwrap_or_default());
+        ui.add(egui::TextEdit::singleline(&mut q).hint_text(t("Search the color maps")).desired_width(f32::INFINITY)).request_focus();
+        ui.data_mut(|d| d.insert_temp(qid, q.clone()));
+        let ql = q.to_lowercase();
+        egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
+            for (g, gname) in cmap_groups() {
+                let ids: Vec<usize> = cmaps_of(&all, g).into_iter().filter(|&i| ql.is_empty() || all[i].name.to_lowercase().contains(&ql) || all[i].source.to_lowercase().contains(&ql)).collect();
+                if ids.is_empty() {
+                    continue;
+                }
+                ui.add_space(4.0);
+                ui.weak(gname);
+                for i in ids {
+                    let c = &all[i];
+                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+                    if resp.hovered() || i == cur {
+                        ui.painter().rect_filled(r, 1.0, if i == cur { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.hovered.weak_bg_fill });
+                    }
+                    gradient(ui, Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(150.0, 12.0)), &c.stops, invert);
+                    ui.painter().text(egui::pos2(r.left() + 164.0, r.center().y), Align2::LEFT_CENTER, &c.name, FontId::proportional(13.0), ui.visuals().text_color());
+                    if resp.on_hover_text(&c.source).clicked() {
+                        out = Some(i);
+                        ui.close();
+                    }
+                }
             }
-            if resp.on_hover_text(*n).clicked() {
-                out = Some(i);
-            }
-        }
+        });
     });
     out
 }
@@ -909,7 +965,7 @@ fn gradient(ui: &egui::Ui, r: Rect, stops: &[[u8; 3]], invert: bool) {
     gradient_on(ui.painter(), r, stops, invert);
 }
 
-fn gradient_on(pt: &egui::Painter, r: Rect, stops: &[[u8; 3]], invert: bool) {
+pub fn gradient_on(pt: &egui::Painter, r: Rect, stops: &[[u8; 3]], invert: bool) {
     let l = layer::lut(stops);
     let n = 64;
     for i in 0..n {
@@ -946,7 +1002,7 @@ fn tick_text(v: f32, step: f32) -> String {
 /// round values.
 pub fn colorbar(pt: &egui::Painter, corner: Pos2, stops: &[[u8; 3]], invert: bool, st: &Stretch, name: &str) {
     let bar = Rect::from_min_size(corner + vec2(-16.0 - 12.0 - 280.0, -16.0 - 40.0), vec2(280.0, 12.0));
-    pt.rect_filled(bar.expand2(vec2(12.0, 0.0)).with_min_y(bar.top() - 24.0).with_max_y(bar.bottom() + 28.0), 4.0, Color32::from_black_alpha(170));
+    pt.rect_filled(bar.expand2(vec2(12.0, 0.0)).with_min_y(bar.top() - 24.0).with_max_y(bar.bottom() + 28.0), 1.0, Color32::from_black_alpha(170));
     gradient_on(pt, bar, stops, invert);
     pt.text(bar.left_top() + vec2(0.0, -5.0), Align2::LEFT_BOTTOM, name, FontId::proportional(13.0), Color32::WHITE);
     let (lo, hi) = (st.lo, st.hi);
@@ -1124,7 +1180,7 @@ impl App {
             let g = pt.layout_no_wrap(text, FontId::monospace(18.0), Color32::WHITE);
             // Top left: the scale bar is at the bottom left.
             let r = Rect::from_min_size(rect.left_top() + vec2(16.0, 16.0), g.size() + vec2(20.0, 12.0));
-            pt.rect_filled(r, 4.0, Color32::from_black_alpha(170));
+            pt.rect_filled(r, 1.0, Color32::from_black_alpha(170));
             pt.galley(r.min + vec2(10.0, 6.0), g, Color32::WHITE);
         }
     }
@@ -1296,6 +1352,12 @@ impl App {
             Cmd::ViewsAlong(d, a, b, s) => self.views_along(id, d, a, b, s),
             Cmd::AggregateDim(how, d) => self.aggregate_dim(id, how, d),
             Cmd::Plot(k) => (self.figure.kind, self.figure_open) = (k, true),
+            Cmd::EditCmap => {
+                if let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) {
+                    self.cmap_edit = Some((tf("{} edited", &[&crate::colormaps::name(l.cmap)]), l.stops.clone()));
+                }
+                self.prefs_open = Some(crate::prefs::PrefsWin { section: crate::prefs::Section::ColorMaps, search: String::new() });
+            }
             Cmd::Open(add, What::Path(p)) => self.open(id, p, add),
             Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
@@ -1693,8 +1755,16 @@ impl App {
                     entry(ui, cmds, id, t("Automatic stretch"), "A", Cmd::Auto);
                     entry(ui, cmds, id, t("Same display for all layers"), "", Cmd::SameDisplay);
                     ui.menu_button(t("Color map"), |ui| {
-                        for (i, (n, _)) in CMAPS.iter().enumerate() {
-                            check(ui, cmds, id, i == cmap, n, "", Cmd::Cmap(i));
+                        let all = crate::colormaps::all();
+                        for (g, gname) in cmap_groups() {
+                            let ids = cmaps_of(&all, g);
+                            if !ids.is_empty() {
+                                ui.menu_button(gname, |ui| {
+                                    for i in ids {
+                                        check(ui, cmds, id, i == cmap, &all[i].name, "", Cmd::Cmap(i));
+                                    }
+                                });
+                            }
                         }
                     });
                     entry(ui, cmds, id, t("Next color map"), "C", Cmd::NextCmap);
@@ -1954,7 +2024,7 @@ impl App {
 
     pub fn side(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
-        let self_tool = self.tool;
+        let (self_tool, mut tab) = (self.tool, self.prefs.side_tab.min(2));
         let smalls = self.smalls.clone();
         // The profile along a dimension: the pixel under the cursor of each layer, and the profile state.
         let cursor_px: std::collections::HashMap<u64, (u64, u64)> = self.probes.iter().filter_map(|(k, p)| p.last.as_ref().map(|l| (*k, (l.0, l.1)))).collect();
@@ -2058,10 +2128,9 @@ impl App {
         let Some(l) = p.layers.get_mut(p.sel) else { return };
         let sel = p.sel;
         // The parts of the selected layer, one tab each: what it shows (Data), how it shows (Display), what to
-        // do with it (Analysis). The tab stays from one session to the next. A new tool opens Analysis: the
-        // results of the tools are there.
-        let (tab_id, tool_id) = (egui::Id::new("side tab"), egui::Id::new("side tool"));
-        let mut tab: u8 = ui.data_mut(|d| *d.get_persisted_mut_or_default::<u8>(tab_id));
+        // do with it (Analysis). The preferences keep the tab. A new tool opens Analysis: the results of the
+        // tools are there.
+        let tool_id = egui::Id::new("side tool");
         let tool = self_tool;
         if ui.data_mut(|d| d.get_temp::<Tool>(tool_id)) != Some(tool) {
             if tool != Tool::None {
@@ -2084,7 +2153,6 @@ impl App {
                 ui.selectable_value(&mut tab, k, n).on_hover_text(tip);
             }
         });
-        ui.data_mut(|d| d.insert_persisted(tab_id, tab));
         ui.separator();
         let (mut changed, mut pick_changed) = (false, false);
         if tab == 0 {
@@ -2337,7 +2405,7 @@ impl App {
             }
             if l.kind != Kind::Rgb {
                 ui.separator();
-                if let Some(i) = swatches(ui, l.cmap, l.invert) {
+                if let Some(i) = cmap_picker(ui, l.cmap, l.invert) {
                     l.set_cmap(i);
                 }
                 ui.horizontal(|ui| {
@@ -2354,6 +2422,10 @@ impl App {
                                 l.stops.pop();
                             }
                         });
+                        if ui.button(t("Save as a color map...")).on_hover_text(t("In your color maps (Preferences, Color maps)")).clicked() {
+                            cmds.push((Cmd::EditCmap, id));
+                            ui.close();
+                        }
                     });
                 });
             }
@@ -2374,6 +2446,10 @@ impl App {
             self.profile.req = Some(self.engine.profile(l, x, y, k));
         }
 
+        if tab != self.prefs.side_tab {
+            self.prefs.side_tab = tab;
+            self.save_prefs();
+        }
         if tab != 2 {
             return;
         }
@@ -2620,7 +2696,7 @@ impl App {
                 // Color map rows: one for each layer, the last for the difference.
                 let mut rows: Vec<(Vec<[u8; 3]>, u32)> = lays.iter().enumerate().map(|(k, &li)| (p.layers[li].stops.clone(), k as u32)).collect();
                 if g == 0 {
-                    rows.push((CMAPS[p.dcmap].1.iter().map(|&c| layer::hex(c)).collect(), eo_render::LUT_ROWS - 1));
+                    rows.push((crate::colormaps::stops(p.dcmap), eo_render::LUT_ROWS - 1));
                 }
                 for (stops, row) in rows {
                     if p.luts[g * rows_n + row as usize] != stops {
@@ -2800,7 +2876,7 @@ fn compare_ui(ui: &mut egui::Ui, p: &mut Pane) {
                 }
                 ui.checkbox(&mut p.dinvert, t("Invert"));
             });
-            if let Some(i) = swatches(ui, p.dcmap, p.dinvert) {
+            if let Some(i) = cmap_picker(ui, p.dcmap, p.dinvert) {
                 p.dcmap = i;
             }
         }
@@ -2815,7 +2891,7 @@ fn overlays(p: &Pane, pt: &egui::Painter, ppp: f32, mpp: Option<f64>, cross: Opt
     let label = |pos: Pos2, align: Align2, s: &str, c: Color32| {
         let g = pt.layout_no_wrap(s.to_string(), FontId::proportional(13.0), c);
         let rr = align.anchor_size(pos, g.size()).expand(4.0);
-        pt.rect_filled(rr, 3.0, Color32::from_black_alpha(150));
+        pt.rect_filled(rr, 1.0, Color32::from_black_alpha(150));
         pt.galley(rr.min + vec2(4.0, 4.0), g, c);
     };
     if p.specs.len() >= 2 && p.cmp != Cmp::Off {
@@ -2944,6 +3020,28 @@ pub fn dialogs(app: &mut App) {
                     Ok(p) => tf("Written: {}", &[&p]),
                     Err(e) => e,
                 });
+            }
+        }
+        Dialog::ImportCmaps => {
+            let d = rfd::FileDialog::new().set_title(t("Import color maps")).add_filter(t("Color maps"), &["cpt", "act", "rgb", "gpl", "ggr", "pal", "txt", "csv"]).add_filter(t("All files"), &["*"]);
+            if let Some(v) = d.pick_files() {
+                let (mut ok, mut bad) = (0, vec![]);
+                for f in v {
+                    let path = f.to_string_lossy().into_owned();
+                    let name = f.file_stem().map_or(path.clone(), |s| s.to_string_lossy().into_owned());
+                    match std::fs::read(&f).map_err(|e| e.to_string()).and_then(|b| crate::colormaps::parse(&path, &b)) {
+                        Ok(c) => match crate::colormaps::save_user(&name, &crate::colormaps::thin(c, 256), &path) {
+                            Ok(()) => ok += 1,
+                            Err(e) => bad.push(format!("{name}: {e}")),
+                        },
+                        Err(e) => bad.push(e),
+                    }
+                }
+                let mut m = tf("Imported: {} color maps.", &[&ok.to_string()]);
+                if !bad.is_empty() {
+                    m += &format!(" {}", bad.join("; "));
+                }
+                app.cmap_msg = Some(m);
             }
         }
         Dialog::PyOpen => {

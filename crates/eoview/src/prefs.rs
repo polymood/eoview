@@ -40,6 +40,10 @@ pub struct Prefs {
     pub no_map: bool,
     /// No automatic update (`update`).
     pub no_update: bool,
+    /// More space between the items of the interface (the default is compact, as a GIS).
+    pub comfortable: bool,
+    /// The tab of the layer panel: 0 Data, 1 Display, 2 Analysis.
+    pub side_tab: u8,
 }
 
 /// The configuration directory of eoview: `%APPDATA%\eoview` on Windows, `$XDG_CONFIG_HOME/eoview` or
@@ -63,6 +67,7 @@ impl Prefs {
 pub enum Section {
     General,
     Appearance,
+    ColorMaps,
     Performance,
     Network,
     Render,
@@ -71,9 +76,10 @@ pub enum Section {
     About,
 }
 
-const SECTIONS: [(Section, &str, Icon); 8] = [
+const SECTIONS: [(Section, &str, Icon); 9] = [
     (Section::General, "General", Icon::Gear),
     (Section::Appearance, "Appearance", Icon::Palette),
+    (Section::ColorMaps, "Color maps", Icon::ColorBar),
     (Section::Performance, "Performance", Icon::Gauge),
     (Section::Network, "Network", Icon::Cloud),
     (Section::Render, "Render", Icon::Film),
@@ -88,6 +94,8 @@ enum Item {
     Lang,
     Recent,
     Theme,
+    Density,
+    ColorMaps,
     Stretch,
     SameStretch,
     Reload,
@@ -104,10 +112,12 @@ enum Item {
     About,
 }
 
-const ITEMS: [(Item, Section, &str, &str); 17] = [
+const ITEMS: [(Item, Section, &str, &str); 19] = [
     (Item::Lang, Section::General, "Language", "The language of the interface."),
     (Item::Recent, Section::General, "Recent products", "The list of the recent products and workspaces of the File menu."),
     (Item::Theme, Section::Appearance, "Theme", "Colors, corners, spacing and size of the text. To add a theme, put a JSON file in the themes directory."),
+    (Item::ColorMaps, Section::ColorMaps, "Color maps", "The color maps of eoview (matplotlib, ColorBrewer, cmocean, the Scientific colour maps of Crameri) and your color maps. Import files of other programs (GMT .cpt, Adobe .act, NCL .rgb, GIMP .gpl and .ggr, JASC .pal, text files of RGB rows, for example the tables of Panoply), or make a map with the editor."),
+    (Item::Density, Section::Appearance, "Density", "The space between the items of the interface. Compact: more on the screen, as in a GIS."),
     (Item::Stretch, Section::Appearance, "Range of a new layer", "The automatic stretch of a new layer, and of the Auto button (A). Minimum to maximum: all the values of the data. Clip: without a part of the values at each end, for more contrast. Data type: 0 to 255 for 8-bit data, 0 to 65535 for 16-bit data (with the scale and the offset of the file)."),
     (Item::SameStretch, Section::Appearance, "Same range for the layers of a view", "The layers of a view that show the same bands (for example the orbits of a day, or the tiles of an area) get the same range: no visible edge between them. The range is the union of their automatic ranges, or the range that you set on one of them."),
     (Item::Reload, Section::General, "Reload the products that change", "A product of a view that a program writes again (for example the output of a processing) opens again in the view, with the same settings. eoview checks the local products each second."),
@@ -137,6 +147,103 @@ impl Default for PrefsWin {
 }
 
 impl App {
+    /// The color maps of the preferences: import, the editor, and the library by group.
+    fn cmaps_ui(&mut self, ui: &mut egui::Ui) {
+        let all = crate::colormaps::all();
+        ui.horizontal(|ui| {
+            if ui.button(t("Import files...")).on_hover_text(t("GMT .cpt, Adobe .act, NCL .rgb, GIMP .gpl and .ggr, JASC .pal, text files of RGB rows")).clicked() {
+                self.dialog = Some(crate::app::Dialog::ImportCmaps);
+            }
+            if ui.button(t("New color map")).clicked() {
+                self.cmap_edit = Some((t("My color map").into(), vec![[0, 0, 128], [255, 255, 255], [128, 0, 0]]));
+            }
+            if let Some(d) = crate::colormaps::user_dir() {
+                ui.small(d.to_string_lossy()).on_hover_text(t("The folder of your color maps (JSON files)"));
+            }
+        });
+        if let Some(m) = &self.cmap_msg {
+            ui.small(m);
+        }
+        // The editor: a name, the colors (at equal distances), the gradient.
+        if let Some((name, stops)) = &mut self.cmap_edit {
+            let mut done = None;
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(t("Name"));
+                    ui.text_edit_singleline(name);
+                });
+                let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(420.0), 20.0), egui::Sense::hover());
+                crate::ui::gradient_on(ui.painter(), r, stops, false);
+                ui.horizontal_wrapped(|ui| {
+                    for s in stops.iter_mut() {
+                        ui.color_edit_button_srgb(s);
+                    }
+                    if ui.small_button("+").on_hover_text(t("Add a color")).clicked() {
+                        stops.push(*stops.last().unwrap());
+                    }
+                    if stops.len() > 2 && ui.small_button("-").on_hover_text(t("Remove the last color")).clicked() {
+                        stops.pop();
+                    }
+                    if ui.small_button(t("Reverse")).clicked() {
+                        stops.reverse();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("cmap from").selected_text(t("Start from a map")).show_ui(ui, |ui| {
+                        for c in all.iter() {
+                            if ui.selectable_label(false, &c.name).clicked() {
+                                *stops = crate::colormaps::thin(c.stops.clone(), 12);
+                            }
+                        }
+                    });
+                    if ui.button(t("Save")).clicked() {
+                        done = Some(true);
+                    }
+                    if ui.button(t("Cancel")).clicked() {
+                        done = Some(false);
+                    }
+                });
+            });
+            match done {
+                Some(true) => {
+                    self.cmap_msg = Some(match crate::colormaps::save_user(name, stops, "eoview") {
+                        Ok(()) => tf("Saved: {}", &[name]),
+                        Err(e) => e,
+                    });
+                    self.cmap_edit = None;
+                }
+                Some(false) => self.cmap_edit = None,
+                None => {}
+            }
+        }
+        // The library, by group: your maps first.
+        let groups = crate::ui::cmap_groups();
+        for (g, gname) in groups.iter().rev().take(1).chain(groups.iter().take(groups.len() - 1)) {
+            let ids = crate::ui::cmaps_of(&all, g);
+            if ids.is_empty() {
+                continue;
+            }
+            egui::CollapsingHeader::new(format!("{gname}  ({})", ids.len())).id_salt(("cmaps", g)).default_open(*g == "User").show(ui, |ui| {
+                for i in ids {
+                    let c = &all[i];
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(150.0, 14.0), egui::Sense::hover());
+                        crate::ui::gradient_on(ui.painter(), r, &c.stops, false);
+                        ui.label(&c.name).on_hover_text(&c.source);
+                        if ui.small_button(if c.group == "User" { t("Edit") } else { t("Copy to edit") }).clicked() {
+                            let n = if c.group == "User" { c.name.trim_end_matches(" (user)").to_string() } else { format!("{} 2", c.name) };
+                            self.cmap_edit = Some((n, crate::colormaps::thin(c.stops.clone(), 24)));
+                        }
+                        if c.group == "User" && ui.small_button(t("Delete")).clicked() {
+                            crate::colormaps::delete_user(&c.name);
+                            self.cmap_msg = Some(tf("Deleted: {}", &[&c.name]));
+                        }
+                    });
+                }
+            });
+        }
+    }
+
     /// Write the preferences next to the list of the recent products (not in the tests and the benchmarks).
     pub fn save_prefs(&self) {
         let Some(f) = self.recent_file.as_ref().map(|f| f.with_file_name("prefs.json")) else { return };
@@ -159,8 +266,8 @@ impl App {
         eo_io::source::set_no_map(self.prefs.no_map);
         crate::layer::set_stretch_init(self.prefs.stretch, if self.prefs.clip > 0.0 { self.prefs.clip } else { 2.0 });
         let th = self.theme();
-        th.apply(&self.ctx);
-        self.wins.iter().for_each(|d| th.apply(&d.ctx));
+        th.apply(&self.ctx, !self.prefs.comfortable);
+        self.wins.iter().for_each(|d| th.apply(&d.ctx, !self.prefs.comfortable));
     }
 
     /// Preferences window. A change goes to the preferences file immediately.
@@ -258,6 +365,18 @@ impl App {
                         self.themes = crate::theme::all(config_dir().map(|d| d.join("themes")).as_deref());
                         c = true;
                     }
+                });
+                c
+            }
+            Item::ColorMaps => {
+                self.cmaps_ui(ui);
+                false
+            }
+            Item::Density => {
+                let mut c = false;
+                ui.horizontal(|ui| {
+                    c |= ui.selectable_value(&mut p.comfortable, false, t("Compact")).changed();
+                    c |= ui.selectable_value(&mut p.comfortable, true, t("Comfortable")).changed();
                 });
                 c
             }

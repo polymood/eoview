@@ -3,6 +3,7 @@ mod animate;
 mod app;
 mod dims;
 mod bench;
+mod colormaps;
 mod icons;
 mod info;
 mod lang;
@@ -662,7 +663,7 @@ impl App {
             }
             match self.win.as_ref().and_then(|w| open_detached(el, w, id)) {
                 Some(d) => {
-                    self.theme().apply(&d.ctx);
+                    self.theme().apply(&d.ctx, !self.prefs.comfortable);
                     self.wins.push(d);
                 }
                 // No window: the view goes back to the dock.
@@ -923,7 +924,7 @@ fn render_args(args: &[String]) -> Result<RenderArgs, String> {
             "--keep" => set.keep = true,
             "--smooth" => look.1 = true,
             "--legend" => set.legend = v,
-            "--cmap" => look.0 = Some(layer::CMAPS.iter().position(|c| c.0.eq_ignore_ascii_case(&v)).ok_or(format!("--cmap: no color map {v}. The color maps: {}", layer::CMAPS.iter().map(|c| c.0).collect::<Vec<_>>().join(", ")))?),
+            "--cmap" => look.0 = Some(colormaps::find(&v).ok_or(format!("--cmap: no color map {v}. The color maps: {}", colormaps::all().iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")))?),
             "--out" => set.out = v,
             "--stretch" => stretch = Some(v.split_once(',').and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?))).ok_or(bad(o, &v))?),
             "--bbox" => {

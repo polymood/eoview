@@ -435,7 +435,7 @@ impl App {
         let Some(frame) = frame_of(ctx, f, a, &yt, 0.0) else { return Some(t("The page is too small for its parts.").into()) };
         fig.clip = frame;
         // The color of a bin: the logarithm of its count (Viridis), white without pairs.
-        let lut = crate::layer::lut(&crate::layer::CMAPS.iter().find(|c| c.0 == "Viridis").map_or(vec![[0, 0, 0], [255, 255, 255]], |c| c.1.iter().map(|&h| crate::layer::hex(h)).collect()));
+        let lut = crate::layer::lut(&crate::colormaps::stops(crate::colormaps::find("Viridis").unwrap_or(0)));
         let top = bins.iter().copied().max().unwrap_or(1).max(1) as f64;
         let rgba = bins.iter().flat_map(|&c| if c == 0 { [0, 0, 0, 0] } else { lut[((c as f64).ln() / top.ln().max(1e-9) * 255.0).clamp(0.0, 255.0) as usize] }).collect();
         fig.prims.push(Prim::Image { r: frame, img: Arc::new(Img { w: 200, h: 200, rgba }) });

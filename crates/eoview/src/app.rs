@@ -194,7 +194,7 @@ impl Pane {
             diff: 0,
             dlo: -1.0,
             dhi: 1.0,
-            dcmap: crate::layer::CMAPS.iter().position(|c| c.0 == "RdBu").unwrap_or(0),
+            dcmap: crate::colormaps::find("RdBu").unwrap_or(0),
             dinvert: false,
             link: 1,
             smooth: false,
@@ -509,6 +509,8 @@ pub enum Dialog {
     /// Python scripts or notebooks to open in the editor, and the file of tab k of the editor.
     PyOpen,
     PySave(usize),
+    /// Color map files to import into the maps of the user.
+    ImportCmaps,
 }
 
 /// An export of a layer to a file (`Engine::export`).
@@ -645,6 +647,9 @@ pub struct App {
     pub prefs: crate::prefs::Prefs,
     /// The preferences window, if it is open.
     pub prefs_open: Option<crate::prefs::PrefsWin>,
+    /// The color map of the editor of the preferences (name and colors), and the last message of the color maps.
+    pub cmap_edit: Option<(String, Vec<[u8; 3]>)>,
+    pub cmap_msg: Option<String>,
     /// The themes of eoview and of the user.
     pub themes: Vec<crate::theme::Theme>,
     /// The render that runs, the settings of the next render, the result of the last render, and true if
@@ -765,6 +770,8 @@ impl App {
             field_keys: HashSet::new(),
             prefs: Default::default(),
             prefs_open: None,
+            cmap_edit: None,
+            cmap_msg: None,
             themes: crate::theme::all(None),
             job: None,
             render_set: Default::default(),
@@ -1898,7 +1905,7 @@ impl App {
                 diff: p.diff,
                 dlo: p.dlo,
                 dhi: p.dhi,
-                dcmap: crate::layer::CMAPS[p.dcmap].0.into(),
+                dcmap: crate::colormaps::name(p.dcmap),
                 dinvert: p.dinvert,
                 // A computed layer is in the file with its operation. The outputs of the Python script are
                 // not: the script makes them again.
@@ -1989,7 +1996,7 @@ impl App {
                 p.sel_shape = p.shapes.len().checked_sub(1);
                 (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz) = (s.cmp, s.swipe, s.vertical, s.blend, s.flicker_hz);
                 (p.diff, p.dlo, p.dhi, p.dinvert) = (s.diff, s.dlo, s.dhi, s.dinvert);
-                p.dcmap = crate::layer::CMAPS.iter().position(|c| c.0 == s.dcmap).unwrap_or(p.dcmap);
+                p.dcmap = crate::colormaps::find(&s.dcmap).unwrap_or(p.dcmap);
                 for (order, l) in s.layers.iter().enumerate() {
                     self.load_layer(id, order, l.clone(), None);
                 }
