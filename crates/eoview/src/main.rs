@@ -13,6 +13,7 @@ mod prefs;
 mod figure;
 mod py;
 mod plot;
+mod products;
 mod pyedit;
 mod render;
 mod splash;

@@ -124,6 +124,8 @@ pub enum Cmd {
     Math,
     /// Variable (channel) `.1` of layer `.0` of the view, alone in a new view (`.2` true) or as a new layer.
     ShowVar(usize, usize, bool),
+    /// Channel `.2` of the product of layer `.1` of view `.0` as a new layer of the view of the command.
+    AddVar(u32, usize, usize),
     /// Open or close the Python panel, run its script.
     Python,
     PythonRun,
@@ -461,6 +463,13 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         timeline(app, ui, id, bar, cmds);
     }
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+    // A variable of the Products panel that the user drops on the view: a new layer of the view.
+    if let Some(d) = resp.dnd_release_payload::<crate::products::DragVar>() {
+        cmds.push((Cmd::AddVar(d.pane, d.li, d.c), id));
+    }
+    if egui::DragAndDrop::has_payload_of_type::<crate::products::DragVar>(ui.ctx()) && resp.contains_pointer() {
+        ui.painter().rect_stroke(rect.shrink(2.0), 1.0, Stroke::new(2.0, ui.visuals().hyperlink_color), egui::StrokeKind::Inside);
+    }
     let ppp = ui.ctx().pixels_per_point();
     let active = app.active == id;
     let tool = app.tool;
@@ -1411,6 +1420,7 @@ impl App {
             Cmd::PythonRun => self.py_run(),
             Cmd::Math => self.math(id),
             Cmd::ShowVar(li, c, new) => self.show_var(id, li, c, new),
+            Cmd::AddVar(src, li, c) => self.add_var(src, li, c, id),
             Cmd::Aggregate(a) => {
                 self.agg.0 = a;
                 let range = self.agg.1.unwrap_or((0, usize::MAX));
@@ -2024,6 +2034,26 @@ impl App {
 
     pub fn side(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>) {
         let id = self.active;
+        // The panel shows the layers of the active view, or all the open products.
+        let mut prod = self.prefs.side_products;
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut prod, false, t("Layers")).on_hover_text(t("The layers of the active view"));
+            ui.selectable_value(&mut prod, true, t("Products")).on_hover_text(t("The open products, their variables and their metadata"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("+ Add").on_hover_text(t("Add layers to this view (Ctrl+Shift+O, or Shift + drop)")).clicked() {
+                    cmds.push((Cmd::Open(true, What::Files), id));
+                }
+            });
+        });
+        if prod != self.prefs.side_products {
+            self.prefs.side_products = prod;
+            self.save_prefs();
+        }
+        ui.separator();
+        if prod {
+            return self.products_ui(ui, cmds);
+        }
         let (self_tool, mut tab) = (self.tool, self.prefs.side_tab.min(2));
         let smalls = self.smalls.clone();
         // The profile along a dimension: the pixel under the cursor of each layer, and the profile state.
@@ -2032,15 +2062,6 @@ impl App {
         let prof = (self.profile.key, self.profile.values.clone());
         let mut want_prof = None;
         let mut along = self.along.clone();
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.strong(t("Layers"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("+ Add").on_hover_text(t("Add layers to this view (Ctrl+Shift+O, or Shift + drop)")).clicked() {
-                    cmds.push((Cmd::Open(true, What::Files), id));
-                }
-            });
-        });
         let Some(p) = self.pane_mut(id) else { return };
         if p.layers.is_empty() {
             ui.label(t("No layer. Open a product (Ctrl+O) or drop files on the view."));

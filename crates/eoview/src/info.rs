@@ -54,18 +54,18 @@ fn num(v: f32, dec: Option<usize>) -> String {
 }
 
 /// Dimensions as "name = size, name = size".
-fn dims_text(d: &[(String, u64)]) -> String {
+pub fn dims_text(d: &[(String, u64)]) -> String {
     d.iter().map(|(n, s)| format!("{n} = {s}")).collect::<Vec<_>>().join(", ")
 }
 
 /// The description of a variable of the viewer without metadata from the reader: from its array.
-fn meta_of(v: &Variable) -> Meta {
+pub fn meta_of(v: &Variable) -> Meta {
     let a = &v.levels[0];
     Meta { name: v.name.clone(), dims: a.dims.iter().cloned().zip(a.shape.iter().copied()).collect(), dtype: format!("{:?}", a.dtype).to_lowercase(), attrs: vec![] }
 }
 
 /// What the viewer knows of a variable that it shows: storage and the values that it applies.
-fn storage(v: &Variable) -> Attrs {
+pub fn storage(v: &Variable) -> Attrs {
     let a = &v.levels[0];
     let mut s: Attrs = vec![
         (t("Chunks").into(), a.chunk.iter().map(u64::to_string).collect::<Vec<_>>().join(" x ")),
@@ -84,7 +84,7 @@ fn storage(v: &Variable) -> Attrs {
     s
 }
 
-fn attrs_grid(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, a: &Attrs, filter: &str) {
+pub fn attrs_grid(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, a: &Attrs, filter: &str) {
     egui::Grid::new(id).num_columns(2).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
         for (k, v) in a.iter().filter(|(k, v)| filter.is_empty() || k.to_lowercase().contains(filter) || v.to_lowercase().contains(filter)) {
             ui.add(egui::Label::new(egui::RichText::new(k).strong()).selectable(true));

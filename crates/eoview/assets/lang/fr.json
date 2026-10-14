@@ -657,5 +657,16 @@
  "Your color maps": "Vos palettes",
  "{} edited": "{} modifiée",
  "Density": "Densité",
- "The space between the items of the interface. Compact: more on the screen, as in a GIS.": "L'espace entre les éléments de l'interface. Compact : plus d'informations à l'écran, comme dans un SIG."
+ "The space between the items of the interface. Compact: more on the screen, as in a GIS.": "L'espace entre les éléments de l'interface. Compact : plus d'informations à l'écran, comme dans un SIG.",
+ "A new layer of the active view": "Une nouvelle couche de la vue active",
+ "Add to the view": "Ajouter à la vue",
+ "Attributes ({})": "Attributs ({})",
+ "No product. Open a product (Ctrl+O) or drop files on a view.": "Aucun produit. Ouvrez un produit (Ctrl+O) ou déposez des fichiers sur une vue.",
+ "Products": "Produits",
+ "Search the variables and the attributes": "Chercher dans les variables et les attributs",
+ "Select a variable: its dimensions and attributes show here. Double click: a layer of the active view. Drag it to a view.": "Sélectionnez une variable : ses dimensions et ses attributs s'affichent ici. Double-clic : une couche de la vue active. Glissez-la sur une vue.",
+ "Storage": "Stockage",
+ "The layers of the active view": "Les couches de la vue active",
+ "The open products, their variables and their metadata": "Les produits ouverts, leurs variables et leurs métadonnées",
+ "Value: {}": "Valeur : {}"
 }

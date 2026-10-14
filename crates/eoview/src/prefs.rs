@@ -44,6 +44,8 @@ pub struct Prefs {
     pub comfortable: bool,
     /// The tab of the layer panel: 0 Data, 1 Display, 2 Analysis.
     pub side_tab: u8,
+    /// The left panel shows the products (else the layers).
+    pub side_products: bool,
 }
 
 /// The configuration directory of eoview: `%APPDATA%\eoview` on Windows, `$XDG_CONFIG_HOME/eoview` or

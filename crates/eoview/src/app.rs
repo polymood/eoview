@@ -622,6 +622,8 @@ pub struct App {
     asking: Option<(Open, crate::dims::Asking)>,
     /// The values of the scalars and the 1D variables of the products.
     pub smalls: crate::dims::Smalls,
+    /// The Products panel.
+    pub products: crate::products::Products,
     /// The profile along a dimension at the cursor (layer panel).
     pub profile: crate::dims::Profile,
     /// The form "Views along a dimension" of the layer panel: dimension, first index, last index, step.
@@ -731,6 +733,7 @@ impl App {
             win: None,
             smalls: crate::dims::Smalls::new(ctx.clone()),
             profile: Default::default(),
+            products: Default::default(),
             along: (None, 0, 0, 1),
             ctx,
             engine,
@@ -2108,6 +2111,23 @@ impl App {
     /// Show variable (channel) `c` of layer `li` of view `id` as one band: alone in a new view at the right
     /// (`new_view`), linked to the view to compare them, or as a new layer of the view. The new layer uses
     /// the product that is open (no new open).
+    /// Channel `c` of the product of layer `li` of view `src` as a new layer of view `target`.
+    pub fn add_var(&mut self, src: u32, li: usize, c: usize, target: u32) {
+        let Some(mut m) = self.pane(src).and_then(|p| p.layers.get(li)).cloned() else { return };
+        (m.uid, m.order) = (self.uid(), usize::MAX);
+        (m.kind, m.band, m.auto_pending, m.visible, m.opacity) = (Kind::Band, c, true, true, 1.0);
+        let Some(p) = self.pane_mut(target) else { return };
+        if p.layers.is_empty() {
+            p.v.fit = true;
+        }
+        p.layers.push(m);
+        p.sel = p.layers.len() - 1;
+        let k = p.sel;
+        self.active = target;
+        self.compile(target, k);
+        self.rebuild(target);
+    }
+
     pub fn show_var(&mut self, id: u32, li: usize, c: usize, new_view: bool) {
         let Some(src) = self.pane(id).and_then(|p| p.layers.get(li)).cloned() else { return };
         let Some(p) = self.pane(id) else { return };
