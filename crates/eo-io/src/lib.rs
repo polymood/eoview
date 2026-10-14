@@ -1,6 +1,7 @@
 //! Format readers, byte sources and codecs. A reader only describes the chunks of a product.
 //! The chunk engine in `eo-cache` reads and decodes them.
 mod blosc;
+pub mod dap;
 pub mod hdf5;
 pub mod netcdf;
 pub mod nitf;
@@ -27,6 +28,14 @@ pub struct Dataset {
 /// Open a local path or an HTTP(S) URL. This function blocks: do not call it on the UI thread.
 /// A directory can be a SAFE product. A metadata file of a SAFE product opens its directory.
 pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
+    // OPeNDAP: a marked URL, or a server path (`/dodsC/`, `/opendap/`, `/dap/`) that answers `.dds`.
+    if let Some((u, marked)) = dap::url(url) {
+        match dap::open(&u, rt) {
+            Ok(d) => return Ok(d),
+            Err(e) if marked => return Err(e),
+            Err(e) => eprintln!("{url}: not OPeNDAP: {e}"),
+        }
+    }
     let path = std::path::Path::new(url);
     let remote_zarr = source::is_remote(url) && (url.trim_end_matches('/').ends_with(".zarr") || url.contains(".zarr/"));
     if remote_zarr || (path.is_dir() && zarr::is_zarr(url, rt)) {
