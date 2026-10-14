@@ -77,6 +77,8 @@ pub enum Cmd {
     ViewsAlong(String, u64, u64, u64),
     /// A new layer: the aggregate of all the indexes of a dimension of the selected band.
     AggregateDim(eo_cache::Agg, String),
+    /// Open the Figure tab with a plot of this kind.
+    Plot(crate::figure::FigKind),
     /// Copy the limits of the view (west, south, east, north) to the clipboard.
     CopyExtent,
     Help,
@@ -206,6 +208,9 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Time: next step"), ".", Cmd::Step(1)),
         (t("Time: previous step"), ",", Cmd::Step(-1)),
         (t("Time: play or pause"), "Space", Cmd::Play),
+        (t("Plot: the plane of the layer, with the axes of its coordinates"), "", Cmd::Plot(crate::figure::FigKind::Plane)),
+        (t("Plot: the profile along a dimension at the cursor"), "", Cmd::Plot(crate::figure::FigKind::Profile)),
+        (t("Plot: a 1D variable of the product"), "", Cmd::Plot(crate::figure::FigKind::Line)),
         (t("Dimensions: next index"), "Page Up", Cmd::DimIndex(1)),
         (t("Dimensions: previous index"), "Page Down", Cmd::DimIndex(-1)),
         (t("Zoom in"), "+", Cmd::Zoom(1.5)),
@@ -1267,6 +1272,7 @@ impl App {
             Cmd::SmallValues(k) => (self.values.open, self.values.small) = (true, Some(k)),
             Cmd::ViewsAlong(d, a, b, s) => self.views_along(id, d, a, b, s),
             Cmd::AggregateDim(how, d) => self.aggregate_dim(id, how, d),
+            Cmd::Plot(k) => (self.figure.kind, self.figure_open) = (k, true),
             Cmd::Open(add, What::Path(p)) => self.open(id, p, add),
             Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
@@ -2091,6 +2097,14 @@ impl App {
                     l.set_pick(p);
                     pick_changed = true;
                 }
+                ui.horizontal(|ui| {
+                    if ui.button(t("Plot")).on_hover_text(t("The plane on its two dimensions, with the axes of their coordinates, in the Figure tab")).clicked() {
+                        cmds.push((Cmd::Plot(crate::figure::FigKind::Plane), id));
+                    }
+                    if prof_dim.is_some() && ui.button(t("Plot the profile")).on_hover_text(t("The profile at the cursor in the Figure tab")).clicked() {
+                        cmds.push((Cmd::Plot(crate::figure::FigKind::Profile), id));
+                    }
+                });
                 if l.shown_pgen != l.pgen {
                     ui.horizontal(|ui| {
                         ui.spinner();

@@ -39,10 +39,23 @@ pub enum FigKind {
     Transect,
     /// The histogram of the selected layer of the active view.
     Histogram,
+    /// The plane of the selected layer on its two dimensions, with the axes of their coordinates (`plot.rs`).
+    Plane,
+    /// The profile along a dimension at the cursor (the "Profile along" of the layer panel).
+    Profile,
+    /// A 1D variable of the product (`FigSet::small`).
+    Line,
 }
 
 impl FigKind {
-    pub const ALL: [(FigKind, &str); 3] = [(FigKind::Map, "Map"), (FigKind::Transect, "Transect"), (FigKind::Histogram, "Histogram")];
+    pub const ALL: [(FigKind, &str); 6] = [
+        (FigKind::Map, "Map"),
+        (FigKind::Plane, "Plot"),
+        (FigKind::Profile, "Profile"),
+        (FigKind::Line, "1D variable"),
+        (FigKind::Transect, "Transect"),
+        (FigKind::Histogram, "Histogram"),
+    ];
 }
 
 /// The settings of the figure (the workspace file keeps them).
@@ -67,6 +80,11 @@ pub struct FigSet {
     pub scalebar: bool,
     pub coasts: bool,
     pub borders: bool,
+    /// Plot: a logarithmic y axis (pressure), and the y axis from top to bottom (depth, pressure).
+    pub ylog: bool,
+    pub yrev: bool,
+    /// The 1D variable of a line plot (its name in the product).
+    pub small: String,
 }
 
 impl Default for FigSet {
@@ -85,6 +103,9 @@ impl Default for FigSet {
             scalebar: true,
             coasts: true,
             borders: false,
+            ylog: false,
+            yrev: false,
+            small: String::new(),
         }
     }
 }
@@ -116,10 +137,10 @@ pub struct Fig {
     pub prims: Vec<Prim>,
 }
 
-const BLACK: [u8; 3] = [0, 0, 0];
+pub const BLACK: [u8; 3] = [0, 0, 0];
 
 /// The width of a text (millimeters) of `size` points, with the font of eoview.
-fn text_w(ctx: &egui::Context, s: &str, size: f32) -> f32 {
+pub fn text_w(ctx: &egui::Context, s: &str, size: f32) -> f32 {
     ctx.fonts_mut(|f| f.layout_no_wrap(s.to_string(), FontId::proportional(size), Color32::BLACK).size().x) * PT
 }
 
@@ -170,6 +191,23 @@ fn gradient(stops: &[[u8; 3]], invert: bool) -> Arc<Img> {
     Arc::new(Img { w: lut.len(), h: 1, rgba: lut.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect() })
 }
 
+/// A horizontal color bar in the rectangle `r` (left, top, width, height), its ticks and its label under it
+/// (`label`, else the name and the unit of the legend).
+pub fn colorbar(fig: &mut Fig, f: f32, legend: &Legend, label: &str, r: [f32; 4]) {
+    let (stops, invert, lo, hi, name) = legend;
+    let ([bx, by, bw, bar_h], fm) = (r, f * PT);
+    fig.prims.push(Prim::Image { r: [bx, by, bx + bw, by + bar_h], img: gradient(stops, *invert) });
+    fig.prims.push(Prim::Line { pts: vec![[bx, by], [bx + bw, by], [bx + bw, by + bar_h], [bx, by + bar_h]], w: 0.3, c: BLACK, closed: true, clip: false });
+    let (ts, step) = ticks(*lo, *hi, 5);
+    for v in ts {
+        let x = bx + ((v - lo) / (hi - lo)) as f32 * bw;
+        fig.prims.push(Prim::Line { pts: vec![[x, by + bar_h], [x, by + bar_h + 0.8]], w: 0.3, c: BLACK, closed: false, clip: false });
+        fig.prims.push(Prim::Text { at: [x, by + bar_h + 0.8 + fm * 0.95], size: f, anchor: 0.5, c: BLACK, s: tick_text(v, step), up: false });
+    }
+    let label = if label.trim().is_empty() { name.clone() } else { label.to_string() };
+    fig.prims.push(Prim::Text { at: [bx + bw / 2.0, by + bar_h + 0.8 + fm * 2.35], size: f, anchor: 0.5, c: BLACK, s: label, up: false });
+}
+
 /// The data of a figure that does not come from the settings: the parts of the view.
 pub struct MapIn {
     /// The display CRS of the view (EPSG code), its center, and its width in display units.
@@ -189,6 +227,8 @@ pub struct ChartIn {
     pub bars: Vec<[f64; 3]>,
     pub xlabel: String,
     pub ylabel: String,
+    /// The x values are times (seconds since 1970): dates on the axis.
+    pub xtime: bool,
 }
 
 /// The image of a map: what it is for, its pixels, and its texture for the preview.
@@ -205,6 +245,10 @@ pub struct FigState {
     tex: Vec<(usize, Arc<Img>, egui::TextureHandle)>,
     /// The result of the last export.
     pub msg: Option<String>,
+    /// Plot of a plane: its values, the request in progress (request, key, width, height), its image.
+    pub plane: Option<crate::plot::PlaneData>,
+    pub plane_req: Option<(u64, (u64, usize), usize, usize)>,
+    pub plane_img: Option<(String, Arc<Img>)>,
 }
 
 /// The drawing of the image of a map: a hidden copy of the view.
@@ -290,13 +334,15 @@ impl App {
         let unit = l.inputs.first().map_or(String::new(), |x| x.var().units.clone());
         let vname = if unit.is_empty() { l.comp_name() } else { format!("{} ({unit})", l.comp_name()) };
         match kind {
+            FigKind::Profile => return self.profile_chart(id),
+            FigKind::Line => return self.line_chart(id, &self.figure.small),
             FigKind::Histogram => {
                 let (bins, lo, hi) = l.hist.first().cloned().ok_or_else(|| t("The layer has no histogram yet.").to_string())?;
                 let n = bins.len().max(1) as f64;
                 let total = bins.iter().map(|&b| b as f64).sum::<f64>().max(1.0);
                 let w = (hi - lo) as f64 / n;
                 let bars = bins.iter().enumerate().map(|(k, &b)| [lo as f64 + k as f64 * w, lo as f64 + (k + 1) as f64 * w, 100.0 * b as f64 / total]).collect();
-                Ok(ChartIn { lines: vec![], bars, xlabel: vname, ylabel: t("Pixels (%)").into() })
+                Ok(ChartIn { lines: vec![], bars, xlabel: vname, ylabel: t("Pixels (%)").into(), xtime: false })
             }
             _ => {
                 let sh = p.sel_shape.and_then(|k| p.shapes.get(k)).filter(|s| s.tool == crate::tools::Tool::Transect);
@@ -307,7 +353,7 @@ impl App {
                 let names = if l.kind == crate::layer::Kind::Rgb { vec!["R".to_string(), "G".into(), "B".into()] } else { vec![l.comp_name()] };
                 let n = prof.first().map_or(0, |p| p.1.len());
                 let lines = (0..n).map(|c| (names.get(c).cloned().unwrap_or_default(), prof.iter().map(|(d, v)| [d * k, v[c]]).collect())).collect();
-                Ok(ChartIn { lines, bars: vec![], xlabel: if geo { t("Distance (km)").into() } else { t("Distance (pixels)").into() }, ylabel: vname })
+                Ok(ChartIn { lines, bars: vec![], xlabel: if geo { t("Distance (km)").into() } else { t("Distance (pixels)").into() }, ylabel: vname, xtime: false })
             }
         }
     }
@@ -341,6 +387,7 @@ impl App {
         }
         let note = match set.kind {
             FigKind::Map => self.map_figure(&ctx, id, set, &mut fig, [pad, top, w - pad, bottom]),
+            FigKind::Plane => self.plane_figure(&ctx, id, set, &mut fig, [pad, top, w - pad, bottom]),
             kind => match self.chart_in(id, kind) {
                 Ok(c) => {
                     chart_figure(&ctx, &c, f, &mut fig, [pad, top, w - pad, bottom]);
@@ -468,19 +515,9 @@ impl App {
         }
         fig.prims.push(Prim::Line { pts: vec![[frame[0], frame[1]], [frame[2], frame[1]], [frame[2], frame[3]], [frame[0], frame[3]]], w: 0.5, c: BLACK, closed: true, clip: false });
         // The color bar under the map.
-        if let Some((stops, invert, lo, hi, name)) = bar {
+        if let Some(l) = bar {
             let bw = fw.clamp(20.0, 100.0) * 0.8;
-            let (bx, by) = (frame[0] + (fw - bw) / 2.0, frame[3] + lon_h + 1.5);
-            fig.prims.push(Prim::Image { r: [bx, by, bx + bw, by + bar_h], img: gradient(stops, *invert) });
-            fig.prims.push(Prim::Line { pts: vec![[bx, by], [bx + bw, by], [bx + bw, by + bar_h], [bx, by + bar_h]], w: 0.3, c: BLACK, closed: true, clip: false });
-            let (ts, step) = ticks(*lo, *hi, 5);
-            for v in ts {
-                let x = bx + ((v - lo) / (hi - lo)) as f32 * bw;
-                fig.prims.push(Prim::Line { pts: vec![[x, by + bar_h], [x, by + bar_h + 0.8]], w: 0.3, c: BLACK, closed: false, clip: false });
-                fig.prims.push(Prim::Text { at: [x, by + bar_h + 0.8 + fm * 0.95], size: f, anchor: 0.5, c: BLACK, s: tick_text(v, step), up: false });
-            }
-            let label = if set.colorbar_label.trim().is_empty() { name.clone() } else { set.colorbar_label.clone() };
-            fig.prims.push(Prim::Text { at: [bx + bw / 2.0, by + bar_h + 0.8 + fm * 2.35], size: f, anchor: 0.5, c: BLACK, s: label, up: false });
+            colorbar(fig, f, l, &set.colorbar_label, [frame[0] + (fw - bw) / 2.0, frame[3] + lon_h + 1.5, bw, bar_h]);
         }
         note
     }
@@ -667,7 +704,8 @@ fn chart_figure(ctx: &egui::Context, c: &ChartIn, f: f32, fig: &mut Fig, a: [f32
     for v in xt.iter().filter(|v| **v >= x0 && **v <= x1) {
         let x = mx(*v);
         fig.prims.push(Prim::Line { pts: vec![[x, frame[3]], [x, frame[3] + 0.8]], w: 0.4, c: BLACK, closed: false, clip: false });
-        fig.prims.push(Prim::Text { at: [x, frame[3] + 0.8 + fm * 0.95], size: f, anchor: 0.5, c: BLACK, s: tick_text(*v, xs), up: false });
+        let s = if c.xtime { crate::plot::date(*v, x1 - x0) } else { tick_text(*v, xs) };
+        fig.prims.push(Prim::Text { at: [x, frame[3] + 0.8 + fm * 0.95], size: f, anchor: 0.5, c: BLACK, s, up: false });
     }
     for v in yt.iter().filter(|v| **v >= y0 && **v <= y1) {
         let y = my(*v);
@@ -924,6 +962,7 @@ impl App {
             "svg" => std::fs::write(path, svg(&fig)).map_err(|e| format!("{path}: {e}"))?,
             "pdf" => std::fs::write(path, pdf(&fig, &self.pdf_widths())).map_err(|e| format!("{path}: {e}"))?,
             "png" => self.figure_png(&fig, set.dpi, path)?,
+            "csv" if set.kind == FigKind::Plane => std::fs::write(path, self.plane_csv(id)?).map_err(|e| format!("{path}: {e}"))?,
             "csv" => {
                 let c = self.chart_in(id, set.kind)?;
                 std::fs::write(path, chart_csv(&c)).map_err(|e| format!("{path}: {e}"))?;
@@ -1058,6 +1097,29 @@ impl App {
                     ui.checkbox(&mut set.scalebar, t("Scale bar"));
                     ui.checkbox(&mut set.coasts, t("Coasts"));
                     ui.checkbox(&mut set.borders, t("Country borders"));
+                }
+                if set.kind == FigKind::Plane {
+                    ui.separator();
+                    ui.small(t("The plane of the selected layer, on the dimensions of its rows and columns (layer panel, Dimensions). The axes show the coordinates."));
+                    ui.checkbox(&mut set.ylog, t("Logarithmic y axis")).on_hover_text(t("For a pressure axis. Only if all the values of the axis are positive"));
+                    ui.checkbox(&mut set.yrev, t("Reverse y axis")).on_hover_text(t("The small values at the top: depth, pressure"));
+                    ui.checkbox(&mut set.colorbar, t("Color bar"));
+                    if set.colorbar {
+                        ui.add(egui::TextEdit::singleline(&mut set.colorbar_label).hint_text(t("Label: the name and the unit of the layer")));
+                    }
+                }
+                if set.kind == FigKind::Profile {
+                    ui.separator();
+                    ui.small(t("Select a dimension in the layer panel (Profile along), then move the cursor over the view."));
+                }
+                if set.kind == FigKind::Line {
+                    ui.separator();
+                    let names: Vec<String> = self.pane(id).and_then(|p| p.layers.get(p.sel)).and_then(|l| l.any()).map_or(vec![], |a| a.ds.product.small.iter().filter(|v| v.dims.len() == 1).map(|v| v.name.clone()).collect());
+                    egui::ComboBox::from_id_salt("figure small").selected_text(if set.small.is_empty() { names.first().cloned().unwrap_or_default() } else { set.small.clone() }).show_ui(ui, |ui| {
+                        for n in names {
+                            ui.selectable_value(&mut set.small, n.clone(), n);
+                        }
+                    });
                 }
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {

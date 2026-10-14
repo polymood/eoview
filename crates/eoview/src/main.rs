@@ -11,6 +11,7 @@ mod outlines;
 mod prefs;
 mod figure;
 mod py;
+mod plot;
 mod pyedit;
 mod render;
 mod splash;

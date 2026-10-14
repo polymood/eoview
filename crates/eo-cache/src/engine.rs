@@ -643,9 +643,8 @@ impl Inner {
 
     fn layer(&self, ds: Arc<Dataset>, ds_id: u64, var: usize, choice: usize, time: u64, pick: &Pick) -> Result<Arc<Layer>> {
         let v = self.view(&ds, ds_id, var, pick)?;
-        if time >= v.steps() {
-            return Err("no such time step".into());
-        }
+        // Time as an image axis (a Hovmoller diagram): the variable has one step.
+        let time = time.min(v.steps() - 1);
         let ((band, part), levels) = (Layer::choice(&v, choice), display_levels(&v));
         let a = &v.levels[0];
         let at: Vec<u64> = (0..a.dims.len())

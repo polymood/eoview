@@ -168,6 +168,11 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
     - HDF4: RLE, skipping Huffman, NBIT, SZIP and JPEG compression, GCTP projections other than
       geographic (MODIS sinusoidal), a block cache for remote files.
     - NetCDF-4: the time dimension from `DIMENSION_LIST` (now from the length of the time coordinate).
+14a. **Native plots (2026-10-14).** DESIGN section 17. Done: the plot of a plane with the axes of its
+    coordinates (Hovmoller diagram, vertical section with a logarithmic and reversed pressure axis,
+    spectrogram), the profile at the cursor, the line plot of a 1D variable, in the Figure tab with all
+    its exports. To do: several lines in one chart, the zonal and meridional mean, the time series of a
+    point or of a region, the scatter of two layers, figures with several panels.
 14. **A DEM in 3D on the globe (2026-10-09).** Camera tilt and heading, depth buffer, terrain mesh from a
     DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
 15. **Panoply parity, other items.** DESIGN section 16.7 has the full list, with a decision for each

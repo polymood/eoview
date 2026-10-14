@@ -522,3 +522,44 @@ structure of the CO2M product with small sizes, contiguous storage, and the flat
 2. Views along a dimension: no limit (16.4).
 3. Formats: NetCDF-3, GRIB 2, HDF4 and OPeNDAP, all of them (16.6).
 4. Remote data with a slow plane: eoview reads it, with a progress bar (16.3).
+
+## 17. Native plots (2026-10-14)
+
+### 17.1 The decision
+
+The users of Panoply make plots without code. eoview makes them too, with the code of the figures (section
+7): one drawing for the page on the screen and for the files (PDF, SVG, PNG, CSV). A plot is a kind of the
+Figure tab. It uses the selected layer of the active view, with its "Dimensions" settings (rows, columns,
+the index of the other dimensions), its color map and its stretch. A change in the view changes the plot.
+
+The view stays the tool for maps. A plot is for the planes and the lines that are not maps, and for a page
+with axes, units and a legend.
+
+### 17.2 The plots
+
+| Plot | What it shows | State |
+|---|---|---|
+| Plot (the plane) | The plane of the layer on its two dimensions. The axes show the coordinates: dates for time, the coordinate variable (irregular values, for example pressure levels), the regular grid, or the index. Options: a logarithmic y axis, a reversed y axis, the color bar | Done |
+| Profile | The profile along a dimension at the cursor ("Profile along" of the layer panel) | Done |
+| 1D variable | A 1D variable of the product against its coordinate | Done |
+| Several lines | Profiles of several pixels, of several layers, or two variables in one chart, with a legend | To do |
+| Zonal and meridional mean | The mean along one image axis as a line (Panoply: zonal average) | To do |
+| Time series of a point or a region | The values of each time step at a pinned point, or the mean of a region | To do |
+| Scatter | The density of the pairs of values of two layers on the same grid | To do |
+| Panels | Some plots and maps on one page (a, b, c) | To do |
+
+Examples: time by latitude (a Hovmoller diagram), pressure by latitude (a vertical section, logarithmic and
+reversed y axis), wavelength by across-track position (a spectrogram), the spectrum of a pixel.
+
+### 17.3 How a plot of a plane is made
+
+- The plot reads the plane once from the engine, at the finest display level with at most 4 million
+  pixels (`Engine::read`). A display level halves the two axes: a limit on one side would lose the short
+  axis of a long plane (12 months by 1800 latitudes).
+- The image of the page has a pixel for each dot of the figure (the dpi of the settings). Each pixel takes
+  the nearest row and the nearest column on the axes of the coordinates: irregular coordinates and a
+  logarithmic axis have their true scale. The image stays in a cache until the data or the settings change.
+- The CSV file has the coordinates of the columns in its first line, then the coordinate of each row and
+  its values.
+- The Dimensions part of the layer panel has a "Plot" button, and "Plot the profile". The command palette
+  has the three plots.
