@@ -495,11 +495,13 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     // Swipe line: drag it when the pointer is near it.
     let swipe = p.cmp == Cmp::Swipe && p.specs.len() >= 2;
     let line = |p: &Pane| if p.vertical { rect.left() + p.swipe * rect.width() } else { rect.top() + p.swipe * rect.height() };
-    let near = |p: &Pane, pos: Pos2| (if p.vertical { pos.x } else { pos.y } - line(p)).abs() < 8.0;
+    let near = |p: &Pane, pos: Pos2| (if p.vertical { pos.x } else { pos.y } - line(p)).abs() < 10.0;
     if swipe && let Some(h) = resp.hover_pos() && (near(p, h) || p.swipe_drag) {
         ui.ctx().set_cursor_icon(if p.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
     }
-    if resp.drag_started() && swipe && resp.interact_pointer_pos().is_some_and(|q| near(p, q)) {
+    // The position of the press, not of the pointer now: a drag starts only after the pointer moves some
+    // pixels, and a fast move goes away from the line before that.
+    if resp.drag_started() && swipe && ui.input(|i| i.pointer.press_origin()).is_some_and(|q| near(p, q)) {
         p.swipe_drag = true;
     }
     if resp.drag_stopped() {
