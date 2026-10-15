@@ -6,38 +6,6 @@ Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
 
 [Website](https://polymood.github.io/eoview/), [download](https://polymood.github.io/eoview/download.html), [how to contribute](CONTRIBUTING.md).
 
-`eoview` is a working name.
-
-## Status
-
-Phases 0, 1 and 2 of the specification are complete. Parts of phases 3 and 4 are done: remote data
-(HTTP, S3, disk cache), time series with a timeline, and a first 3D globe view. `NEXT.md` lists the work
-that is not done.
-
-- Chunk engine: tokio does the I/O, rayon decodes, the UI thread never waits. Priorities from the views
-  (coarse level first, screen center first), cancellation of tiles that are not visible.
-- Byte sources: local files (memory map, zero-copy reads of uncompressed data), HTTP(S) and S3 range requests.
-- Caches with budgets: raw bytes, decoded chunks, GPU tiles.
-- Readers: GeoTIFF/COG, JPEG 2000, NITF (SICD, SIDD), EOPF Zarr v2 and v3, Sentinel-1, -2 and -3 SAFE, NetCDF-4/HDF5.
-- Georeferencing: affine, geolocation arrays, geolocation grids (GCPs). Reprojection on the GPU with a warp mesh.
-- RGB composites, band math, color maps, pixel inspector.
-- Docking layout with layout presets, a stack of layers in each view, link groups (geographic or pixel),
-  crosshair, compare modes (swipe, blend, difference, flicker), workspace files, command palette.
-
-## Formats
-
-| Format | Supported |
-|---|---|
-| TIFF, BigTIFF, GeoTIFF, COG | Strips and tiles. None, LZW, Deflate, Zstd, PackBits and JPEG compression. Predictors 2 and 3. Both byte orders. Overviews. GDAL no data value, scale, offset and band descriptions |
-| NITF 2.1, NSIF 1.0 (SICD, SIDD) | Uncompressed (NC) and masked (NM) blocks, JPEG 2000 (C8), IMODE B, P and S, complex pixels (C, or I and Q), large images in more than one segment. Georeferencing from the SIDD plane projection, the SICD/SIDD image corners, or IGEOLO |
-| JPEG 2000 (JP2, J2K) | Tiles and resolution levels (the levels are the overviews). OpenJPEG decoder |
-| Zarr v2 and v3 (EOPF, GeoZarr) | Consolidated metadata or a local store. Sharding. Blosc (LZ4, zlib, Zstd; byte and bit shuffle), Zstd, zlib, gzip, LZ4, shuffle, delta, crc32c. Multiscales. Georeferencing from the x and y coordinates |
-| NetCDF-4, HDF5 | Chunked and contiguous datasets, deflate, shuffle, Fletcher-32, Zstd. CF scale, offset, fill value, units. 1D or 2D latitude and longitude |
-| Sentinel-2 L1C, L2A SAFE | All bands at their finest resolution, TCI, AOT, WVP, SCL. Reflectance scale and offset |
-| Sentinel-1 L1 SAFE | GRD and SLC measurement files. Georeferencing from the geolocation grid of the annotation |
-| Sentinel-3 SAFE (OLCI, SLSTR) | All NetCDF variables. Georeferencing from the geolocation arrays |
-| Pixel types | 8, 16, 32 and 64-bit integers, 32 and 64-bit floats, complex integers and floats |
-
 ## Install
 
 - Windows: download and start `eoview-setup-windows-x86_64.exe` of the
@@ -57,6 +25,43 @@ eoview updates itself. At each start, it reads the version of the latest release
 newer, eoview downloads it, checks its signature and replaces its executable. The new version runs at the
 next start. Preferences, General: **Automatic updates** (on by default). A build from the source does not
 update itself. The executables need a CPU with AVX2 (x86_64, see Build).
+
+`eoview` is a working name.
+
+## Status
+
+Phases 0, 1 and 2 of the specification are complete. Parts of phases 3 and 4 are done: remote data
+(HTTP, S3, disk cache), time series with a timeline, and a first 3D globe view. `NEXT.md` lists the work
+that is not done.
+
+- Chunk engine: tokio does the I/O, rayon decodes, the UI thread never waits. Priorities from the views
+  (coarse level first, screen center first), cancellation of tiles that are not visible.
+- Byte sources: local files (memory map, zero-copy reads of uncompressed data), HTTP(S) and S3 range requests.
+- Caches with budgets: raw bytes, decoded chunks, GPU tiles.
+- Readers: GeoTIFF/COG, JPEG 2000, NITF (SICD, SIDD), EOPF Zarr v2 and v3, Sentinel-1, -2 and -3 SAFE, NetCDF-4/HDF5,
+  NetCDF-3, HDF4, GRIB 1 and 2, OPeNDAP. Any two dimensions of a variable as the image.
+- Georeferencing: affine, geolocation arrays, geolocation grids (GCPs). Reprojection on the GPU with a warp mesh.
+- RGB composites, band math, color maps, pixel inspector.
+- Docking layout with layout presets, a stack of layers in each view, link groups (geographic or pixel),
+  crosshair, compare modes (swipe, blend, difference, flicker), workspace files, command palette.
+
+## Formats
+
+| Format | Supported |
+|---|---|
+| TIFF, BigTIFF, GeoTIFF, COG | Strips and tiles. None, LZW, Deflate, Zstd, PackBits and JPEG compression. Predictors 2 and 3. Both byte orders. Overviews. GDAL no data value, scale, offset and band descriptions |
+| NITF 2.1, NSIF 1.0 (SICD, SIDD) | Uncompressed (NC) and masked (NM) blocks, JPEG 2000 (C8), IMODE B, P and S, complex pixels (C, or I and Q), large images in more than one segment. Georeferencing from the SIDD plane projection, the SICD/SIDD image corners, or IGEOLO |
+| JPEG 2000 (JP2, J2K) | Tiles and resolution levels (the levels are the overviews). OpenJPEG decoder |
+| Zarr v2 and v3 (EOPF, GeoZarr) | Consolidated metadata or a local store. Sharding. Blosc (LZ4, zlib, Zstd; byte and bit shuffle), Zstd, zlib, gzip, LZ4, shuffle, delta, crc32c. Multiscales. Georeferencing from the x and y coordinates |
+| NetCDF-4, HDF5 | Chunked and contiguous datasets, deflate, shuffle, Fletcher-32, Zstd. CF scale, offset, fill value, units. 1D or 2D latitude and longitude |
+| Sentinel-2 L1C, L2A SAFE | All bands at their finest resolution, TCI, AOT, WVP, SCL. Reflectance scale and offset |
+| Sentinel-1 L1 SAFE | GRD and SLC measurement files. Georeferencing from the geolocation grid of the annotation |
+| Sentinel-3 SAFE (OLCI, SLSTR) | All NetCDF variables. Georeferencing from the geolocation arrays |
+| NetCDF-3 | Classic, 64-bit offset and 64-bit data (CDF-1, 2, 5). Record variables |
+| HDF4, HDF-EOS 2 | Scientific data sets (SDS), deflate. Geographic grids of HDF-EOS 2 |
+| GRIB 1 and 2 | Simple, complex, IEEE, JPEG 2000, PNG and CCSDS packing. Regular and Gaussian grids |
+| OPeNDAP (DAP2) | A chunk is a hyperslab request |
+| Pixel types | 8, 16, 32 and 64-bit integers, 32 and 64-bit floats, complex integers and floats |
 
 ## Use
 
