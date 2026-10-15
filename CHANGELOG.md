@@ -3,6 +3,12 @@
 The changes of each version of eoview, the newest first. The
 [releases](https://github.com/polymood/eoview/releases) have the executables.
 
+## 0.2.2 (2026-10-15)
+
+- Install script: the `PATH` line is always in the start file of the shell. Before, the script did not
+  write it when the `PATH` of the install terminal already had the directory, and a new terminal did not
+  find `eoview`.
+
 ## 0.2.1 (2026-10-15)
 
 - Updates: eoview asks you before it installs a new version. The dialog has a link to this page.
