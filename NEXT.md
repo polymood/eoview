@@ -60,6 +60,11 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
   with the open views. Install script: `PATH`, the logo. `uninstall.sh`. README: installation first, badges.
 - 2026-10-15, release v0.2.2: the `PATH` fix of the install script. A real test of the update dialog from
   0.2.1.
+- 2026-10-15, security audit (on develop, for the next release): reader limits, Python fixes, log path,
+  install signature check, CI audit (cargo audit, zizmor), pinned actions, release environment, rulesets
+  for main and the v* tags, secret scanning. Not done: the URL with its query in error messages, an older
+  signed release as an update (the signature does not cover the version), no size limit on the update
+  download, UNC paths in workspaces on Windows, the cache cleanup deletes any file in the cache directory.
 
 ## In work
 

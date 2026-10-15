@@ -3,6 +3,21 @@
 The changes of each version of eoview, the newest first. The
 [releases](https://github.com/polymood/eoview/releases) have the executables.
 
+## Next version
+
+Security (an audit of the CI, the repository, the install and the application, 2026-10-15):
+
+- Readers: a malformed file gives an error, not a crash. Limits for the sizes that come from the file,
+  chunk sizes of 0, cycles and depth in HDF5, HDF4 and OPeNDAP, overflows of the sizes.
+- Python: the check of the interpreter does not import from the current directory. The token file of
+  the notebooks is only for the user. A client without the token cannot make eoview allocate memory.
+- The log of a detached eoview is in the cache directory of the user, not in `/tmp`.
+- Render: an output path from a workspace file is never an option of ffmpeg.
+- Install script: it checks the ed25519 signature of the executable (OpenSSL 3).
+- CI: a daily audit of the dependencies (`cargo audit`) and of the workflows (`zizmor`). The actions are
+  pinned to a commit. Only the release job can write, and only `v*` tags can use the signing key.
+- `rustls` 0.23.46 (RUSTSEC-2026-0346 to 0349).
+
 ## 0.2.2 (2026-10-15)
 
 - Install script: the `PATH` line is always in the start file of the shell. Before, the script did not
