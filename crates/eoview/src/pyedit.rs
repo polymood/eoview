@@ -508,8 +508,13 @@ impl App {
         if info.0 != exe || info.1.is_empty() {
             *info = (exe.clone(), t("Python: checking...").into());
             if let Some(mut cmd) = cmd {
-                let (cell, ctx) = (p.interp.clone(), self.ctx.clone());
+                let (cell, ctx, dir) = (p.interp.clone(), self.ctx.clone(), p.path.clone());
                 std::thread::spawn(move || {
+                    // `python -c` imports from the current directory first: a json.py next to an opened
+                    // workspace would run. The directory of the module eoview has only the files of eoview.
+                    if let Some(d) = &dir {
+                        cmd.current_dir(d);
+                    }
                     let out = cmd.arg("-c").arg(INFO).output();
                     let text = match out {
                         Ok(o) if o.status.success() => serde_json::from_slice::<Value>(&o.stdout).map_or_else(

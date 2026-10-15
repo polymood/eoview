@@ -88,14 +88,20 @@ fn err(e: impl std::fmt::Display) -> (Value, Vec<u8>) {
     (json!({ "ok": false, "error": e.to_string() }), vec![])
 }
 
-/// Read one message: a line of JSON, then `bytes` bytes.
-fn read_msg(r: &mut impl BufRead) -> std::io::Result<Option<(Value, Vec<u8>)>> {
+/// Read one message: a line of JSON, then `bytes` bytes. `max`: the largest line and data (the message of
+/// the token is small: a client without the token cannot make eoview allocate memory).
+fn read_msg(r: &mut impl BufRead, max: u64) -> std::io::Result<Option<(Value, Vec<u8>)>> {
     let mut line = String::new();
-    if r.read_line(&mut line)? == 0 {
+    if (&mut *r).take(max).read_line(&mut line)? == 0 {
         return Ok(None);
     }
-    let head: Value = serde_json::from_str(&line).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let n = head.get("bytes").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let bad = |e: String| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    let head: Value = serde_json::from_str(&line).map_err(|e| bad(e.to_string()))?;
+    let n = head.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+    if n > max {
+        return Err(bad(format!("message of {n} bytes")));
+    }
+    let n = n as usize;
     let mut data = vec![0; n];
     r.read_exact(&mut data)?;
     Ok(Some((head, data)))
@@ -165,7 +171,15 @@ impl Py {
             let _ = std::fs::create_dir_all(p.join("eoview")).and_then(|_| std::fs::write(p.join("eoview").join("__init__.py"), MODULE));
         }
         if let Some(d) = &dir {
-            let _ = std::fs::write(d.join("server.json"), json!({ "port": port, "token": tok, "pid": std::process::id() }).to_string());
+            // The token: only for the user, from the creation of the file (the file of an older version can be
+            // 0644: a new file gets the mode).
+            let f = d.join("server.json");
+            let _ = std::fs::remove_file(&f);
+            let mut o = std::fs::OpenOptions::new();
+            o.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+            let _ = o.open(&f).and_then(|mut w| w.write_all(json!({ "port": port, "token": tok, "pid": std::process::id() }).to_string().as_bytes()));
         }
         let code = path.as_ref().and_then(|p| std::fs::read_to_string(p.join("script.py")).ok()).unwrap_or_else(|| {
             "import eoview as ev\n\nimg = ev.input()          # the selected layer of the active view\nev.output(img * 2, name=\"twice\")\n".into()
@@ -197,7 +211,7 @@ impl Py {
 fn serve(s: std::net::TcpStream, tok: &str, tx: &mpsc::Sender<Req>, wake: &(dyn Fn() + Send + Sync)) {
     let Ok(mut w) = s.try_clone() else { return };
     let mut r = BufReader::new(s);
-    match read_msg(&mut r) {
+    match read_msg(&mut r, 64 << 10) {
         Ok(Some((h, _))) if h.get("token").and_then(Value::as_str) == Some(tok) => {
             let _ = write_msg(&mut w, json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }), &[]);
         }
@@ -206,7 +220,7 @@ fn serve(s: std::net::TcpStream, tok: &str, tx: &mpsc::Sender<Req>, wake: &(dyn 
             return;
         }
     }
-    while let Ok(Some((head, data))) = read_msg(&mut r) {
+    while let Ok(Some((head, data))) = read_msg(&mut r, u64::MAX) {
         let (reply, answer) = mpsc::channel();
         if tx.send(Req { head, data, reply }).is_err() {
             return;
@@ -580,6 +594,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn message_limit() {
+        let mut ok: &[u8] = b"{\"token\":\"x\",\"bytes\":2}\nab";
+        assert_eq!(read_msg(&mut ok, 64 << 10).unwrap().unwrap().1, b"ab");
+        // A client without the token cannot ask for 1 TB, or send a line without an end.
+        let mut big: &[u8] = b"{\"bytes\":1000000000000}\n";
+        assert!(read_msg(&mut big, 64 << 10).is_err());
+        let long = vec![b'x'; 100 << 10];
+        assert!(read_msg(&mut &long[..], 64 << 10).is_err());
+    }
+
+    #[test]
     fn georef_round_trip() {
         let a = Georef::Affine { gt: [10.0, 0.5, 0.0, 50.0, 0.0, -0.5], crs: Crs { epsg: Some(4326), name: "WGS 84".into() } };
         let g = Georef::Grid { cols: vec![0.0, 10.0], rows: vec![0.0, 5.0], lon: vec![1.0, 2.0, 3.0, 4.0], lat: vec![5.0, 6.0, 7.0, 8.0] };
@@ -599,3 +624,4 @@ mod tests {
         assert_eq!(kept, [0, 1, 2, 4, 5, 8]);
     }
 }
+

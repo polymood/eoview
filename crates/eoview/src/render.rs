@@ -210,7 +210,7 @@ fn sink(set: &Settings, w: u32, h: u32, bgra: bool, pref: &str) -> Result<(Sink,
     let mut c = Command::new(exe);
     c.args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", if bgra { "bgra" } else { "rgba" }]);
     c.args(["-s", &format!("{w}x{h}"), "-r", &format!("{}", set.fps), "-i", "-", "-an"]);
-    c.args(encoder(&set.out)).arg(&set.out);
+    c.args(encoder(&set.out)).arg(out_arg(&set.out));
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000);
     let child = c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(err("ffmpeg"))?;
@@ -218,6 +218,12 @@ fn sink(set: &Settings, w: u32, h: u32, bgra: bool, pref: &str) -> Result<(Sink,
 }
 
 /// Arguments of `ffmpeg` for the video encoder of an output file.
+/// The output path as an argument of ffmpeg: a path that starts with "-" (from a workspace file) is not an
+/// option of ffmpeg.
+fn out_arg(out: &str) -> std::path::PathBuf {
+    if out.starts_with('-') { Path::new(".").join(out) } else { out.into() }
+}
+
 fn encoder(out: &str) -> Vec<&'static str> {
     let ext = Path::new(out).extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     // H.264 with 4:2:0 colors plays in all players. The other containers use the encoder that ffmpeg selects.
@@ -328,7 +334,7 @@ impl App {
             Sink::Images(dir, Some(exe)) if n >= job.frames() => {
                 let mut c = Command::new(exe);
                 c.args(["-y", "-loglevel", "error", "-framerate", &format!("{}", job.set.fps), "-i"]).arg(dir.join("frame_%05d.png")).arg("-an");
-                c.args(encoder(&job.set.out)).arg(&job.set.out);
+                c.args(encoder(&job.set.out)).arg(out_arg(&job.set.out));
                 match quiet(&mut c).stdout(Stdio::null()).stderr(Stdio::piped()).output() {
                     Ok(o) if o.status.success() => {}
                     Ok(o) => text = format!("ffmpeg: {}", String::from_utf8_lossy(&o.stderr).trim()),

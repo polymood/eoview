@@ -797,19 +797,23 @@ fn budget(name: &str, pref: usize, default: usize) -> usize {
     env_mb(name).or((pref > 0).then_some(pref << 20)).unwrap_or(default)
 }
 
-/// Give the engine the disk cache for remote data: `eoview/remote` in the cache directory of the user, 10 GB.
-/// EOVIEW_DISK_MB or the preferences set the budget and the directory. EOVIEW_DISK_MB=0: no disk cache.
-fn disk_cache(e: &Engine, prefs: &prefs::Prefs) {
-    let cap = budget("EOVIEW_DISK_MB", prefs.disk_mb, 10 << 30) as u64;
+/// The cache directory of the user: `%LOCALAPPDATA%`, `~/Library/Caches` or `$XDG_CACHE_HOME` (`~/.cache`).
+fn cache_home() -> Option<std::path::PathBuf> {
     let var = |n: &str| std::env::var_os(n).map(std::path::PathBuf::from);
-    let dir = if cfg!(windows) {
+    if cfg!(windows) {
         var("LOCALAPPDATA")
     } else if cfg!(target_os = "macos") {
         var("HOME").map(|h| h.join("Library/Caches"))
     } else {
         var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|h| h.join(".cache")))
-    };
-    let dir = if prefs.cache_dir.is_empty() { dir.map(|d| d.join(APP).join("remote")) } else { Some(prefs.cache_dir.clone().into()) };
+    }
+}
+
+/// Give the engine the disk cache for remote data: `eoview/remote` in the cache directory of the user, 10 GB.
+/// EOVIEW_DISK_MB or the preferences set the budget and the directory. EOVIEW_DISK_MB=0: no disk cache.
+fn disk_cache(e: &Engine, prefs: &prefs::Prefs) {
+    let cap = budget("EOVIEW_DISK_MB", prefs.disk_mb, 10 << 30) as u64;
+    let dir = if prefs.cache_dir.is_empty() { cache_home().map(|d| d.join(APP).join("remote")) } else { Some(prefs.cache_dir.clone().into()) };
     if let Some(d) = dir.filter(|_| cap > 0)
         && let Err(err) = e.disk_cache(d, cap)
     {
@@ -953,7 +957,8 @@ fn render_args(args: &[String]) -> Result<RenderArgs, String> {
 }
 
 /// `eoview [products]` from a terminal: the window runs in a new process and the terminal is free again.
-/// The messages go to `eoview.log` in the temporary directory. The modes that write to the terminal or to a
+/// The messages go to `eoview/eoview.log` in the cache directory of the user (not in the shared temporary
+/// directory: an other user could put a link there). The modes that write to the terminal or to a
 /// file (render, shot, figure, benchmark, Python) and `EOVIEW_FOREGROUND=1` stay in the terminal. Windows:
 /// `windows_subsystem` does it.
 #[cfg(unix)]
@@ -967,7 +972,8 @@ fn detach() {
         return;
     }
     let Ok(exe) = std::env::current_exe() else { return };
-    let Ok(log) = std::fs::File::create(std::env::temp_dir().join("eoview.log")) else { return };
+    let Some(dir) = cache_home().map(|d| d.join(APP)) else { return };
+    let Ok(log) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::File::create(dir.join("eoview.log"))) else { return };
     let Ok(err) = log.try_clone() else { return };
     // A new process group: Ctrl+C in the terminal does not stop the window. stdin is not a terminal in the
     // child, thus it does not detach again.
