@@ -49,12 +49,14 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
 fi
 echo "eoview is installed: $d/eoview"
 # The directory goes in PATH through the start file of the shell of the user. EOVIEW_NO_MODIFY_PATH=1: no change.
-case ":$PATH:" in *":$d:"*) exit 0 ;; esac
+# The PATH of this shell is not the PATH of a new terminal (for example, a directory that an export of this
+# terminal added), thus the line is always in the start file. The line itself adds the directory only once.
+sh_line="case \":\$PATH:\" in *\":$d:\"*) ;; *) export PATH=\"$d:\$PATH\" ;; esac"
 case "${SHELL##*/}" in
-    zsh) rc=${ZDOTDIR:-$HOME}/.zshrc line="export PATH=\"$d:\$PATH\"" ;;
-    bash) rc=$HOME/.bashrc line="export PATH=\"$d:\$PATH\"" ;;
+    zsh) rc=${ZDOTDIR:-$HOME}/.zshrc line=$sh_line ;;
+    bash) rc=$HOME/.bashrc line=$sh_line ;;
     fish) rc=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/eoview.fish line="fish_add_path \"$d\"" ;;
-    *) rc=$HOME/.profile line="export PATH=\"$d:\$PATH\"" ;;
+    *) rc=$HOME/.profile line=$sh_line ;;
 esac
 if [ -n "$EOVIEW_NO_MODIFY_PATH" ]; then
     echo "Add $d to PATH to start eoview with the command eoview."
@@ -65,5 +67,8 @@ if ! grep -qsF "$line" "$rc"; then
     printf '\n# eoview\n%s\n' "$line" >> "$rc"
     echo "$d is added to PATH in $rc."
 fi
-echo "Open a new terminal, or type this command, to start eoview with the command eoview:"
-echo "  $line"
+case ":$PATH:" in
+    *":$d:"*) ;;
+    *) echo "Open a new terminal, or type this command, to start eoview with the command eoview:"
+       if [ "${SHELL##*/}" = fish ]; then echo "  $line"; else echo "  export PATH=\"$d:\$PATH\""; fi ;;
+esac
