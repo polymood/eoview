@@ -59,7 +59,7 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 - 2026-10-15, release v0.2.1: the update asks first (a dialog with a link to `CHANGELOG.md`), then restarts
   with the open views. Install script: `PATH`, the logo. `uninstall.sh`. README: installation first, badges.
 - 2026-10-15, release v0.2.2: the `PATH` fix of the install script. A real test of the update dialog from
-  0.2.1.
+  0.2.1: done by the maintainer on Ubuntu (dialog, download, restart). It works.
 - 2026-10-15, security audit (on develop, for the next release): reader limits, Python fixes, log path,
   install signature check, CI audit (cargo audit, zizmor), pinned actions, release environment, rulesets
   for main and the v* tags, secret scanning. Not done: the URL with its query in error messages, an older
