@@ -9,9 +9,34 @@ case "$(uname -s)-$(uname -m)" in
     *) echo "eoview: no release for $(uname -s) $(uname -m)" >&2; exit 1 ;;
 esac
 url=https://github.com/polymood/eoview/releases/latest/download
+# The executable and its signature of one version, not of two "latest" that a new release can separate.
+v=$(curl -fsSL "$url/version.txt")
+case "$v" in *[!0-9.]* | "") echo "eoview: no valid version in $url/version.txt" >&2; exit 1 ;; esac
+rel=https://github.com/polymood/eoview/releases/download/v$v
 d=${EOVIEW_INSTALL_DIR:-$HOME/.local/bin}
 mkdir -p "$d"
-curl -fSL "$url/$a" -o "$d/eoview.new"
+curl -fSL "$rel/$a" -o "$d/eoview.new"
+# The signature of the release (ed25519, the key of crates/eoview/src/update.rs). OpenSSL 3 checks it. Without
+# OpenSSL 3 (for example the LibreSSL of macOS), only HTTPS protects the download.
+key=$(mktemp)
+cat > "$key" <<'KEY'
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA8r+3vit0GYl7rQyR/86Ptl9uazFc9di66jCroG0AKvc=
+-----END PUBLIC KEY-----
+KEY
+if command -v openssl >/dev/null && openssl pkey -pubin -in "$key" -noout 2>/dev/null && openssl pkeyutl -help 2>&1 | grep -q -- -rawin; then
+    curl -fsSL "$rel/$a.sig" -o "$d/eoview.sig"
+    if ! openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$d/eoview.new" -sigfile "$d/eoview.sig" >/dev/null; then
+        rm -f "$d/eoview.new" "$d/eoview.sig" "$key"
+        echo "eoview: the signature of $a $v is not valid. Nothing is installed." >&2
+        exit 1
+    fi
+    rm -f "$d/eoview.sig"
+    echo "The signature of eoview $v is valid."
+else
+    echo "eoview: OpenSSL 3 is not available, the signature is not checked."
+fi
+rm -f "$key"
 chmod 755 "$d/eoview.new"
 mv "$d/eoview.new" "$d/eoview"
 # Linux: an entry in the menu of applications.
@@ -32,7 +57,6 @@ DESKTOP
 fi
 # The logo (assets/eoview.svg) in half blocks and the name in the ANSI Shadow font of figlet, 256 colors.
 if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
-    v=$(curl -fsSL "$url/version.txt" 2>/dev/null || true)
     printf '\n'
     printf '           \033[38;5;24m▄▄▄▄         \033[0m   \n'
     printf '       \033[38;5;24m▄\033[48;5;31m▀▀▀▀\033[49m████\033[48;5;255m▀▀\033[49m▄     \033[0m   \033[38;5;117m███████\033[38;5;240m╗ \033[38;5;117m██████\033[38;5;240m╗ \033[38;5;117m██\033[38;5;240m╗   \033[38;5;117m██\033[38;5;240m╗\033[38;5;117m██\033[38;5;240m╗\033[38;5;117m███████\033[38;5;240m╗\033[38;5;117m██\033[38;5;240m╗    \033[38;5;117m██\033[38;5;240m╗\033[0m\n'
