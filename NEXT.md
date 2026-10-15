@@ -52,6 +52,10 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
   releases v0.1.0 and v0.1.1. Website (GitHub Pages, `docs/`). New icon and banner. `--spin` for renders.
   The globe draws grids with a pole (sea ice). Information window (dimensions, attributes, all variables),
   values window, color bar in each view (DESIGN section 12).
+- 2026-10-15, release v0.2.0: any variable with any dimensions, the readers of NetCDF-3, HDF4, GRIB and
+  OPeNDAP, native plots, a library of 125 color maps with previews, the Products panel, a grouped toolbar,
+  the status bar (CRS, scale, the last point of the cursor). On Linux and macOS, `eoview` frees the terminal
+  (the window runs in a new process, the messages go to `eoview.log` in the temporary directory).
 
 ## In work
 
