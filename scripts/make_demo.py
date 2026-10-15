@@ -2,7 +2,7 @@
 (.eoview files) that show the functions. The data is not in the repository (several GB).
 
 Run (about 15 minutes, about 8 GB of memory at the peak, about 6 GB of files):
-  UV_CACHE_DIR=/mount/d/user_/eoview/target/scratch/uvcache uv run --no-project --with numpy --with scipy \
+  UV_CACHE_DIR=target/scratch/uvcache uv run --no-project --with numpy --with scipy \
     --with netCDF4 --with pyhdf --with eccodes --with eccodeslib python scripts/make_demo.py OUT_DIR [PART ...]
 PART: island, lst, climate, swath, grib, ocean, modis, projects (default: all). GDAL (gdal_translate) writes
 the cloud optimized GeoTIFF files.

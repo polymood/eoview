@@ -1,6 +1,6 @@
 """Write crates/eoview/assets/colormaps.json: the built-in color maps of eoview, from the reference packages.
 
-Run: UV_CACHE_DIR=/mount/d/user_/eoview/target/scratch/uvcache uv run --no-project --with matplotlib \
+Run: UV_CACHE_DIR=target/scratch/uvcache uv run --no-project --with matplotlib \
        --with cmocean --with cmcrameri python scripts/make_colormaps.py
 
 Each map has 32 stops (linear between them), and the discrete maps (tab10, Set1, ...) 256 samples: steps.

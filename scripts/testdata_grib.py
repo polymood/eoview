@@ -1,6 +1,6 @@
 """Write small GRIB files to testdata/ and their expected values to testdata/expected_grib.tsv.
 
-Run: UV_CACHE_DIR=/mount/d/user_/eoview/target/scratch/uvcache \
+Run: UV_CACHE_DIR=target/scratch/uvcache \
      uv run --no-project --with numpy --with eccodes --with eccodeslib python scripts/testdata_grib.py
 
 eccodes writes the files and decodes the expected values. Lines (tab-separated):
