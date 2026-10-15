@@ -85,8 +85,12 @@ fn next<'a>(t: &mut Words<'a>) -> Result<&'a str> {
 }
 
 /// The declarations of a DDS up to the closing brace. The members of a grid come back as the array and
-/// then its maps. A sequence is not data: it is skipped.
-fn decls(t: &mut Words, out: &mut Vec<Var>) -> Result<()> {
+/// then its maps. A sequence is not data: it is skipped. `depth`: the level of nesting (limited: the server
+/// sends the text).
+fn decls(t: &mut Words, out: &mut Vec<Var>, depth: usize) -> Result<()> {
+    if depth > 64 {
+        return Err("DDS: too many nested structures".into());
+    }
     loop {
         let ty = next(t)?;
         match ty.to_lowercase().as_str() {
@@ -97,7 +101,7 @@ fn decls(t: &mut Words, out: &mut Vec<Var>) -> Result<()> {
                 let kind = kind.to_string();
                 next(t)?; // {
                 let mut inner = vec![];
-                decls(t, &mut inner)?;
+                decls(t, &mut inner, depth + 1)?;
                 let name = next(t)?;
                 next(t)?; // ;
                 match kind.as_str() {
@@ -133,7 +137,7 @@ fn dds(text: &str) -> Result<Vec<Var>> {
         return Err("not a DDS (no Dataset)".into());
     }
     let mut all = vec![];
-    decls(&mut t, &mut all)?;
+    decls(&mut t, &mut all, 0)?;
     let top: Vec<String> = all.iter().filter(|v| !v.map).map(|v| v.name.clone()).collect();
     let mut seen = std::collections::HashSet::new();
     all.retain(|v| !v.map || (!top.iter().any(|n| n == leaf(&v.name)) && seen.insert(leaf(&v.name).to_string())));
@@ -147,7 +151,10 @@ fn leaf(n: &str) -> &str {
 /// The attributes of each container of a DAS, by path (`var`, `struct.var`, `NC_GLOBAL`). Values as text,
 /// with ", " between values. The attributes outside a container have the path "".
 fn das(text: &str) -> HashMap<String, Attrs> {
-    fn body(t: &mut Words, path: &str, out: &mut HashMap<String, Attrs>) -> Result<()> {
+    fn body(t: &mut Words, path: &str, out: &mut HashMap<String, Attrs>, depth: usize) -> Result<()> {
+        if depth > 64 {
+            return Err("DAS: too many nested containers".into());
+        }
         loop {
             let a = next(t)?;
             if a == "}" {
@@ -155,7 +162,7 @@ fn das(text: &str) -> HashMap<String, Attrs> {
             }
             let b = next(t)?;
             if b == "{" {
-                body(t, &if path.is_empty() { a.to_string() } else { format!("{path}.{a}") }, out)?;
+                body(t, &if path.is_empty() { a.to_string() } else { format!("{path}.{a}") }, out, depth + 1)?;
                 continue;
             }
             let mut vals = vec![];
@@ -173,7 +180,7 @@ fn das(text: &str) -> HashMap<String, Attrs> {
     let mut t = w.iter();
     let mut out = HashMap::new();
     if next(&mut t).is_ok_and(|a| a.eq_ignore_ascii_case("attributes")) && next(&mut t).is_ok_and(|b| b == "{") {
-        let _ = body(&mut t, "", &mut out);
+        let _ = body(&mut t, "", &mut out, 0);
     }
     out
 }

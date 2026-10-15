@@ -39,6 +39,9 @@ fn siz(h: &[u8]) -> Result<(usize, Siz)> {
     while p + 4 <= h.len() {
         let (m, l) = (be16(h, p)?, be16(h, p + 2)?);
         if m == 0xFF51 {
+            if l < 38 {
+                return Err("JPEG 2000 SIZ marker is too short".into());
+            }
             let v = |o| be32(h, p + o);
             let s = Siz {
                 xs: v(6)?,
@@ -52,6 +55,10 @@ fn siz(h: &[u8]) -> Result<(usize, Siz)> {
                 comps: be16(h, p + 38)?,
                 ssiz: *h.get(p + 40).ok_or("truncated SIZ")?,
             };
+            // The divisions by the tile size and the tile grid need sizes above 0.
+            if s.xs == 0 || s.ys == 0 || s.tw == 0 || s.th == 0 {
+                return Err("JPEG 2000 with an image or tile size of 0".into());
+            }
             return Ok((p, s));
         }
         p += 2 + l;
@@ -85,7 +92,7 @@ pub fn arrays_at(src: &Source, idx: u32, at: Option<u64>) -> Result<Vec<Array>> 
         let mut p = 0;
         loop {
             let b = src.read(p..(p + 16).min(len))?;
-            let (mut bl, ty, mut hl) = (be32(&b, 0)?, &b[4..8], 8);
+            let (mut bl, ty, mut hl) = (be32(&b, 0)?, b.get(4..8).ok_or("truncated JP2 box")?, 8);
             if bl == 1 {
                 bl = u64::from_be_bytes(b.get(8..16).ok_or("truncated JP2 box")?.try_into().unwrap());
                 hl = 16;
@@ -96,7 +103,7 @@ pub fn arrays_at(src: &Source, idx: u32, at: Option<u64>) -> Result<Vec<Array>> 
                 cs = p + hl;
                 break;
             }
-            if bl < 8 || p + bl >= len {
+            if bl < 8 || p.checked_add(bl).is_none_or(|e| e >= len) {
                 return Err("JP2 file without codestream".into());
             }
             p += bl;
@@ -122,7 +129,11 @@ pub fn arrays_at(src: &Source, idx: u32, at: Option<u64>) -> Result<Vec<Array>> 
             return Err("JPEG 2000 with packed packet headers (PPM) is not supported".into());
         }
         if p + 2 + l > head.len() {
-            head = src.read(cs..(cs + 2 * head.len() as u64).min(len))?;
+            let n = head.len();
+            head = src.read(cs..(cs + 2 * n as u64).min(len))?;
+            if head.len() == n {
+                return Err("JPEG 2000 main header is after end of file".into());
+            }
             continue;
         }
         if m == 0xFF55 {
@@ -137,8 +148,11 @@ pub fn arrays_at(src: &Source, idx: u32, at: Option<u64>) -> Result<Vec<Array>> 
         return Err("JPEG 2000 with an image or tile offset is not supported".into());
     }
     let levels = cod_levels(&header)?;
-    let (nx, ny) = (s.xs.div_ceil(s.tw), s.ys.div_ceil(s.th));
-    let ntiles = (nx * ny) as usize;
+    // The standard has at most 32 decomposition levels.
+    if levels > 32 {
+        return Err(format!("JPEG 2000 with {levels} decomposition levels").into());
+    }
+    let ntiles = chunk_count(&[s.ys, s.xs], &[s.th, s.tw], MAX_CHUNKS)?;
 
     // Tile parts: the lengths come from the TLM markers, or from the SOT markers.
     let mut parts: Vec<(usize, u64, u64)> = vec![];
@@ -263,7 +277,8 @@ pub fn decode_tile(a: &Array, src: &[u8], reduce: u8, header: &[u8]) -> Result<V
     }
     let mut q = 0;
     while q + 12 <= src.len() && be16(src, q)? == 0xFF90 {
-        let plen = be32(src, q + 6)? as usize;
+        // A tile part has its 12-byte header at least: a smaller length must not stop the loop.
+        let plen = (be32(src, q + 6)? as usize).max(12);
         let end = (q + plen).min(src.len());
         let t0 = cs.len();
         cs.extend_from_slice(&src[q..end]);

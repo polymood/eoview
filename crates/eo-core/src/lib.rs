@@ -215,9 +215,9 @@ impl Array {
         self.axis(name).map_or(1, |a| self.shape[a])
     }
 
-    /// Number of chunks along each dimension.
+    /// Number of chunks along each dimension. A chunk size of 0 counts as 1 (`validate` rejects it).
     pub fn grid(&self) -> Vec<u64> {
-        self.shape.iter().zip(&self.chunk).map(|(s, c)| s.div_ceil(*c)).collect()
+        self.shape.iter().zip(&self.chunk).map(|(s, c)| s.div_ceil((*c).max(1))).collect()
     }
 
     /// Index in `chunks` of the chunk at grid position `pos`.
@@ -226,9 +226,9 @@ impl Array {
         pos.iter().zip(&g).fold(0u64, |i, (p, n)| i * n + p) as usize
     }
 
-    /// Decoded size of one chunk in bytes.
+    /// Decoded size of one chunk in bytes. `usize::MAX` if the size overflows: the decoder rejects it.
     pub fn chunk_bytes(&self) -> usize {
-        self.chunk.iter().product::<u64>() as usize * self.dtype.size()
+        self.chunk.iter().try_fold(self.dtype.size(), |n, &c| n.checked_mul(usize::try_from(c).ok()?)).unwrap_or(usize::MAX)
     }
 
     /// Check that the chunk table agrees with the shape.
@@ -240,12 +240,28 @@ impl Array {
         if self.shape.contains(&0) || self.chunk.contains(&0) {
             return Err("empty array or chunk".into());
         }
-        let need = self.grid().iter().product::<u64>() as usize;
+        if self.chunk_bytes() == usize::MAX {
+            return Err("chunk size overflows".into());
+        }
+        let need = chunk_count(&self.shape, &self.chunk, usize::MAX)?;
         if self.chunks.len() != need {
             return Err(format!("{} chunk locations, {need} expected", self.chunks.len()).into());
         }
         Ok(())
     }
+}
+
+/// The largest number of chunk locations in a `Chunks::List` (24 bytes each). More is a malformed file.
+pub const MAX_CHUNKS: usize = 1 << 26;
+
+/// Number of chunks of an array of `shape` in chunks of `chunk`. A rank mismatch, a chunk size of 0, an
+/// overflow or more than `max` chunks is an error: the file is malformed.
+pub fn chunk_count(shape: &[u64], chunk: &[u64], max: usize) -> Result<usize> {
+    if shape.len() != chunk.len() || chunk.contains(&0) {
+        return Err(format!("bad chunk shape {chunk:?} for shape {shape:?}").into());
+    }
+    let n = shape.iter().zip(chunk).try_fold(1usize, |n, (s, c)| n.checked_mul(usize::try_from(s.div_ceil(*c)).ok()?));
+    n.filter(|&n| n <= max).ok_or_else(|| Error(format!("too many chunks: shape {shape:?}, chunks {chunk:?}")))
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -476,6 +492,14 @@ mod tests {
         assert_eq!(a.chunk_index(&[2, 1, 3]), 23);
         assert_eq!(a.chunk_bytes(), 64 * 64 * 4);
         a.validate().unwrap();
+        // Malformed shapes: an error, not a panic or a wrapped product.
+        let big = Array { shape: vec![1 << 40, 1 << 40, 1 << 40], chunk: vec![1, 1, 1], ..a.clone() };
+        assert!(big.validate().is_err());
+        let huge = Array { chunk: vec![1 << 32, 1 << 32, 2], ..a.clone() };
+        assert_eq!(huge.chunk_bytes(), usize::MAX);
+        assert!(huge.validate().is_err());
+        assert!(chunk_count(&[10, 10], &[0, 5], usize::MAX).is_err());
+        assert!(chunk_count(&[10, 10], &[5, 5], 3).is_err());
     }
 
     #[test]

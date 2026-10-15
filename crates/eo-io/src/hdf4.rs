@@ -19,7 +19,7 @@
 use crate::hdf5::Attr;
 use crate::{Source, codec, netcdf};
 use eo_core::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const SPECIAL: u16 = 0x4000;
 const LINKED: u16 = 20;
@@ -96,7 +96,11 @@ impl File<'_> {
         }
         let (len, blocks) = self.linked(&self.raw(tag | SPECIAL, r)?)?;
         let mut out = vec![];
+        // The blocks can come again: stop at the length of the element.
         for (o, n) in blocks {
+            if out.len() as u64 >= len {
+                break;
+            }
             out.extend_from_slice(&self.src.read(o..o + n)?);
         }
         out.truncate(len as usize);
@@ -112,10 +116,14 @@ impl File<'_> {
         let (len, _block, n) = (c.u(4)?, c.u(4)?, c.u(4)? as usize);
         let mut link = c.u16()?;
         let mut out = vec![];
+        let mut seen = HashSet::new();
         // Each link table has the reference of the next table, then `n` block references (0: no block).
         for _ in 0..1 << 16 {
             if link == 0 {
                 break;
+            }
+            if !seen.insert(link) {
+                return Err("HDF4 link tables make a cycle".into());
             }
             let t = self.raw(LINKED, link)?;
             let mut c = Cur { b: &t, p: 0 };
@@ -146,6 +154,8 @@ impl File<'_> {
                     _ => Err("HDF4 data in linked blocks that are not adjacent is not supported".into()),
                 }
             }
+            // Compressed data in compressed data: a malformed file (the recursion can be endless).
+            3 if tag == COMPRESSED => Err("HDF4 compressed element in a compressed element".into()),
             3 => {
                 // Version, decoded length, reference of the compressed data, model (no model data), coder.
                 let (_ver, _len, cref, _model, coder) = (c.u(2)?, c.u(4)?, c.u16()?, c.u(2)?, c.u(2)?);
@@ -231,8 +241,9 @@ impl File<'_> {
         if nd != shape.len() || chunk.contains(&0) {
             return Err("bad HDF4 chunk header".into());
         }
+        let count = chunk_count(shape, &chunk, MAX_CHUNKS)?;
         let grid: Vec<u64> = shape.iter().zip(&chunk).map(|(s, c)| s.div_ceil(*c)).collect();
-        let mut locs = vec![ChunkLoc { src, off: 0, len: 0 }; grid.iter().product::<u64>() as usize];
+        let mut locs = vec![ChunkLoc { src, off: 0, len: 0 }; count];
         let t = self.vdata(table)?;
         let field = |n: &str| t.fields.iter().find(|f| f.0 == n).map(|f| f.2).ok_or("bad HDF4 chunk table");
         let (origin, tag, rf) = (field("origin")?, field("chk_tag")?, field("chk_ref")?);
@@ -297,8 +308,10 @@ fn dds(src: &Source) -> Result<HashMap<(u16, u16), (u64, u64)>> {
     let len = src.len()?;
     let mut out = HashMap::new();
     let mut off = 4;
+    let mut seen = HashSet::new();
     for _ in 0..1 << 20 {
-        if off == 0 || off + 6 > len {
+        // A DD block that comes again is a cycle: its descriptors are already read.
+        if off == 0 || off + 6 > len || !seen.insert(off) {
             break;
         }
         let h = src.read(off..off + 6)?;
@@ -479,10 +492,14 @@ fn georef(src: &Source, v: &Variable, small: &[Variable], all: &[Variable], grid
 /// Values of a small 1D variable, with scale and offset (coordinates).
 fn read_1d(src: &Source, v: &Variable) -> Result<Vec<f64>> {
     let a = &v.levels[0];
+    // The length comes from the file: a coordinate has less than 50 million values.
+    if a.shape[0] > 50_000_000 {
+        return Err(format!("{}: {} values, more than the limit of 50 million", v.name, a.shape[0]).into());
+    }
     let mut out = vec![];
     for c in a.chunks.iter() {
         if c.len == 0 {
-            out.extend(std::iter::repeat_n(f64::NAN, a.chunk[0] as usize));
+            out.extend(std::iter::repeat_n(f64::NAN, a.chunk[0].min(a.shape[0]) as usize));
         } else {
             out.extend(codec::to_f64(a, &codec::decode(a, &src.read(c.off..c.off + c.len)?)?));
         }

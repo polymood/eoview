@@ -142,6 +142,10 @@ pub fn info(ds: &[H5], groups: &[hdf5::Group]) -> Info {
 /// Values of a 1D dataset (small: coordinates), with scale and offset.
 pub fn read_1d(src: &Source, d: &H5) -> Result<Vec<f64>> {
     let a = d.array(0)?;
+    // The length comes from the file: a coordinate has less than 50 million values.
+    if d.shape[0] > 50_000_000 {
+        return Err(format!("{}: {} values, more than the limit of 50 million", d.path, d.shape[0]).into());
+    }
     let n = d.shape[0] as usize;
     let mut out = Vec::with_capacity(n);
     for c in a.chunks.iter() {

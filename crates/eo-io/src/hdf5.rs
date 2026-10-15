@@ -12,7 +12,7 @@
 //! numbers and fixed-length strings.
 use crate::source::Source;
 use eo_core::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 const BLOCK: u64 = 64 << 10;
@@ -46,6 +46,8 @@ struct Rd<'a> {
     so: usize,
     sl: usize,
     blocks: Mutex<HashMap<u64, bytes::Bytes>>,
+    /// Object headers of the group walk: a link to a visited object is a cycle or a second link.
+    seen: Mutex<HashSet<u64>>,
 }
 
 impl Rd<'_> {
@@ -74,15 +76,16 @@ struct Cur<'a> {
 
 impl Cur<'_> {
     fn u(&mut self, n: usize) -> Result<u64> {
-        let s = self.b.get(self.p..self.p + n).ok_or("truncated HDF5 message")?;
+        let s = self.p.checked_add(n).and_then(|e| self.b.get(self.p..e)).ok_or("truncated HDF5 message")?;
         self.p += n;
         Ok(s.iter().rev().fold(0u64, |v, &x| v << 8 | x as u64))
     }
+    /// Sizes from the file can be very large: the position stops at the end of the address space.
     fn skip(&mut self, n: usize) {
-        self.p += n;
+        self.p = self.p.saturating_add(n);
     }
     fn take(&mut self, n: usize) -> Result<&[u8]> {
-        let s = self.b.get(self.p..self.p + n).ok_or("truncated HDF5 message")?;
+        let s = self.p.checked_add(n).and_then(|e| self.b.get(self.p..e)).ok_or("truncated HDF5 message")?;
         self.p += n;
         Ok(s)
     }
@@ -95,8 +98,14 @@ fn undef(a: u64, so: usize) -> bool {
 
 /// Messages of an object header: (type, data).
 fn messages(r: &Rd, addr: u64) -> Result<Vec<(u16, Vec<u8>)>> {
-    let head = r.bytes(addr, 16.min(r.len - addr))?;
+    // A header near the end of the file: the missing bytes are zeros, and the reads below fail.
+    let h = r.bytes(addr, 16.min(r.len.saturating_sub(addr)))?;
+    let mut head = [0u8; 16];
+    head[..h.len()].copy_from_slice(&h);
     let mut out = vec![];
+    // Continuation blocks: an address that comes again is a cycle.
+    let mut visited = HashSet::new();
+    let mut next = |a: u64| if visited.insert(a) && visited.len() <= 4096 { Ok(()) } else { Err(Error("HDF5 object header continuations make a cycle or are too many".into())) };
     if &head[..4] == b"OHDR" {
         let flags = head[5];
         let mut p = 6;
@@ -124,8 +133,9 @@ fn messages(r: &Rd, addr: u64) -> Result<Vec<(u16, Vec<u8>)>> {
                 if t == 0x10 {
                     let mut d = Cur { b: &data, p: 0 };
                     let (o, l) = (d.u(r.so)?, d.u(r.sl)?);
+                    next(o)?;
                     // "OCHK" signature, messages, checksum.
-                    blocks.push((o + 4, l.saturating_sub(8)));
+                    blocks.push((o.saturating_add(4), l.saturating_sub(8)));
                 } else {
                     out.push((t, data));
                 }
@@ -147,7 +157,9 @@ fn messages(r: &Rd, addr: u64) -> Result<Vec<(u16, Vec<u8>)>> {
                 seen += 1;
                 if t == 0x10 {
                     let mut d = Cur { b: &data, p: 0 };
-                    blocks.push((d.u(r.so)?, d.u(r.sl)?));
+                    let (o, l) = (d.u(r.so)?, d.u(r.sl)?);
+                    next(o)?;
+                    blocks.push((o, l));
                 } else {
                     out.push((t, data));
                 }
@@ -239,7 +251,11 @@ fn attribute(b: &[u8]) -> Option<(String, Attr)> {
 }
 
 /// Leaf entries of a version 1 B-tree of chunks: (chunk position, address, size, filter mask).
-fn chunk_btree(r: &Rd, addr: u64, rank: usize, out: &mut Vec<(Vec<u64>, u64, u64, u32)>) -> Result<()> {
+/// `seen`: the visited nodes. The child addresses come from the file: a cycle or a deep tree is an error.
+fn chunk_btree(r: &Rd, addr: u64, rank: usize, out: &mut Vec<(Vec<u64>, u64, u64, u32)>, seen: &mut HashSet<u64>, depth: usize) -> Result<()> {
+    if depth > 64 || !seen.insert(addr) {
+        return Err("HDF5 chunk B-tree has a cycle or is too deep".into());
+    }
     let hs = 8 + 2 * r.so;
     let head = r.bytes(addr, hs as u64)?;
     if &head[..4] != b"TREE" || head[4] != 1 {
@@ -258,13 +274,16 @@ fn chunk_btree(r: &Rd, addr: u64, rank: usize, out: &mut Vec<(Vec<u64>, u64, u64
         if level == 0 {
             out.push((pos, child, size, mask));
         } else {
-            chunk_btree(r, child, rank, out)?;
+            chunk_btree(r, child, rank, out, seen, depth + 1)?;
         }
     }
     Ok(())
 }
 
 fn filters(b: &[u8], size: usize) -> Result<Vec<Codec>> {
+    if b.len() < 2 {
+        return Err("truncated HDF5 message".into());
+    }
     let (ver, n) = (b[0], b[1] as usize);
     let mut c = Cur { b, p: if ver == 1 { 8 } else { 2 } };
     let mut out = vec![];
@@ -312,8 +331,11 @@ pub fn file(src: &Source, min_rank: usize) -> Result<(Vec<Dataset>, Vec<Group>)>
         }
     }
     let sb = src.read(base..(base + 128).min(len))?;
+    if sb.len() < 16 {
+        return Err("truncated HDF5 superblock".into());
+    }
     let ver = sb[8];
-    let mut r = Rd { src, len, so: 8, sl: 8, blocks: Default::default() };
+    let mut r = Rd { src, len, so: 8, sl: 8, blocks: Default::default(), seen: Default::default() };
     let root = if ver >= 2 {
         (r.so, r.sl) = (sb[9] as usize, sb[10] as usize);
         let mut c = Cur { b: &sb, p: 12 };
@@ -336,7 +358,8 @@ pub fn file(src: &Source, min_rank: usize) -> Result<(Vec<Dataset>, Vec<Group>)>
 pub type Group = (String, HashMap<String, Attr>);
 
 fn group(r: &Rd, addr: u64, path: &str, min_rank: usize, out: &mut Vec<Dataset>, groups: &mut Vec<Group>, depth: usize) -> Result<()> {
-    if depth > 16 {
+    // A visited object (a link cycle, or a second link to an object) is read one time.
+    if depth > 16 || !r.seen.lock().unwrap().insert(addr) {
         return Ok(());
     }
     let msgs = messages(r, addr).map_err(|e| Error(format!("object header at {addr}: {e}")))?;
@@ -405,8 +428,8 @@ fn enc_size(v: u64) -> usize {
 /// Objects of a fractal heap, in the order of a version 2 B-tree of records of type `kind`
 /// (5: links by name, 8: attributes by name). The objects are link or attribute messages.
 fn dense(r: &Rd, heap: u64, bt: u64, kind: u8) -> Result<Vec<Vec<u8>>> {
-    let h = r.bytes(heap, 256.min(r.len - heap))?;
-    if &h[..4] != b"FRHP" {
+    let h = r.bytes(heap, 256.min(r.len.saturating_sub(heap)))?;
+    if !h.starts_with(b"FRHP") {
         return Err("bad HDF5 fractal heap".into());
     }
     let mut c = Cur { b: &h, p: 5 };
@@ -456,8 +479,8 @@ fn dense(r: &Rd, heap: u64, bt: u64, kind: u8) -> Result<Vec<Vec<u8>>> {
     let _ = flags;
     // Version 2 B-tree: header, then a root leaf (depth 0) or a root internal node with leaves (depth 1).
     let mut internal_records: Vec<Vec<u8>> = vec![];
-    let b = r.bytes(bt, 40.min(r.len - bt))?;
-    if &b[..4] != b"BTHD" {
+    let b = r.bytes(bt, 40.min(r.len.saturating_sub(bt)))?;
+    if !b.starts_with(b"BTHD") {
         return Err("bad HDF5 version 2 B-tree".into());
     }
     let mut c = Cur { b: &b, p: 6 };
@@ -466,11 +489,14 @@ fn dense(r: &Rd, heap: u64, bt: u64, kind: u8) -> Result<Vec<Vec<u8>>> {
     let depth = c.u(2)?;
     c.skip(2);
     let (rootn, nrec) = (c.u(r.so)?, c.u(2)? as usize);
+    if rec == 0 {
+        return Err("bad HDF5 version 2 B-tree record size".into());
+    }
     // Leaves: (address, number of records). A root of depth 1 lists its leaves after its records.
     let leaves = match depth {
         0 => vec![(rootn, nrec)],
         1 => {
-            let nsize = enc_size(((node - 10) / rec) as u64);
+            let nsize = enc_size((node.saturating_sub(10) / rec) as u64);
             let ib = r.bytes(rootn, (6 + nrec * rec + (nrec + 1) * (r.so + nsize)) as u64)?;
             if &ib[..4] != b"BTIN" {
                 return Err("bad HDF5 version 2 B-tree internal node".into());
@@ -497,7 +523,8 @@ fn dense(r: &Rd, heap: u64, bt: u64, kind: u8) -> Result<Vec<Vec<u8>>> {
             records.append(&mut internal_records);
             continue;
         }
-        let leaf = r.bytes(addr, (6 + n * rec) as u64)?;
+        let size = n.checked_mul(rec).and_then(|x| x.checked_add(6)).ok_or("bad HDF5 version 2 B-tree leaf")?;
+        let leaf = r.bytes(addr, size as u64)?;
         if &leaf[..4] != b"BTLF" {
             return Err("bad HDF5 version 2 B-tree leaf".into());
         }
@@ -506,7 +533,7 @@ fn dense(r: &Rd, heap: u64, bt: u64, kind: u8) -> Result<Vec<Vec<u8>>> {
     let id_at = if kind == 5 { 4 } else { 0 };
     let mut out = vec![];
     for rcd in &records {
-        let id = rcd.get(id_at..id_at + id_len).ok_or("bad HDF5 B-tree record")?;
+        let id = rcd.get(id_at..id_at + id_len).filter(|id| !id.is_empty()).ok_or("bad HDF5 B-tree record")?;
         match (id[0] >> 4) & 3 {
             0 => {
                 let mut c = Cur { b: &id[1..], p: 0 };
@@ -534,7 +561,11 @@ fn symbol_table(r: &Rd, bt: u64, heap: u64, links: &mut Vec<(String, u64)>) -> R
     let (size, _free) = (c.u(r.sl)?, c.u(r.sl)?);
     let data = r.bytes(c.u(r.so)?, size)?;
     let mut nodes = vec![bt];
+    let mut seen = HashSet::new();
     while let Some(n) = nodes.pop() {
+        if !seen.insert(n) {
+            return Err("HDF5 symbol table B-tree has a cycle".into());
+        }
         let hs = 8 + 2 * r.so;
         let head = r.bytes(n, hs as u64)?;
         if &head[..4] == b"TREE" {
@@ -562,8 +593,9 @@ fn symbol_table(r: &Rd, bt: u64, heap: u64, links: &mut Vec<(String, u64)>) -> R
             for e in b.chunks_exact(es) {
                 let mut c = Cur { b: e, p: 0 };
                 let (name_off, oh) = (c.u(r.so)? as usize, c.u(r.so)?);
-                let end = data[name_off..].iter().position(|&x| x == 0).map_or(data.len(), |p| name_off + p);
-                links.push((String::from_utf8_lossy(&data[name_off..end]).to_string(), oh));
+                let name = data.get(name_off..).unwrap_or_default();
+                let end = name.iter().position(|&x| x == 0).unwrap_or(name.len());
+                links.push((String::from_utf8_lossy(&name[..end]).to_string(), oh));
             }
         }
     }
@@ -637,7 +669,7 @@ fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str, addr: u64) -> Result<Opt
     let get = |t: u16| msgs.iter().find(|m| m.0 == t).map(|m| &m.1[..]);
     let Some(shape) = get(0x01).and_then(dataspace) else { return Ok(None) };
     let Some((Some(dtype), le, size)) = get(0x03).and_then(datatype) else { return Ok(None) };
-    let lay = get(0x08).ok_or("dataset without layout")?;
+    let lay = get(0x08).filter(|l| l.len() >= 2).ok_or("dataset without layout")?;
     let rank = shape.len();
     let codecs = get(0x0B).map(|f| filters(f, size)).transpose().map_err(|e| Error(format!("filter pipeline: {e}")))?.unwrap_or_default();
     let attrs = attributes(r, msgs)?;
@@ -656,7 +688,7 @@ fn dataset(r: &Rd, msgs: &[(u16, Vec<u8>)], path: &str, addr: u64) -> Result<Opt
             let chunk: Vec<u64> = (0..dims - 1).map(|_| c.u(4)).collect::<Result<_>>()?;
             let mut v = vec![];
             if !undef(bt, r.so) {
-                chunk_btree(r, bt, rank, &mut v)?;
+                chunk_btree(r, bt, rank, &mut v, &mut HashSet::new(), 0)?;
             }
             (chunk, v)
         }
@@ -717,8 +749,10 @@ impl Dataset {
     /// Chunked array. Chunks with a filter mask (a filter not applied) are an error. `src` is the source index.
     pub fn array(&self, src: u32) -> Result<Array> {
         let n = self.shape.len();
+        // The chunk shape comes from the file: check it before the allocation.
+        let count = chunk_count(&self.shape, &self.chunk, MAX_CHUNKS)?;
         let grid: Vec<u64> = self.shape.iter().zip(&self.chunk).map(|(s, c)| s.div_ceil(*c)).collect();
-        let mut chunks = vec![ChunkLoc { src, off: 0, len: 0 }; grid.iter().product::<u64>() as usize];
+        let mut chunks = vec![ChunkLoc { src, off: 0, len: 0 }; count];
         for (pos, a, l, mask) in &self.chunks {
             if *mask != 0 {
                 return Err("HDF5 chunks with skipped filters are not supported".into());

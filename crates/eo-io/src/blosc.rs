@@ -13,13 +13,17 @@ fn u32le(b: &[u8], i: usize) -> Result<usize> {
     Ok(u32::from_le_bytes(s.try_into().unwrap()) as usize)
 }
 
-/// Decode a Blosc container. The result has the size in the header.
-pub fn decode(src: &[u8]) -> Result<Vec<u8>> {
+/// Decode a Blosc container. The result has the size in the header, at most `max` bytes (the chunk size).
+pub fn decode(src: &[u8], max: usize) -> Result<Vec<u8>> {
     if src.len() < 16 {
         return Err("truncated Blosc header".into());
     }
     let (flags, ts) = (src[2], (src[3] as usize).max(1));
     let (nbytes, blocksize) = (u32le(src, 4)?, u32le(src, 8)?);
+    // The sizes come from the file: a malformed header must not allocate more than the chunk.
+    if nbytes > max || blocksize > nbytes {
+        return Err(format!("bad Blosc header: {nbytes} bytes, blocks of {blocksize}, chunk of {max}").into());
+    }
     if flags & MEMCPYED != 0 {
         return src.get(16..16 + nbytes).map(<[u8]>::to_vec).ok_or_else(|| "truncated Blosc data".into());
     }
@@ -73,7 +77,7 @@ pub fn decode(src: &[u8]) -> Result<Vec<u8>> {
 /// Byte unshuffle: `src` has the first bytes of all values, then the second bytes, ...
 pub fn unshuffle(src: &[u8], dst: &mut [u8], ts: usize) {
     let n = src.len() / ts;
-    for (b, plane) in src[..n * ts].chunks_exact(n).enumerate() {
+    for (b, plane) in src[..n * ts].chunks_exact(n.max(1)).enumerate() {
         for (i, &v) in plane.iter().enumerate() {
             dst[i * ts + b] = v;
         }

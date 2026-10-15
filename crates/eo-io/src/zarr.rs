@@ -263,8 +263,10 @@ fn array(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle, sources: &mu
             },
         })
         .collect();
+    // The chunk and shard shapes come from the metadata: check them before the divisions and the allocations.
+    // A keyed source has no chunk table in memory: no limit but the overflow.
+    let total = chunk_count(&shape, &chunk, if shard.is_some() { MAX_CHUNKS } else { usize::MAX })?;
     let grid: Vec<u64> = shape.iter().zip(&chunk).map(|(s, c)| s.div_ceil(*c)).collect();
-    let total = grid.iter().product::<u64>() as usize;
     let pos = |mut i: u64, g: &[u64]| {
         let mut p = vec![0; g.len()];
         for d in (0..g.len()).rev() {
@@ -283,11 +285,14 @@ fn array(url: &str, path: &str, meta: &Value, ver: u8, rt: &Handle, sources: &mu
             eo_core::Chunks::Keyed { src: sources.len() as u32 - 1, n: total }
         }
         Some((outer, end, crc)) => {
+            if outer.len() != n || outer.iter().zip(&chunk).any(|(o, c)| o % c != 0) {
+                return Err("Zarr shard shape is not a multiple of the chunk shape".into());
+            }
             let mut chunks = Vec::with_capacity(total);
             let per: Vec<u64> = outer.iter().zip(&chunk).map(|(o, c)| o / c).collect();
-            let nper = per.iter().product::<u64>() as usize;
+            let nper = chunk_count(&outer, &chunk, MAX_CHUNKS)?;
+            let nshards = chunk_count(&shape, &outer, MAX_CHUNKS)? as u64;
             let sgrid: Vec<u64> = shape.iter().zip(&outer).map(|(s, o)| s.div_ceil(*o)).collect();
-            let nshards = sgrid.iter().product::<u64>();
             // One source for each shard. The engine reads the index of a shard at the first use of one of
             // its chunks: the open of a product reads no shard (a remote product has many).
             let first = sources.len() as u32;

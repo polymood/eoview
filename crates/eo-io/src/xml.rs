@@ -81,7 +81,7 @@ pub fn attr<'a>(attrs: &'a str, key: &str) -> Option<&'a str> {
         {
             let v = v.trim_start();
             let q = v.chars().next()?;
-            return v[1..].split(q).next();
+            return v[q.len_utf8()..].split(q).next();
         }
         p = s + key.len();
     }
