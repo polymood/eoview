@@ -1,0 +1,35 @@
+name: Audit
+
+# Security checks: the known vulnerabilities of the Rust dependencies (RustSec database, cargo audit) and the
+# weak points of the workflows (zizmor). Each day too: a new advisory can come without a change of the code.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo install cargo-audit --locked --version 0.22.2
+      # The unmaintained crates are warnings, the vulnerabilities are errors.
+      - run: cargo audit
+
+  workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pipx run zizmor==1.31.0 --format github .github/workflows
+        env:
+          GH_TOKEN: ${{ github.token }}

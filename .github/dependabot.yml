@@ -1,0 +1,15 @@
+# Dependabot: a pull request each week for new versions of the Rust crates and of the actions of the
+# workflows (the actions are pinned to a commit hash: Dependabot changes the hash and the comment).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      crates:
+        patterns: ['*']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
