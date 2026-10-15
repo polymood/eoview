@@ -56,6 +56,8 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
   OPeNDAP, native plots, a library of 125 color maps with previews, the Products panel, a grouped toolbar,
   the status bar (CRS, scale, the last point of the cursor). On Linux and macOS, `eoview` frees the terminal
   (the window runs in a new process, the messages go to `eoview.log` in the temporary directory).
+- 2026-10-15, release v0.2.1: the update asks first (a dialog with a link to `CHANGELOG.md`), then restarts
+  with the open views. Install script: `PATH`, the logo. `uninstall.sh`. README: installation first, badges.
 
 ## In work
 

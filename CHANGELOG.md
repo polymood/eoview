@@ -3,7 +3,7 @@
 The changes of each version of eoview, the newest first. The
 [releases](https://github.com/polymood/eoview/releases) have the executables.
 
-## Next version
+## 0.2.1 (2026-10-15)
 
 - Updates: eoview asks you before it installs a new version. The dialog has a link to this page.
   "Update and restart" downloads the new version, then starts it with the open views.
