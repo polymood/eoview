@@ -31,4 +31,22 @@ Categories=Science;Geoscience;Graphics;
 DESKTOP
 fi
 echo "eoview is installed: $d/eoview"
-case ":$PATH:" in *":$d:"*) ;; *) echo "Add $d to PATH to start eoview with the command eoview." ;; esac
+# The directory goes in PATH through the start file of the shell of the user. EOVIEW_NO_MODIFY_PATH=1: no change.
+case ":$PATH:" in *":$d:"*) exit 0 ;; esac
+case "${SHELL##*/}" in
+    zsh) rc=${ZDOTDIR:-$HOME}/.zshrc line="export PATH=\"$d:\$PATH\"" ;;
+    bash) rc=$HOME/.bashrc line="export PATH=\"$d:\$PATH\"" ;;
+    fish) rc=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/eoview.fish line="fish_add_path \"$d\"" ;;
+    *) rc=$HOME/.profile line="export PATH=\"$d:\$PATH\"" ;;
+esac
+if [ -n "$EOVIEW_NO_MODIFY_PATH" ]; then
+    echo "Add $d to PATH to start eoview with the command eoview."
+    exit 0
+fi
+if ! grep -qsF "$line" "$rc"; then
+    mkdir -p "$(dirname "$rc")"
+    printf '\n# eoview\n%s\n' "$line" >> "$rc"
+    echo "$d is added to PATH in $rc."
+fi
+echo "Open a new terminal, or type this command, to start eoview with the command eoview:"
+echo "  $line"

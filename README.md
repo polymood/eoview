@@ -44,8 +44,10 @@ that is not done.
   [latest release](https://github.com/polymood/eoview/releases/latest). The installer puts eoview in your
   user directory (`%LOCALAPPDATA%\Programs\eoview`), with no administrator rights. It adds eoview to the
   Start menu and opens the workspace files (`.eoview`) in eoview.
-- Linux (x86_64) and macOS (Apple silicon): the script puts eoview in `~/.local/bin`. On Linux, it also
-  adds eoview to the menu of applications.
+- Linux (x86_64) and macOS (Apple silicon): the script puts eoview in `~/.local/bin` and adds this
+  directory to `PATH` in the start file of your shell (`~/.zshrc`, `~/.bashrc`, fish `conf.d` or
+  `~/.profile`). Set `EOVIEW_NO_MODIFY_PATH=1` to keep your start files as they are. On Linux, the script
+  also adds eoview to the menu of applications.
 
   ```
   curl -fsSL https://github.com/polymood/eoview/releases/latest/download/install.sh | sh
