@@ -7,15 +7,17 @@ use std::borrow::Cow;
 pub const MAX_CHUNK: usize = 1 << 30;
 
 /// Values of the decoded bytes `d` of a real array, as f64. For small arrays (coordinates).
+/// A complex value gives its real part.
 pub fn to_f64(a: &Array, d: &[u8]) -> Vec<f64> {
     use eo_core::DType::*;
-    let es = a.dtype.size();
-    d.chunks_exact(es)
+    let es = a.dtype.part().size();
+    d.chunks_exact(a.dtype.size())
         .map(|e| {
+            let e = &e[..es];
             let mut w = [0u8; 8];
             if a.le { w[..es].copy_from_slice(e) } else { e.iter().rev().enumerate().for_each(|(k, &x)| w[k] = x) }
             let u = u64::from_le_bytes(w);
-            match a.dtype {
+            match a.dtype.part() {
                 F32 => f32::from_bits(u as u32) as f64,
                 F64 => f64::from_bits(u),
                 I8 => u as u8 as i8 as f64,
@@ -72,10 +74,10 @@ fn step<'a>(a: &Array, c: &Codec, cur: Cow<'a, [u8]>, need: usize) -> Result<Cow
             let s = if *header { s.get(4..).ok_or("truncated LZ4 data")? } else { s };
             owned(inflate(need, |o| lz4_flex::block::decompress_into(s, o).map_err(|e| e.to_string()))?)
         }
-        Codec::Blosc => owned(crate::blosc::decode(s)?),
+        Codec::Blosc => owned(crate::blosc::decode(s, need)?),
         Codec::Shuffle { size } => {
             let mut o = vec![0u8; s.len()];
-            crate::blosc::unshuffle(s, &mut o, *size as usize);
+            crate::blosc::unshuffle(s, &mut o, (*size as usize).max(1));
             owned(o)
         }
         Codec::Checksum => Ok(match cur {
@@ -94,7 +96,7 @@ fn step<'a>(a: &Array, c: &Codec, cur: Cow<'a, [u8]>, need: usize) -> Result<Cow
         Codec::Predictor { kind, stride, row } => {
             let mut v = cur.into_owned();
             v.resize(need, 0);
-            for r in v.chunks_exact_mut(*row as usize * es) {
+            for r in v.chunks_exact_mut((*row as usize * es).max(1)) {
                 unpredict(*kind, es, *stride as usize, a.le, r);
             }
             owned(v)
@@ -120,6 +122,9 @@ fn jpeg(a: &Array, src: &[u8], tables: &[u8]) -> Result<Vec<u8>> {
     let px = d.decode().map_err(|e| Error(format!("{e:?}")))?;
     let info = d.info().ok_or("JPEG without header")?;
     let (w, h) = (info.width as usize, info.height as usize);
+    if px.len() < w * h * nb {
+        return Err(format!("JPEG has {} values for {w} x {h} x {nb}", px.len()).into());
+    }
     let (y, x) = (a.axis("y").unwrap(), a.axis("x").unwrap());
     let (ch, cw) = (a.chunk[y] as usize, a.chunk[x] as usize);
     let mut out = vec![0u8; a.chunk_bytes()];

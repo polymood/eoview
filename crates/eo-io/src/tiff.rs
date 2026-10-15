@@ -140,6 +140,9 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     let le = head[0] == b'I';
     let rd = Rd { src, len, le, blocks: Default::default() };
     let big = rd.uint(&head[2..4]) == 43;
+    if head.len() < if big { 16 } else { 8 } {
+        return Err("truncated TIFF header".into());
+    }
     let mut next = if big { rd.uint(&head[8..16]) } else { rd.uint(&head[4..8]) };
     let mut ifds = Vec::new();
     while next != 0 && ifds.len() < 64 {
@@ -164,7 +167,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     levels.sort_by_key(|a| std::cmp::Reverse(a.len_of("x")));
     for a in &levels {
         a.validate()?;
-        if let Some(c) = a.chunks.iter().find(|c| c.off + c.len > len) {
+        if let Some(c) = a.chunks.iter().find(|c| c.off.checked_add(c.len).is_none_or(|e| e > len)) {
             return Err(format!("chunk at {} (+{}) is after end of file", c.off, c.len).into());
         }
     }
@@ -223,6 +226,10 @@ fn array(rd: &Rd, ifd: &Ifd, src: u32) -> Result<Array> {
     let one = |t: u16, d: u64| ifd.get(&t).and_then(|v| v.uints(rd).first().copied()).unwrap_or(d);
     let (w, h) = (one(256, 0), one(257, 0));
     let (bps, spp, sfmt, planar) = (one(258, 1), one(277, 1), one(339, 1), one(284, 1));
+    // SamplesPerPixel is a SHORT: a larger value makes a list of millions of band names.
+    if spp > u16::MAX as u64 {
+        return Err(format!("TIFF with {spp} samples per pixel").into());
+    }
     let codec = match one(259, 1) {
         1 => None,
         5 => Some(Codec::Lzw),

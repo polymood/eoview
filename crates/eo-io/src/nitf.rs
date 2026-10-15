@@ -235,6 +235,12 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
             "S" => (vec!["band", "y", "x"], vec![nbands, rows, f.cols], vec![1, bh, bw]),
             m => return Err(format!("NITF IMODE {m} with {nb} bands is not supported").into()),
         };
+        // The block counts come from the file: they must fill the chunk grid. Check before the allocation.
+        let need = chunk_count(&shape, &chunk, MAX_CHUNKS)? as u64;
+        let per_band: u64 = used.iter().map(|g| g.bpr * g.bpc).sum();
+        if per_band * if f.imode == "S" && nbands > 1 { nbands } else { 1 } != need {
+            return Err(format!("NITF blocks do not fill the image ({need} blocks expected)").into());
+        }
         let mut chunks = vec![];
         if f.imode == "S" && nbands > 1 {
             if f.ic != "NC" {
@@ -255,7 +261,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
             }
         }
         for c in &chunks {
-            if c.len > 0 && c.off + c.len > len {
+            if c.len > 0 && c.off.checked_add(c.len).is_none_or(|e| e > len) {
                 return Err(format!("NITF block at {} (+{}) is after end of file", c.off, c.len).into());
             }
         }

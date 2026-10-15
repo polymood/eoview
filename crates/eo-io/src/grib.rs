@@ -91,7 +91,7 @@ pub fn open(src: &Source, idx: u32, name: String) -> Result<Product> {
         }
         // ponytail: GRIB 1 messages of more than 8 MB (ECMWF length coding) are not supported.
         let n = if h[7] == 2 { be(&h, 8, 8) } else { be(&h, 4, 3) };
-        if n < 16 || p + n > len {
+        if n < 16 || n > len - p {
             eprintln!("{}: truncated GRIB message at byte {p}", src.name());
             break;
         }
@@ -134,7 +134,12 @@ pub fn open(src: &Source, idx: u32, name: String) -> Result<Product> {
             })
             .filter(|(_, v)| v.len() > 1)
             .collect();
-        let mut chunks = vec![ChunkLoc { src: idx, off: 0, len: 0 }; axes.iter().map(|a| a.1.len()).product()];
+        // Each combination of the axes is a chunk: a malformed file can give a very large count.
+        let Some(count) = axes.iter().try_fold(1usize, |n, a| n.checked_mul(a.1.len())).filter(|&n| n <= MAX_CHUNKS) else {
+            eprintln!("{}: {}: too many combinations of time, level and member", src.name(), param(f0).0);
+            continue;
+        };
+        let mut chunks = vec![ChunkLoc { src: idx, off: 0, len: 0 }; count];
         for (f, x) in fs.iter().zip(&c) {
             let i = axes.iter().fold(0, |i, (d, v)| i * v.len() + v.partition_point(|q| q.total_cmp(&x[*d]).is_lt()));
             // Two fields with the same coordinates: the first one.
@@ -426,6 +431,10 @@ fn grid(ed: u8, s: &[u8]) -> Option<Grid> {
         40 => {
             // Regular Gaussian grid: the rows are at the Gaussian latitudes, from the one nearest to La1.
             let nlat = be(s, ang[5], w) as usize;
+            // The work of `gauss` is nlat^2: a malformed N must not stop the open. Real grids have N below 10000.
+            if nlat > 1 << 15 {
+                return None;
+            }
             let mut lats = gauss(nlat);
             if scan & 0x40 != 0 {
                 lats.reverse();
@@ -669,8 +678,8 @@ fn decode2(s: &[u8], n: usize) -> Result<Vec<f32>> {
         let sec = s.get(p..p + len).filter(|_| len >= 5).ok_or("truncated GRIB 2 section")?;
         match sec[4] {
             5 => s5 = sec,
-            6 if sec[5] == 0 => bitmap = Some(&sec[6..]),
-            6 if sec[5] != 254 => bitmap = None,
+            6 if sec.get(5) == Some(&0) => bitmap = Some(&sec[6..]),
+            6 if sec.get(5) != Some(&254) => bitmap = None,
             7 => s7 = Some(&sec[5..]),
             _ => {}
         }
@@ -681,6 +690,10 @@ fn decode2(s: &[u8], n: usize) -> Result<Vec<f32>> {
         return Err("GRIB 2 chunk without section 5".into());
     }
     let np = be(s5, 5, 4) as usize;
+    // The data points are at most the points of the grid (`n` is below the chunk limit of the codec).
+    if np > n {
+        return Err(format!("GRIB 2: {np} data points for a grid of {n} points").into());
+    }
     let tpl = be(s5, 9, 2);
     let r = f32::from_bits(be(s5, 11, 4) as u32) as f64;
     let (e, dd, nbits) = (sm(s5, 15, 2) as i32, sm(s5, 17, 2) as i32, be(s5, 19, 1) as u32);
@@ -726,8 +739,8 @@ fn complex(s5: &[u8], d: &[u8], np: usize) -> Result<Vec<Option<i64>>> {
     let ng = be(s5, 31, 4) as usize;
     let (wref, wbits) = (s5[35] as u64, s5[36] as u32);
     let (lref, linc, llast, lbits) = (be(s5, 37, 4), s5[41] as u64, be(s5, 42, 4), s5[46] as u32);
-    let (order, nd) = if be(s5, 9, 2) == 3 { (s5[47] as usize, s5[48] as u32 * 8) } else { (0, 0) };
-    if ng > np || order > 2 {
+    let (order, nd) = if be(s5, 9, 2) == 3 { (be(s5, 47, 1) as usize, be(s5, 48, 1) as u32 * 8) } else { (0, 0) };
+    if ng > np || order > 2 || (nd > 0 && order == 0) || nd > 56 || wbits > 32 || lbits > 32 {
         return Err("bad GRIB 2 complex packing".into());
     }
     let mut b = Bits { b: d, pos: 0 };
@@ -755,7 +768,8 @@ fn complex(s5: &[u8], d: &[u8], np: usize) -> Result<Vec<Option<i64>>> {
     let ones = |w: u32| (1u64 << w) - 1;
     for g in 0..ng {
         let w = widths[g];
-        for _ in 0..lens[g] {
+        // The group lengths come from the file: stop at `np` values.
+        for _ in 0..lens[g].min((np - x.len()) as u64) {
             let v = b.get(w);
             let m = if w == 0 { refs[g] } else { v };
             let bits = if w == 0 { nbits } else { w };
@@ -809,7 +823,7 @@ fn aec(d: &[u8], bps: u32, flags: u8, block: usize, rsi: usize, n: usize) -> Res
     let id_len = if bps > 16 { 5 } else if bps > 8 { 4 } else { 3 };
     let xmax = (1u64 << bps) - 1;
     let mut b = Bits { b: d, pos: 0 };
-    let mut out: Vec<u64> = Vec::with_capacity(n + rsi * block);
+    let mut out: Vec<u64> = Vec::with_capacity(n);
     while out.len() < n {
         if b.pos >= d.len() * 8 {
             return Err("CCSDS data is too short".into());
@@ -863,10 +877,11 @@ fn aec(d: &[u8], bps: u32, flags: u8, block: usize, rsi: usize, n: usize) -> Res
                 k += 1;
             }
         }
-        if pre {
+        // A segment without samples has no reference.
+        if pre && let Some(&x0) = out.get(seg) {
             // Unit delay predictor: the first sample is the reference, the others are mapped differences.
             let med = xmax / 2 + 1;
-            let mut x = out[seg];
+            let mut x = x0;
             for v in &mut out[seg + 1..] {
                 let half = (*v >> 1) + (*v & 1);
                 let mask = if x & med != 0 { xmax } else { 0 };

@@ -103,10 +103,13 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
 /// small variables (`Product::small`): this reads the full array. This function blocks.
 pub fn read_all(ds: &Dataset, v: &Variable) -> Result<Vec<f64>> {
     let a = &v.levels[0];
-    let n = a.shape.iter().product::<u64>() as usize;
+    // The chunk sizes divide below: no size of 0.
+    eo_core::chunk_count(&a.shape, &a.chunk, usize::MAX)?;
+    let n = a.shape.iter().try_fold(1u64, |n, &s| n.checked_mul(s)).unwrap_or(u64::MAX);
     if n > 50_000_000 {
         return Err(format!("{}: {n} values, more than the limit of 50 million", v.name).into());
     }
+    let n = n as usize;
     let (grid, cs) = (a.grid(), a.chunk.clone());
     let mut out = vec![f64::NAN; n];
     for i in 0..a.chunks.len() {
@@ -140,4 +143,49 @@ pub fn read_all(ds: &Dataset, v: &Variable) -> Result<Vec<f64>> {
         }
     }
     Ok(out)
+}
+
+/// Crafted malformed inputs: each one gives an error (or a result), not a panic or a huge allocation.
+#[cfg(test)]
+mod malformed {
+    use eo_core::*;
+
+    fn decode(codecs: Vec<Codec>, src: &[u8]) -> Result<Vec<u8>> {
+        let a = Array { dims: vec!["y".into(), "x".into()], shape: vec![4, 4], chunk: vec![4, 4], dtype: DType::F32, le: true, codecs, chunks: Chunks::List(vec![]), place: None };
+        crate::codec::decode(&a, src).map(|c| c.into_owned())
+    }
+
+    #[test]
+    fn malformed_inputs_are_errors() {
+        // Blosc: 4 GB of data for a chunk of 64 bytes, then blocks larger than the data.
+        let mut h = [2u8, 1, 0, 4, 0xff, 0xff, 0xff, 0xff, 0, 1, 0, 0, 0, 0, 0, 0];
+        assert!(decode(vec![Codec::Blosc], &h).is_err());
+        h[4..8].copy_from_slice(&64u32.to_le_bytes());
+        assert!(decode(vec![Codec::Blosc], &h).is_err());
+        // Shuffle with a value size of 0, and with less data than one value.
+        assert!(decode(vec![Codec::Shuffle { size: 0 }], &[1, 2, 3]).is_ok());
+        assert!(decode(vec![Codec::Shuffle { size: 8 }], &[1, 2, 3]).is_ok());
+        // JPEG 2000: a tile width of 0 in the SIZ marker.
+        let mut siz = vec![0xFF, 0x4F, 0xFF, 0x51, 0, 41, 0, 0];
+        for v in [4u32, 4, 0, 0, 0, 4, 0, 0] {
+            siz.extend(v.to_be_bytes());
+        }
+        siz.extend([0, 1, 7, 1, 1]);
+        let tile = [0xFF, 0x90, 0, 10, 0, 0, 0, 0, 0, 12, 0, 1];
+        assert!(decode(vec![Codec::Jpeg2000 { reduce: 0, header: siz.into() }], &tile).is_err());
+        // GRIB 2: 4 billion data points for a grid of 16 points (section 5, then an empty section 7).
+        let mut s = vec![0, 0, 0, 21, 5, 0xff, 0xff, 0xff, 0xff, 0, 0];
+        s.extend([0; 8]);
+        s.extend([8, 0, 0, 0, 0, 5, 7]);
+        assert!(decode(vec![Codec::Grib { edition: 2 }], &s).is_err());
+        // Zarr: a chunk size of 0.
+        let dir = std::env::temp_dir().join(format!("eoview-malformed-{}.zarr", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = serde_json::json!({"zarr_format": 2, "shape": [4, 4], "chunks": [0, 4], "dtype": "<f4", "compressor": null, "filters": null, "order": "C"});
+        std::fs::write(dir.join(".zmetadata"), serde_json::json!({"metadata": {".zgroup": {"zarr_format": 2}, "v/.zarray": a}}).to_string()).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let r = crate::zarr::open(dir.to_str().unwrap(), rt.handle());
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(r.is_err());
+    }
 }

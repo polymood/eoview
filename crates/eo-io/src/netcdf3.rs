@@ -187,6 +187,10 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
     {
         recs = (src.len()?.saturating_sub(v.begin)).checked_div(recsize).unwrap_or(0);
     }
+    // One chunk location for each record: the number comes from the file.
+    if !rec_vars.is_empty() && recs > MAX_CHUNKS as u64 {
+        return Err(format!("NetCDF-3 file with {recs} records").into());
+    }
     let len = |d: usize| if dims[d].1 == 0 { recs } else { dims[d].1 };
     let mut big = vec![];
     let mut small = vec![];
