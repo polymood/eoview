@@ -952,6 +952,37 @@ fn render_args(args: &[String]) -> Result<RenderArgs, String> {
     Ok((set, files, stretch, overlays, look))
 }
 
+/// `eoview [products]` from a terminal: the window runs in a new process and the terminal is free again.
+/// The messages go to `eoview.log` in the temporary directory. The modes that write to the terminal or to a
+/// file (render, shot, figure, benchmark, Python) and `EOVIEW_FOREGROUND=1` stay in the terminal. Windows:
+/// `windows_subsystem` does it.
+#[cfg(unix)]
+fn detach() {
+    use std::io::IsTerminal;
+    use std::os::unix::process::CommandExt;
+    if !std::io::stdin().is_terminal()
+        || std::env::var_os("EOVIEW_FOREGROUND").is_some()
+        || std::env::args().enumerate().any(|(i, a)| a == "--python" || i == 1 && ["--bench", "--render", "--shot", "--figure"].contains(&a.as_str()))
+    {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(log) = std::fs::File::create(std::env::temp_dir().join("eoview.log")) else { return };
+    let Ok(err) = log.try_clone() else { return };
+    // A new process group: Ctrl+C in the terminal does not stop the window. stdin is not a terminal in the
+    // child, thus it does not detach again.
+    let child = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .stdin(std::process::Stdio::null())
+        .stdout(log)
+        .stderr(err)
+        .process_group(0)
+        .spawn();
+    if child.is_ok() {
+        std::process::exit(0);
+    }
+}
+
 fn main() {
     let t0 = Instant::now();
     if let [_, flag, path] = &std::env::args().collect::<Vec<_>>()[..]
@@ -959,6 +990,8 @@ fn main() {
     {
         return info(path);
     }
+    #[cfg(unix)]
+    detach();
     // WSLg: Vulkan uses the CPU (lavapipe) and the Wayland socket is not stable. Mesa d3d12 GL over X11 uses the GPU.
     #[cfg(target_os = "linux")]
     let wsl = std::env::var_os("WSL_DISTRO_NAME").is_some();

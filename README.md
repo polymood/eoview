@@ -67,6 +67,10 @@ eoview --info <path>     # structure of a product: variables, levels, chunks, ge
 
 Each product opens in its own view. With more than one product, the layout changes to a grid.
 
+On Linux and macOS, the window runs in a new process and the terminal is free again. The messages go to
+`eoview.log` in the temporary directory (`/tmp`). To keep eoview in the terminal, set `EOVIEW_FOREGROUND=1`.
+The modes that write a file (`--render`, `--shot`, `--figure`, `--python`, `--bench`) stay in the terminal.
+
 ### Open
 
 | Action | How |
