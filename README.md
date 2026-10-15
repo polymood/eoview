@@ -1,5 +1,15 @@
 <p align="center"><img src="crates/eoview/assets/banner.png" alt="eoview: fast viewer for Earth observation data" width="900"></p>
 
+<p align="center">
+  <a href="https://github.com/polymood/eoview/actions/workflows/ci.yml"><img src="https://github.com/polymood/eoview/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/polymood/eoview/actions/workflows/release.yml"><img src="https://github.com/polymood/eoview/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/polymood/eoview/releases/latest"><img src="https://img.shields.io/github/v/release/polymood/eoview" alt="Latest release"></a>
+  <a href="https://github.com/polymood/eoview/releases"><img src="https://img.shields.io/github/downloads/polymood/eoview/total" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-informational" alt="Platforms: Windows, Linux, macOS">
+  <img src="https://img.shields.io/badge/rust-1.95%2B-orange" alt="Rust 1.95 or newer">
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT or Apache-2.0"></a>
+</p>
+
 # eoview
 
 Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
