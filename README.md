@@ -21,7 +21,8 @@ Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
 - Windows: download and start `eoview-setup-windows-x86_64.exe` of the
   [latest release](https://github.com/polymood/eoview/releases/latest). The installer puts eoview in your
   user directory (`%LOCALAPPDATA%\Programs\eoview`), with no administrator rights. It adds eoview to the
-  Start menu and opens the workspace files (`.eoview`) in eoview.
+  Start menu and opens the workspace files (`.eoview`) in eoview. To remove it: Settings, Apps, eoview,
+  Uninstall.
 - Linux (x86_64) and macOS (Apple silicon): the script puts eoview in `~/.local/bin` and adds this
   directory to `PATH` in the start file of your shell (`~/.zshrc`, `~/.bashrc`, fish `conf.d` or
   `~/.profile`). Set `EOVIEW_NO_MODIFY_PATH=1` to keep your start files as they are. On Linux, the script
@@ -29,6 +30,12 @@ Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
 
   ```
   curl -fsSL https://github.com/polymood/eoview/releases/latest/download/install.sh | sh
+  ```
+
+  To remove eoview, its menu entry and its `PATH` line (the preferences and the cache stay):
+
+  ```
+  curl -fsSL https://github.com/polymood/eoview/releases/latest/download/uninstall.sh | sh
   ```
 
 eoview updates itself. At each start, it reads the version of the latest release. If that version is

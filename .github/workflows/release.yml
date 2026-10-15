@@ -71,7 +71,7 @@ jobs:
           rm key.pem
       - run: |
           echo "${GITHUB_REF_NAME#v}" > out/version.txt
-          cp scripts/install.sh out/
+          cp scripts/install.sh scripts/uninstall.sh out/
           cp crates/eoview/assets/eoview-256.png out/eoview.png
           gh release create "$GITHUB_REF_NAME" out/* --title "eoview ${GITHUB_REF_NAME#v}" --generate-notes
         env:
