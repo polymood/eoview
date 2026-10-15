@@ -39,8 +39,9 @@ Fast viewer for Earth observation data. Rust, wgpu (WebGPU API), egui.
   ```
 
 eoview updates itself. At each start, it reads the version of the latest release. If that version is
-newer, eoview downloads it, checks its signature and replaces its executable. The new version runs at the
-next start. Preferences, General: **Automatic updates** (on by default). A build from the source does not
+newer, eoview asks you, with a link to the changes ([CHANGELOG.md](CHANGELOG.md)). **Update and restart**
+downloads the new version, checks its signature, replaces the executable and starts the new version with the
+open views. Preferences, General: **Check for updates** (on by default). A build from the source does not
 update itself. The executables need a CPU with AVX2 (x86_64, see Build).
 
 `eoview` is a working name.

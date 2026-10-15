@@ -1127,6 +1127,7 @@ impl App {
             self.palette_ui(&ctx);
         }
         self.url_ui(&ctx);
+        self.update_ui(&ctx);
         self.ask_ui(&ctx);
         self.help_ui(&ctx);
         self.prefs_ui(&ctx);
@@ -1604,6 +1605,75 @@ impl App {
         }
     }
 
+    /// The dialog of a new version: what is new, update and restart, or later.
+    fn update_ui(&mut self, ctx: &egui::Context) {
+        use crate::update::State;
+        let Some(st) = self.update.clone() else { return };
+        let Some(state) = st.lock().unwrap().clone() else { return };
+        // The scripts and notebooks of the editor that are not saved. The workspace script is in the
+        // workspace file of the restart.
+        let unsaved = self.py.as_ref().is_some_and(|p| p.docs.iter().skip(1).any(|d| d.dirty));
+        let (mut go, mut close) = (false, false);
+        match &state {
+            State::Installed(exe) => return self.restart(exe),
+            State::Failed(_) => return,
+            State::Available(v) | State::Installing(v) | State::InstallFailed(v) => {
+                let r = egui::Modal::new(egui::Id::new("update")).show(ctx, |ui| {
+                    ui.set_width(420.0);
+                    match &state {
+                        State::Available(_) => {
+                            ui.heading(tf("eoview {} is available", &[v]));
+                            ui.label(tf("You have version {}.", &[env!("CARGO_PKG_VERSION")]));
+                            ui.hyperlink_to(t("What is new"), crate::update::CHANGELOG);
+                            if unsaved {
+                                ui.colored_label(ui.visuals().warn_fg_color, t("Save your scripts first: the restart closes them."));
+                            }
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                go = ui.add_enabled(!unsaved, egui::Button::new(t("Update and restart"))).on_hover_text(t("Download the new version, then start it with the open views")).clicked();
+                                close = ui.button(t("Later")).clicked();
+                            });
+                        }
+                        State::Installing(_) => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(tf("Download of eoview {}", &[v]));
+                            });
+                        }
+                        _ => {
+                            ui.label(format!("{} {v}", t("Update:")));
+                            close = ui.button(t("Close")).clicked();
+                        }
+                    }
+                });
+                close |= r.should_close() && !matches!(state, State::Installing(_));
+            }
+        }
+        if go && let State::Available(v) = state {
+            let ctx = ctx.clone();
+            let wake = self.waker.clone();
+            crate::update::install(&st, v, std::sync::Arc::new(move || {
+                ctx.request_repaint();
+                wake.as_ref().inspect(|w| w());
+            }));
+        } else if close {
+            self.update = None;
+        }
+    }
+
+    /// Start the executable `exe` (the new version) with the open workspace, then stop.
+    fn restart(&mut self, exe: &std::path::Path) {
+        self.update = None;
+        let Some(dir) = crate::prefs::config_dir() else { return self.error = Some(t("Update: no configuration directory").into()) };
+        // ponytail: one file, the next restart writes it again.
+        let ws = dir.join("restart.eoview");
+        let r = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| self.save_workspace(&ws.to_string_lossy()));
+        match r.and_then(|_| std::process::Command::new(exe).arg(&ws).spawn().map_err(|e| format!("{}: {e}", exe.display()))) {
+            Ok(_) => self.quit = true,
+            Err(e) => self.error = Some(format!("{} {e}", t("Update:"))),
+        }
+    }
+
     /// Dialog for a URL: Enter opens it, Esc closes the dialog.
     fn url_ui(&mut self, ctx: &egui::Context) {
         let Some((text, add, id)) = &mut self.url else { return };
@@ -1988,13 +2058,6 @@ impl App {
                     self.error = None;
                 }
                 ui.colored_label(ui.visuals().error_fg_color, e);
-                ui.separator();
-            }
-            if let Some(Ok(v)) = self.update.as_ref().and_then(|s| s.lock().unwrap().clone()) {
-                if ui.small_button("x").on_hover_text(t("Close the message")).clicked() {
-                    self.update = None;
-                }
-                ui.label(tf("eoview {} is installed. It runs at the next start.", &[&v]));
                 ui.separator();
             }
             // The point under the cursor. The last point stays (weak) when the cursor leaves the views: a click
