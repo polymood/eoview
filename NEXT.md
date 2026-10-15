@@ -191,9 +191,9 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
     DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
 15. **Panoply parity, other items.** DESIGN section 16.7 has the full list, with a decision for each
     function.
-16. **Repository size.** The frames of an old render (`arctic_ice_2025.frames`, 365 PNG files) are out of
-    the repository now, but they stay in the git history. Removing them needs a rewrite of the history
-    and a force push: ask the maintainer first.
+16. **Repository size.** Done (2026-10-15): a rewrite of the history removed the frames of an old render
+    (`arctic_ice_2025.frames`, 365 PNG files, and its video): 248 MB to 51 MB. The same rewrite removed a
+    personal name and a home path from all the files and commit messages.
 
 ## Specification, not done
 
