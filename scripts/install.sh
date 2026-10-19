@@ -25,13 +25,21 @@ MCowBQYDK2VwAyEA8r+3vit0GYl7rQyR/86Ptl9uazFc9di66jCroG0AKvc=
 -----END PUBLIC KEY-----
 KEY
 if command -v openssl >/dev/null && openssl pkey -pubin -in "$key" -noout 2>/dev/null && openssl pkeyutl -help 2>&1 | grep -q -- -rawin; then
-    curl -fsSL "$rel/$a.sig" -o "$d/eoview.sig"
-    if ! openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$d/eoview.new" -sigfile "$d/eoview.sig" >/dev/null; then
-        rm -f "$d/eoview.new" "$d/eoview.sig" "$key"
+    # The signature of the text "eoview VERSION NAME SHA256" also covers the version (releases after 0.2.2).
+    # An older release has only the signature of the executable.
+    in=$d/eoview.new
+    if curl -fsSL "$rel/$a.version.sig" -o "$d/eoview.sig" 2>/dev/null; then
+        printf 'eoview %s %s %s' "$v" "$a" "$(openssl dgst -sha256 -r "$d/eoview.new" | cut -d ' ' -f 1)" > "$d/eoview.text"
+        in=$d/eoview.text
+    else
+        curl -fsSL "$rel/$a.sig" -o "$d/eoview.sig"
+    fi
+    if ! openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$in" -sigfile "$d/eoview.sig" >/dev/null; then
+        rm -f "$d/eoview.new" "$d/eoview.sig" "$d/eoview.text" "$key"
         echo "eoview: the signature of $a $v is not valid. Nothing is installed." >&2
         exit 1
     fi
-    rm -f "$d/eoview.sig"
+    rm -f "$d/eoview.sig" "$d/eoview.text"
     echo "The signature of eoview $v is valid."
 else
     echo "eoview: OpenSSL 3 is not available, the signature is not checked."

@@ -78,8 +78,15 @@ jobs:
           # The key is the key of update.rs.
           test "$(openssl pkey -in key.pem -pubout -outform DER | tail -c 32 | od -An -tu1 -v | xargs | tr ' ' ',')" = \
             "$(sed -n 's/^const KEY: \[u8; 32\] = \[\(.*\)\];/\1/p' crates/eoview/src/update.rs | tr -d ' ')"
-          for f in out/eoview-*; do openssl pkeyutl -sign -inkey key.pem -rawin -in "$f" -out "$f.sig"; done
-          rm key.pem
+          # NAME.sig: the signature of the executable (eoview 0.2.x and the old install scripts).
+          # NAME.version.sig: the signature of the text "eoview VERSION NAME SHA256". An older release cannot
+          # come as an update (see signed_text in update.rs).
+          for f in out/eoview-*; do
+            openssl pkeyutl -sign -inkey key.pem -rawin -in "$f" -out "$f.sig"
+            printf 'eoview %s %s %s' "${GITHUB_REF_NAME#v}" "${f#out/}" "$(sha256sum "$f" | cut -d ' ' -f 1)" > text
+            openssl pkeyutl -sign -inkey key.pem -rawin -in text -out "$f.version.sig"
+          done
+          rm key.pem text
       - run: |
           echo "${GITHUB_REF_NAME#v}" > out/version.txt
           cp scripts/install.sh scripts/uninstall.sh out/
