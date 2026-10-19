@@ -2,9 +2,10 @@
 //! other layers (see DESIGN.md, section 3). The view does not know that a layer is computed: the
 //! priority, the cancel and the caches are the same as for a layer of a file.
 //!
-//! The operations: an aggregate over time (mean, median, minimum, maximum, standard deviation, number of
-//! values) of the time steps of a variable, a function of the values of layers on the same grid (layer
-//! math, mask), and the values of an array (the output of a Python script). The engine reads the values of the
+//! The operations: an aggregate over time (mean, median, percentiles, minimum, maximum, standard deviation,
+//! number of values, trend) of the time steps of a variable, a function of the values of layers on the same
+//! grid (layer math, mask), a filter (`Filter`: radiometry, indices, space filters, SAR, terrain), and the
+//! values of an array (the output of a Python script). The engine reads the values of the
 //! inputs (f32, not the 16-bit display tiles) at the level of the tile: the mean of a coarse level is
 //! near the mean of the level 0, and equal if the overviews of the files are means.
 use super::*;
@@ -18,17 +19,53 @@ pub enum Agg {
     Max,
     Std,
     Count,
+    P10,
+    P25,
+    P75,
+    P90,
+    /// The slope of the line of least squares through the values, for one step.
+    Trend,
 }
 
 impl Agg {
-    pub const ALL: [(Agg, &str); 6] = [(Agg::Mean, "Mean"), (Agg::Median, "Median"), (Agg::Min, "Minimum"), (Agg::Max, "Maximum"), (Agg::Std, "Standard deviation"), (Agg::Count, "Number of values")];
+    pub const ALL: [(Agg, &str); 11] = [
+        (Agg::Mean, "Mean"),
+        (Agg::Median, "Median"),
+        (Agg::Min, "Minimum"),
+        (Agg::Max, "Maximum"),
+        (Agg::Std, "Standard deviation"),
+        (Agg::Count, "Number of values"),
+        (Agg::P10, "10th percentile"),
+        (Agg::P25, "25th percentile"),
+        (Agg::P75, "75th percentile"),
+        (Agg::P90, "90th percentile"),
+        (Agg::Trend, "Trend (change for each step)"),
+    ];
+
+    /// The percentile of a median or a percentile: the aggregates that keep all values of a pixel.
+    fn pct(self) -> Option<f64> {
+        match self {
+            Agg::Median => Some(50.0),
+            Agg::P10 => Some(10.0),
+            Agg::P25 => Some(25.0),
+            Agg::P75 => Some(75.0),
+            Agg::P90 => Some(90.0),
+            _ => None,
+        }
+    }
 
     pub fn name(self) -> &'static str {
         Agg::ALL.iter().find(|a| a.0 == self).map_or("", |a| a.1)
     }
 
-    /// The aggregate of `v` (NaN: no data). The result is NaN if no value has data (0 for the count).
+    /// The aggregate of `v` (NaN: no data), in the order of the steps. The result is NaN if no value has data
+    /// (0 for the count).
     pub fn of(self, v: &mut [f32]) -> f32 {
+        if self == Agg::Trend {
+            let mut s = [0f64; 5];
+            v.iter().enumerate().for_each(|(k, &x)| add_point(&mut s, k, x));
+            return slope(&s);
+        }
         let mut n = 0;
         for i in 0..v.len() {
             if v[i].is_finite() {
@@ -49,12 +86,33 @@ impl Agg {
                 let m = v.iter().map(|&x| x as f64).sum::<f64>() / n as f64;
                 (v.iter().map(|&x| (x as f64 - m).powi(2)).sum::<f64>() / n as f64).sqrt() as f32
             }
-            Agg::Median => {
+            Agg::Median if n % 2 == 0 => {
                 v.sort_unstable_by(f32::total_cmp);
-                if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
+                (v[n / 2 - 1] + v[n / 2]) / 2.0
+            }
+            _ => {
+                // A percentile: linear between the two nearest values (as numpy).
+                v.sort_unstable_by(f32::total_cmp);
+                let pos = self.pct().unwrap_or(50.0) / 100.0 * (n - 1) as f64;
+                let (i, f) = (pos.floor() as usize, pos.fract());
+                if f == 0.0 { v[i] } else { (v[i] as f64 + f * (v[i + 1] - v[i]) as f64) as f32 }
             }
         }
     }
+}
+
+/// Add the value `x` of step `k` to the sums `s` of a line of least squares (NaN: no data).
+fn add_point(s: &mut [f64; 5], k: usize, x: f32) {
+    if x.is_finite() {
+        let (k, x) = (k as f64, x as f64);
+        *s = [s[0] + 1.0, s[1] + k, s[2] + k * k, s[3] + x, s[4] + k * x];
+    }
+}
+
+/// The slope of the line of least squares of the sums `s` (`add_point`). NaN for fewer than 2 values.
+fn slope(s: &[f64; 5]) -> f32 {
+    let d = s[0] * s[2] - s[1] * s[1];
+    if s[0] < 2.0 || d == 0.0 { f32::NAN } else { ((s[0] * s[4] - s[1] * s[3]) / d) as f32 }
 }
 
 /// A time step of an aggregate: a step of the time dimension of the first layer, a product (the same
@@ -84,6 +142,8 @@ pub enum OpKind {
     Math { f: PixelFn, inputs: Vec<Arc<Layer>> },
     /// Values in memory (the output of a Python script): `w` columns, NaN for no data.
     Array { w: u64, data: Arc<Vec<f32>> },
+    /// A filter of the inputs (on the same grid). `cell`: the size of a level-0 pixel on the ground (meters).
+    Filter { f: crate::Filter, inputs: Vec<Arc<Layer>>, cell: (f64, f64) },
 }
 
 /// The sums of the values of a tile, for the aggregates that do not keep all values.
@@ -91,19 +151,24 @@ enum Acc {
     Sum { sum: Vec<f64>, sum2: Option<Vec<f64>>, cnt: Vec<u32> },
     Ext { v: Vec<f32>, max: bool },
     All(Vec<Vec<f32>>),
+    /// The sums of a line of least squares (`add_point`).
+    Line(Vec<[f64; 5]>),
 }
 
 impl Acc {
     fn new(how: Agg, n: usize) -> Acc {
         match how {
             Agg::Min | Agg::Max => Acc::Ext { v: vec![f32::NAN; n], max: how == Agg::Max },
-            Agg::Median => Acc::All(vec![]),
+            Agg::Trend => Acc::Line(vec![[0.0; 5]; n]),
+            _ if how.pct().is_some() => Acc::All(vec![]),
             _ => Acc::Sum { sum: vec![0.0; n], sum2: (how == Agg::Std).then(|| vec![0.0; n]), cnt: vec![0; n] },
         }
     }
 
-    fn add(&mut self, x: Vec<f32>) {
+    /// Add the values `x` of step `k`.
+    fn add(&mut self, k: usize, x: Vec<f32>) {
         match self {
+            Acc::Line(s) => s.iter_mut().zip(&x).for_each(|(s, &v)| add_point(s, k, v)),
             Acc::Sum { sum, sum2, cnt } => {
                 for (i, &v) in x.iter().enumerate().filter(|v| v.1.is_finite()) {
                     sum[i] += v as f64;
@@ -137,6 +202,7 @@ impl Acc {
                 })
                 .collect(),
             Acc::Ext { v, .. } => v.clone(),
+            Acc::Line(s) => s.iter().map(slope).collect(),
             Acc::All(all) => {
                 let n = all.first().map_or(0, |a| a.len());
                 let mut col = vec![0f32; all.len()];
@@ -236,7 +302,11 @@ impl Inner {
             fill: None,
             scale: 1.0,
             offset: 0.0,
-            units: if how == Agg::Count { String::new() } else { v0.units.clone() },
+            units: match how {
+                Agg::Count => String::new(),
+                Agg::Trend if !v0.units.is_empty() => format!("{} per step", v0.units),
+                _ => v0.units.clone(),
+            },
             georef: g0,
             times: Default::default(),
             dims: vec![],
@@ -480,40 +550,146 @@ impl Inner {
             }
             OpKind::Agg { how, inputs } => {
                 let how = *how;
-                // The median keeps the values of all steps.
-                if how == Agg::Median && n * 4 * inputs.len() > self.limit / 4 {
-                    return Err(Error(format!("a median of {} steps needs {} MB for one tile: more than a quarter of the memory budget. Use fewer steps", inputs.len(), (n * 4 * inputs.len()) >> 20)));
+                // The median and the percentiles keep the values of all steps.
+                let all = how.pct().is_some();
+                if all && n * 4 * inputs.len() > self.limit / 4 {
+                    return Err(Error(format!("a {} of {} steps needs {} MB for one tile: more than a quarter of the memory budget. Use fewer steps", how.name().to_lowercase(), inputs.len(), (n * 4 * inputs.len()) >> 20)));
                 }
                 let _slot = self.ops.acquire().await.map_err(|_| Error("engine stopped".into()))?;
-                let _c = Charge::new(&self.work, n * if how == Agg::Median { 4 * inputs.len() } else { 16 });
+                let _c = Charge::new(&self.work, n * if all { 4 * inputs.len() } else { 40 });
                 let mut acc = Acc::new(how, n);
-                let mut jobs = stream::iter(inputs.clone())
-                    .map(|inp| {
+                let mut jobs = stream::iter(inputs.clone().into_iter().enumerate())
+                    .map(|(k, inp)| {
                         let i = self.clone();
-                        async move { i.values(&inp, key.lv as usize, key.tx, key.ty, prio).await }
+                        async move { i.values(&inp, key.lv as usize, key.tx, key.ty, prio).await.map(|v| (k, v)) }
                     })
                     .buffer_unordered(4);
                 let mut last = Instant::now();
                 while let Some(v) = jobs.next().await {
-                    let v = v?;
+                    let (k, v) = v?;
                     if v.len() != n {
                         return Err("the time steps are not on the same grid".into());
                     }
-                    acc.add(v);
-                    if let Some(p) = partial.filter(|_| how != Agg::Median && last.elapsed() > PARTIAL) {
+                    acc.add(k, v);
+                    if let Some(p) = partial.filter(|_| !all && last.elapsed() > PARTIAL) {
                         p(acc.result(how));
                         last = Instant::now();
                     }
                 }
                 Ok(acc.result(how))
             }
+            OpKind::Filter { f, inputs, cell } => {
+                let r = f.halo(lv.kx) as u64;
+                let at = (x0 as i64 - r as i64, y0 as i64 - r as i64);
+                let wins = futures_util::future::try_join_all(inputs.iter().map(|inp| self.win(inp, key.lv as usize, at, (tw + 2 * r, th + 2 * r), prio))).await?;
+                let (f, k, cell) = (f.clone(), lv.kx, (cell.0 * lv.kx, cell.1 * lv.ky));
+                Ok(self.on_pool(prio, move || f.run(&wins, tw as usize, th as usize, k, cell)).await)
+            }
         }
+    }
+
+    /// The values (NaN: no data) of the window at (x0, y0) of `size` pixels of display level `lv` of layer `l`.
+    /// The window can go out of the level: there, the pixels of the edge of the level repeat.
+    async fn win(self: &Arc<Self>, l: &Arc<Layer>, lv: usize, (x0, y0): (i64, i64), size: (u64, u64), prio: u32) -> Result<Vec<f32>> {
+        let level = *l.levels.get(lv).ok_or("bad level")?;
+        let cx = |x: i64| x.clamp(0, level.w as i64 - 1) as u64;
+        let cy = |y: i64| y.clamp(0, level.h as i64 - 1) as u64;
+        let (w, h) = (size.0 as i64, size.1 as i64);
+        let tiles: Vec<(u64, u64)> = (cy(y0) / TILE..=cy(y0 + h - 1) / TILE).flat_map(|ty| (cx(x0) / TILE..=cx(x0 + w - 1) / TILE).map(move |tx| (tx, ty))).collect();
+        let got: HashMap<(u64, u64), Arc<Vec<f32>>> = stream::iter(tiles)
+            .map(|(tx, ty)| {
+                let i = self.clone();
+                async move { i.tile_values(l, lv, tx as u32, ty as u32, prio).await.map(|v| ((tx, ty), v)) }
+            })
+            .buffered(4)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<_>>()?;
+        let mut out = Vec::with_capacity((w * h) as usize);
+        for j in 0..h {
+            let y = cy(y0 + j);
+            let ty = y / TILE;
+            for i in 0..w {
+                let x = cx(x0 + i);
+                let tx = x / TILE;
+                let tw = TILE.min(level.w - tx * TILE);
+                out.push(got[&(tx, ty)][((y - ty * TILE) * tw + x - tx * TILE) as usize]);
+            }
+        }
+        Ok(out)
+    }
+
+    /// `values`, with a cache: a filter reads each tile of its inputs for the tiles around it too.
+    async fn tile_values(self: &Arc<Self>, l: &Arc<Layer>, lv: usize, tx: u32, ty: u32, prio: u32) -> Result<Arc<Vec<f32>>> {
+        let key = TileKey { layer: l.id, lv: lv as u8, tx, ty };
+        if let Some(v) = self.vals.lock().unwrap().get(&key).cloned() {
+            return Ok(v);
+        }
+        // ponytail: two tiles that need the same tile at the same time both make it. Share the work in
+        // progress (as `inflight`) if the filters of filters are slow.
+        let v = Arc::new(self.values(l, lv, tx, ty, prio).await?);
+        self.vals.lock().unwrap().insert(key, v.clone(), v.len() * 4);
+        Ok(v)
+    }
+
+    /// A layer with the filter `f` of `inputs` (on the same grid), with the name `name`.
+    fn make_filter(self: &Arc<Self>, name: &str, f: crate::Filter, inputs: Vec<Arc<Layer>>) -> Result<Arc<Layer>> {
+        if inputs.len() != f.inputs() {
+            return Err(Error(format!("{} needs {} input layers", f.name(), f.inputs())));
+        }
+        let g = self.same_grid(&inputs, "input layers")?;
+        let (w, h) = inputs[0].size();
+        let cell = cell_size(&g, w, h);
+        let var = Variable {
+            name: name.into(),
+            group: String::new(),
+            levels: inputs[0].var().levels.iter().map(flat).collect(),
+            bands: vec![name.into()],
+            fill: None,
+            scale: 1.0,
+            offset: 0.0,
+            units: f.units(&inputs[0].var().units),
+            georef: g,
+            times: Default::default(),
+            dims: vec![],
+        };
+        let product = Product { name: name.into(), desc: format!("{} of {}", f.name(), inputs.iter().map(|l| l.var().name.as_str()).collect::<Vec<_>>().join(", ")), vars: vec![var], small: vec![], valid: None, info: Default::default() };
+        let ds = Arc::new(Dataset { product, sources: inputs[0].ds.sources.clone() });
+        let key = format!("{f:?} {:?}", inputs.iter().map(|l| l.id).collect::<Vec<_>>());
+        let (id, ds_id, levels) = (self.next.fetch_add(1, Relaxed), self.next.fetch_add(1, Relaxed), inputs[0].levels.clone());
+        let v = Arc::new(ds.product.vars[0].clone());
+        let op = Arc::new(Op { kind: OpKind::Filter { f: f.clone(), inputs: inputs.clone(), cell }, key });
+        let mk = |sample_at: Vec<f32>| {
+            let mut sample: Vec<f32> = sample_at.iter().copied().filter(|v| v.is_finite()).collect();
+            sample.sort_unstable_by(f32::total_cmp);
+            let enc = choose_enc(DType::F32, Part::Real, &sample);
+            Arc::new(Layer { id, ds: ds.clone(), ds_id, v: v.clone(), var: 0, choice: 0, band: 0, time: 0, at: vec![], part: Part::Real, levels: levels.clone(), enc, sample, sample_at, op: Some(op.clone()) })
+        };
+        let sample_at = if f.halo(1.0) == 0 {
+            // A pixel filter: the filter of the samples of the inputs (their values are at the same pixels).
+            let len = inputs.iter().map(|l| l.sample_at.len()).min().unwrap_or(0);
+            f.run(&inputs.iter().map(|l| l.sample_at[..len].to_vec()).collect::<Vec<_>>(), len, 1, 1.0, cell)
+        } else {
+            // The values of the coarsest level (one tile).
+            let l0 = mk(vec![]);
+            let v = self.rt.block_on(self.tile_values(&l0, levels.len() - 1, 0, 0, 0))?;
+            v.iter().step_by((v.len() / 65_536).max(1)).copied().collect()
+        };
+        Ok(mk(sample_at))
     }
 
     /// The value of the computed layer `l` at level-0 pixel (x, y): the aggregate of the exact values of its
     /// inputs, or the value of the array.
-    pub(super) async fn probe_op(&self, op: &Op, x: u64, y: u64) -> Result<Vec<Option<f64>>> {
+    pub(super) async fn probe_op(self: &Arc<Self>, l: &Arc<Layer>, op: &Op, x: u64, y: u64) -> Result<Vec<Option<f64>>> {
         let r = match &op.kind {
+            OpKind::Filter { .. } => {
+                // The level-0 tile of the pixel: the filter needs the pixels around it.
+                let (tx, ty) = (x / TILE, y / TILE);
+                let v = self.tile_values(l, 0, tx as u32, ty as u32, 0).await?;
+                let tw = TILE.min(l.levels[0].w - tx * TILE);
+                v.get(((y - ty * TILE) * tw + x - tx * TILE) as usize).copied().unwrap_or(f32::NAN)
+            }
             OpKind::Array { w, data } => data.get((y * w + x) as usize).copied().unwrap_or(f32::NAN),
             OpKind::Agg { how, inputs } => {
                 let mut v = vec![];
@@ -534,10 +710,10 @@ impl Inner {
     }
 
     /// The exact value of layer `l` (a file or computed) at level-0 pixel (x, y). NaN: no data.
-    fn probe_one<'a>(&'a self, l: &'a Layer, x: u64, y: u64) -> BoxFuture<'a, Result<f64>> {
+    fn probe_one<'a>(self: &'a Arc<Self>, l: &'a Arc<Layer>, x: u64, y: u64) -> BoxFuture<'a, Result<f64>> {
         async move {
             let v = match &l.op {
-                Some(op) => self.probe_op(op, x, y).await?.first().copied().flatten(),
+                Some(op) => self.probe_op(l, op, x, y).await?.first().copied().flatten(),
                 None => self.probe_at(l, x, y).await?.get(l.band as usize).copied().flatten(),
             };
             Ok(v.unwrap_or(f64::NAN))
@@ -645,6 +821,21 @@ impl Inner {
     }
 }
 
+/// The size on the ground (meters) of a level-0 pixel at the center of an image of `w` x `h` pixels with the
+/// georeferencing `g`, along the rows and along the columns. 1 without georeferencing.
+// ponytail: one size for the whole image (at its center). A size for each row if DEMs in degrees of large areas need it.
+fn cell_size(g: &Georef, w: u64, h: u64) -> (f64, f64) {
+    let (c, r) = (w as f64 / 2.0, h as f64 / 2.0);
+    let (Some(a), Some(b), Some(d)) = (g.map(c, r), g.map(c + 1.0, r), g.map(c, r + 1.0)) else { return (1.0, 1.0) };
+    let deg = match g {
+        Georef::Affine { crs, .. } => crs.epsg.and_then(|e| eo_core::geo::Proj::epsg(e).ok()).is_some_and(|p| p.is_latlong()),
+        _ => true,
+    };
+    let m = |p: (f64, f64)| if deg { ((p.0 - a.0) * 111_320.0 * a.1.to_radians().cos(), (p.1 - a.1) * 111_320.0) } else { (p.0 - a.0, p.1 - a.1) };
+    let (b, d) = (m(b), m(d));
+    (b.0.hypot(b.1), d.0.hypot(d.1))
+}
+
 impl Engine {
     /// Read the values (NaN: no data) of window (x0, y0, width, height) of display level `lv` of layer `l`.
     /// The result comes as `Event::Read`, with the georeferencing of the window.
@@ -681,6 +872,18 @@ impl Engine {
         let req = i.next.fetch_add(1, Relaxed);
         self.rt.spawn_blocking(move || {
             let res = i.make_math(&name, &units, inputs, f, key);
+            i.send(Event::Opened { req, res });
+        });
+        req
+    }
+
+    /// Make a layer with the filter `f` of `inputs` (on the same grid, `f.inputs()` layers). The result comes
+    /// as `Event::Opened`.
+    pub fn filter(&self, name: String, f: crate::Filter, inputs: Vec<Arc<Layer>>) -> u64 {
+        let i = self.inner.clone();
+        let req = i.next.fetch_add(1, Relaxed);
+        self.rt.spawn_blocking(move || {
+            let res = i.make_filter(&name, f, inputs);
             i.send(Event::Opened { req, res });
         });
         req
@@ -812,6 +1015,51 @@ mod tests {
         }
     }
 
+    /// A median filter of an array of 600 x 20 pixels (two tiles): the values across the edge of the tiles are
+    /// the values of the filter of the whole array (no seam), in the view and in the inspector.
+    #[test]
+    fn filter_without_seams() {
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let next = |f: &dyn Fn(&Event) -> bool| loop {
+            let ev = rx.recv_timeout(Duration::from_secs(20)).expect("timeout");
+            if f(&ev) {
+                break ev;
+            }
+        };
+        let opened = || match next(&|e| matches!(e, Event::Opened { .. })) {
+            Event::Opened { res, .. } => res.unwrap(),
+            _ => unreachable!(),
+        };
+        let (w, h) = (600usize, 20usize);
+        let data: Vec<f32> = (0..w * h).map(|i| if i == 5 * w + 510 { f32::NAN } else { ((i * 7919) % 101) as f32 }).collect();
+        e.memory("a".into(), String::new(), w as u64, data.clone(), Georef::None);
+        let a = opened();
+        let f = crate::Filter::Median { r: 2.0 };
+        e.filter("m".into(), f.clone(), vec![a]);
+        let m = opened();
+        // The filter of the whole array, with the edge pixels repeated.
+        let r = f.halo(1.0) as i64;
+        let pad: Vec<f32> = (0..(h as i64 + 2 * r))
+            .flat_map(|y| (0..(w as i64 + 2 * r)).map(move |x| (x - r, y - r)))
+            .map(|(x, y)| data[(y.clamp(0, h as i64 - 1) as usize) * w + x.clamp(0, w as i64 - 1) as usize])
+            .collect();
+        let want = f.run(&[pad], w, h, 1.0, (1.0, 1.0));
+        e.read(m.clone(), 0, (500, 0, 30, h as u64));
+        let Event::Read { res, .. } = next(&|e| matches!(e, Event::Read { .. })) else { unreachable!() };
+        let got = res.unwrap().0;
+        for y in 0..h {
+            for x in 0..30 {
+                let (g, t) = (got[y * 30 + x], want[y * w + 500 + x]);
+                assert!(g == t || g.is_nan() && t.is_nan(), "{x} {y}: {g} {t}");
+            }
+        }
+        for x in [511, 512] {
+            e.probe(m.clone(), x, 3);
+            let Event::Probe { values, .. } = next(&|e| matches!(e, Event::Probe { .. })) else { unreachable!() };
+            assert_eq!(values[0], Some(want[3 * w + x as usize] as f64));
+        }
+    }
+
     #[test]
     fn aggregates_skip_no_data() {
         let v = [3.0, f32::NAN, 1.0, 2.0, 10.0];
@@ -820,9 +1068,12 @@ mod tests {
         assert!((of(Agg::Std) - 3.5355).abs() < 1e-3);
         assert!(Agg::Mean.of(&mut [f32::NAN]).is_nan() && Agg::Count.of(&mut [f32::NAN]) == 0.0);
         // The tile sums give the same results.
-        for a in [Agg::Mean, Agg::Std, Agg::Min, Agg::Max, Agg::Count, Agg::Median] {
+        // Percentiles as numpy (linear). The trend of 3, 1, 2, 10 at steps 0, 2, 3, 4: 48 / 35.
+        assert!((of(Agg::P25) - 1.75).abs() < 1e-6 && (of(Agg::P90) - 7.9).abs() < 1e-5);
+        assert!((of(Agg::Trend) - 48.0 / 35.0).abs() < 1e-6);
+        for (a, _) in Agg::ALL {
             let mut acc = Acc::new(a, 1);
-            v.iter().for_each(|&x| acc.add(vec![x]));
+            v.iter().enumerate().for_each(|(k, &x)| acc.add(k, vec![x]));
             assert!((acc.result(a)[0] - of(a)).abs() < 1e-5, "{a:?}");
         }
     }

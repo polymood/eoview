@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 use tokio::runtime::{Handle, Runtime};
 use tokio::task::AbortHandle;
 
+mod filters;
 mod ops;
+pub use filters::Filter;
 pub use ops::{Agg, Op, OpKind, PixelFn, StepIn};
 
 /// Width and height of a display tile.
@@ -291,6 +293,8 @@ struct Inner {
     inflight: Mutex<HashMap<DecKey, (WeakShared<BoxFuture<'static, Planes>>, usize)>>,
     /// Decoded level-0 chunks for the pixel inspector.
     probe: Mutex<Lru<(u64, usize, usize), Bytes>>,
+    /// Values of the tiles that the filters read: a tile is in the halo of the tiles around it.
+    vals: Mutex<Lru<TileKey, Arc<Vec<f32>>>>,
     /// Geolocation grids read from arrays, by (dataset, variable).
     grids: Mutex<HashMap<(u64, usize), Georef>>,
     sched: Mutex<Sched>,
@@ -397,6 +401,7 @@ impl Engine {
             dec: Mutex::new(dec),
             inflight: Default::default(),
             probe: Mutex::new(probe),
+            vals: Mutex::new(Lru::new(ram / 16)),
             grids: Default::default(),
             sched: Default::default(),
             ids: Default::default(),
@@ -468,7 +473,7 @@ impl Engine {
         let i = self.inner.clone();
         self.rt.spawn(async move {
             let r = match &l.op {
-                Some(op) => i.probe_op(op, x, y).await,
+                Some(op) => i.probe_op(&l, op, x, y).await,
                 None => i.probe_at(&l, x, y).await,
             };
             match r {

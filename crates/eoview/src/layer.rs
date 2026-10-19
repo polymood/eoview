@@ -854,6 +854,65 @@ pub enum OpSave {
     AggDim { how: String, source: Box<LayerSave>, dim: String },
     /// Layer math: the expression `expr` of the layers `inputs`, with the names `names` in the expression.
     Math { expr: String, names: Vec<String>, inputs: Vec<LayerSave> },
+    /// A filter of the layers `inputs`, for example `{"op": "gaussian", "sigma": 2.0}`.
+    Filter { filter: eo_cache::Filter, inputs: Vec<LayerSave> },
+}
+
+/// The bands of an input of an index: its name, then the names of the band in the products (Sentinel-2,
+/// then the common names of STAC).
+// ponytail: Sentinel-2 names only. Add the Landsat names (SR_B5 ...) when a user opens Landsat products.
+type Band = (&'static str, &'static [&'static str]);
+const NIR: Band = ("NIR", &["B08", "B8", "nir"]);
+const RED: Band = ("red", &["B04", "B4", "red"]);
+const GREEN: Band = ("green", &["B03", "B3", "green"]);
+const BLUE: Band = ("blue", &["B02", "B2", "blue"]);
+const SWIR1: Band = ("SWIR 1.6", &["B11", "swir16"]);
+const SWIR2: Band = ("SWIR 2.2", &["B12", "swir22"]);
+
+/// The filters of the Layer menu: group, name, filter with its first parameters, and for an index the
+/// bands of its inputs (empty: the band of the layer).
+pub const FILTERS: &[(&str, &str, eo_cache::Filter, &[Band])] = {
+    use eo_cache::Filter as F;
+    &[
+        ("Radiometry", "Scale and offset", F::Scale { k: 1.0, o: 0.0 }, &[]),
+        ("Radiometry", "Decibels", F::Db, &[]),
+        ("Indices", "NDVI", F::NormDiff, &[NIR, RED]),
+        ("Indices", "NDWI", F::NormDiff, &[GREEN, NIR]),
+        ("Indices", "NDMI", F::NormDiff, &[NIR, SWIR1]),
+        ("Indices", "NBR", F::NormDiff, &[NIR, SWIR2]),
+        ("Indices", "NDSI", F::NormDiff, &[GREEN, SWIR1]),
+        ("Indices", "EVI", F::Evi, &[NIR, RED, BLUE]),
+        ("Indices", "SAVI", F::Savi { l: 0.5 }, &[NIR, RED]),
+        ("Space", "Gaussian", F::Gaussian { sigma: 2.0 }, &[]),
+        ("Space", "Boxcar mean", F::Boxcar { w: 3.0, h: 3.0 }, &[]),
+        ("Space", "Median", F::Median { r: 1.0 }, &[]),
+        ("Space", "Sobel edges", F::Sobel, &[]),
+        ("Space", "Laplacian", F::Laplace, &[]),
+        ("Space", "Erosion", F::Erode { r: 1.0 }, &[]),
+        ("Space", "Dilation", F::Dilate { r: 1.0 }, &[]),
+        ("Space", "Opening", F::Open { r: 1.0 }, &[]),
+        ("Space", "Closing", F::Close { r: 1.0 }, &[]),
+        ("SAR", "Lee speckle filter", F::Lee { r: 2.0, looks: 1.0 }, &[]),
+        ("SAR", "Multilook (boxcar mean)", F::Boxcar { w: 5.0, h: 1.0 }, &[]),
+        ("Terrain", "Hillshade", F::Hillshade { azimuth: 315.0, altitude: 45.0, z: 1.0 }, &[]),
+        ("Terrain", "Slope", F::Slope { z: 1.0 }, &[]),
+        ("Terrain", "Aspect", F::Aspect, &[]),
+        ("Mask", "Threshold", F::Threshold { lo: 0.0, hi: 1.0 }, &[]),
+    ]
+};
+
+impl MapLayer {
+    /// The channel of each band `bands` of an index (`FILTERS`), by the name of the band. Err: the name of
+    /// the first band that the product does not have.
+    pub fn index_bands(&self, bands: &[Band]) -> Result<Vec<usize>, String> {
+        bands
+            .iter()
+            .map(|(name, ids)| {
+                let found = ids.iter().find_map(|n| (0..self.chans.len()).find(|&c| self.chans[c].id.eq_ignore_ascii_case(n) || self.chan_leaf(c).eq_ignore_ascii_case(n)));
+                found.ok_or_else(|| format!("{name} ({})", ids.join(", ")))
+            })
+            .collect()
+    }
 }
 
 

@@ -124,6 +124,10 @@ pub enum Cmd {
     Aggregate(eo_cache::Agg),
     /// A new layer: the layer math of the side panel.
     Math,
+    /// A new layer: filter `.0` of `layer::FILTERS` of the selected layer.
+    Filter(usize),
+    /// The selected layer (a computed layer) with this operation: the layer is made again.
+    SetOp(layer::OpSave),
     /// Variable (channel) `.1` of layer `.0` of the view, alone in a new view (`.2` true) or as a new layer.
     ShowVar(usize, usize, bool),
     /// Channel `.2` of the product of layer `.1` of view `.0` as a new layer of the view of the command.
@@ -261,6 +265,9 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
     v.push((t("Remove the selected shape").into(), "Delete", Cmd::DeleteShape));
     for (a, n) in eo_cache::Agg::ALL {
         v.push((tf("Aggregate over time: {}", &[t(n)]), "", Cmd::Aggregate(a)));
+    }
+    for (i, f) in layer::FILTERS.iter().enumerate() {
+        v.push((tf("Filter: {}", &[t(f.1)]), "", Cmd::Filter(i)));
     }
     for (i, c) in crate::colormaps::all().iter().enumerate() {
         v.push((tf("Color map: {}", &[&c.name]), "", Cmd::Cmap(i)));
@@ -407,6 +414,48 @@ fn open_menu(ui: &mut egui::Ui, add: bool, id: u32, recent: &[String], cmds: &mu
 }
 
 /// One entry of a menu. The command runs in view `id`.
+/// The filters of `layer::FILTERS` in a menu for each group: a new layer with the filter of the selected layer.
+fn filter_menu(ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>, id: u32) {
+    let f = layer::FILTERS;
+    for (i, (g, ..)) in f.iter().enumerate().filter(|(i, x)| *i == 0 || f[i - 1].0 != x.0) {
+        ui.menu_button(t(g), |ui| {
+            for (k, x) in f.iter().enumerate().skip(i).take_while(|x| x.1.0 == *g) {
+                entry(ui, cmds, id, t(x.1), "", Cmd::Filter(k));
+            }
+        });
+    }
+}
+
+/// The operation of a computed layer and its parameters. True when the user ends a change: the layer is
+/// made again.
+fn op_ui(ui: &mut egui::Ui, op: &mut layer::OpSave) -> bool {
+    let mut done = false;
+    egui::CollapsingHeader::new(t("Operation")).default_open(true).show(ui, |ui| match op {
+        layer::OpSave::Filter { filter, inputs } => {
+            ui.label(format!("{} ({})", t(filter.name()), inputs.iter().map(|i| i.band.as_str()).collect::<Vec<_>>().join(", ")));
+            egui::Grid::new("op params").num_columns(2).show(ui, |ui| {
+                for (n, v) in filter.params() {
+                    ui.label(t(n));
+                    let r = ui.add(egui::DragValue::new(v).speed(0.1).max_decimals(4));
+                    done |= r.drag_stopped() || (r.changed() && !r.dragged());
+                    ui.end_row();
+                }
+            });
+        }
+        layer::OpSave::Agg { how, .. } | layer::OpSave::AggDim { how, .. } => {
+            egui::ComboBox::from_id_salt("op agg").selected_text(t(how)).show_ui(ui, |ui| {
+                for (_, name) in eo_cache::Agg::ALL {
+                    if ui.selectable_label(how == name, t(name)).clicked() && how != name {
+                        (*how, done) = (name.to_string(), true);
+                    }
+                }
+            });
+        }
+        layer::OpSave::Math { expr, .. } => drop(ui.label(tf("Layer math: {}", &[expr]))),
+    });
+    done
+}
+
 fn entry(ui: &mut egui::Ui, cmds: &mut Vec<(Cmd, u32)>, id: u32, name: &str, key: &str, c: Cmd) {
     if ui.add(egui::Button::new(name).shortcut_text(key)).clicked() {
         cmds.push((c, id));
@@ -1432,6 +1481,8 @@ impl App {
             }
             Cmd::PythonRun => self.py_run(),
             Cmd::Math => self.math(id),
+            Cmd::Filter(i) => self.add_filter(id, i),
+            Cmd::SetOp(op) => self.set_op(id, op),
             Cmd::ShowVar(li, c, new) => self.show_var(id, li, c, new),
             Cmd::AddVar(src, li, c) => self.add_var(src, li, c, id),
             Cmd::Aggregate(a) => {
@@ -1892,6 +1943,7 @@ impl App {
                     entry(ui, cmds, id, t("Next color map"), "C", Cmd::NextCmap);
                     entry(ui, cmds, id, t("Invert color map"), "I", Cmd::Invert);
                     ui.separator();
+                    ui.menu_button(t("Filter"), |ui| filter_menu(ui, cmds, id));
                     ui.add_enabled_ui(timed, |ui| {
                         ui.menu_button(t("Aggregate over time"), |ui| {
                             for (a, n) in eo_cache::Agg::ALL {
@@ -2250,6 +2302,10 @@ impl App {
                                 ui.close();
                             }
                         }
+                        ui.menu_button(t("Filter"), |ui| {
+                            p.sel = k;
+                            filter_menu(ui, cmds, id);
+                        });
                         ui.separator();
                         if ui.button(t("Remove")).clicked() {
                             action = Some((k, 0));
@@ -2314,6 +2370,12 @@ impl App {
         });
         ui.separator();
         let (mut changed, mut pick_changed) = (false, false);
+        if tab == 0
+            && let Some(op) = &mut l.op
+            && op_ui(ui, op)
+        {
+            cmds.push((Cmd::SetOp(op.clone()), id));
+        }
         if tab == 0 {
             if let Some(d) = l.any().map(|a| a.ds.product.desc.clone()) {
                 ui.small(d);
