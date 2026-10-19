@@ -473,7 +473,7 @@ impl Engine {
             };
             match r {
                 Ok(values) => i.send(Event::Probe { layer: l.id, x, y, values }),
-                Err(e) => i.send(Event::Error(e.0)),
+                Err(e) => i.send(Event::Error(e.to_string())),
             }
         });
     }

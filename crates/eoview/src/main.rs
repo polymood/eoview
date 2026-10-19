@@ -613,7 +613,7 @@ impl App {
                 }
             }
             if let Some(e) = failed {
-                eprintln!("render: {e}");
+                eprintln!("render: {}", eo_core::redact(&e));
                 self.cli_render = None;
                 return el.exit();
             }
@@ -834,7 +834,7 @@ fn info(path: &str) {
     };
     let l = match l {
         Ok(l) => l,
-        Err(e) => return eprintln!("{path}: {e}"),
+        Err(e) => return eprintln!("{}: {e}", eo_core::redact(path)),
     };
     let p = &l.ds.product;
     println!("{}\n{}\nopen and first layer: {:.1} ms, {} source(s)", p.name, p.desc, t.elapsed().as_secs_f64() * 1e3, l.ds.sources.len());

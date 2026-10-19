@@ -202,7 +202,7 @@ impl Smalls {
         m.insert(key, None);
         let (map, ctx, ds) = (self.map.clone(), self.ctx.clone(), l.ds.clone());
         std::thread::spawn(move || {
-            let r = ds.product.small.get(k).ok_or_else(|| "no such variable".to_string()).and_then(|v| eo_io::read_all(&ds, v).map_err(|e| e.0));
+            let r = ds.product.small.get(k).ok_or_else(|| "no such variable".to_string()).and_then(|v| eo_io::read_all(&ds, v).map_err(|e| e.to_string()));
             map.lock().unwrap().insert(key, Some(r.map(Arc::new)));
             ctx.request_repaint();
         });

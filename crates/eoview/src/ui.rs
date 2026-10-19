@@ -2057,7 +2057,7 @@ impl App {
                 if ui.small_button("x").on_hover_text(t("Close the message")).clicked() {
                     self.error = None;
                 }
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                ui.colored_label(ui.visuals().error_fg_color, eo_core::redact(&e));
                 ui.separator();
             }
             // The point under the cursor. The last point stays (weak) when the cursor leaves the views: a click

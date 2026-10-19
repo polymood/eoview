@@ -46,7 +46,7 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<Variable>
         let a = match d.array(idx) {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("{}: {}: {e}", src.name(), d.path);
+                eprintln!("{}: {}: {e}", redact(src.name()), d.path);
                 continue;
             }
         };

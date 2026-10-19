@@ -634,7 +634,7 @@ pub struct App {
     pub palette: Option<crate::ui::Palette>,
     /// URL field of the "open URL" dialog: text, add as a layer, view.
     pub url: Option<(String, bool, u32)>,
-    /// Recent products and workspaces, newest first, and their file. Without credentials (see `clean_path`).
+    /// Recent products and workspaces, newest first, and their file. Without credentials (see `eo_core::redact_url`).
     pub recent: Vec<String>,
     pub recent_file: Option<std::path::PathBuf>,
     pub gpu_budget: usize,
@@ -1106,7 +1106,7 @@ impl App {
 
     /// Put a path at the top of the recent list, and write the list.
     fn remember(&mut self, path: &str) {
-        let p = crate::layer::clean_path(path);
+        let p = eo_core::redact_url(path);
         self.recent.retain(|r| *r != p);
         self.recent.insert(0, p);
         self.recent.truncate(RECENT);
@@ -1555,7 +1555,7 @@ impl App {
                         match res {
                             None => (x.done, x.total) = (done, total),
                             Some(Ok(note)) => x.end = Some(note),
-                            Some(Err(e)) => x.end = Some(e.0),
+                            Some(Err(e)) => x.end = Some(e.to_string()),
                         }
                     }
                 }
@@ -2097,7 +2097,7 @@ impl App {
     /// Open the product `path` again for each layer that shows it: the new layer replaces the layer, with its settings.
     pub fn reload(&mut self, path: &str) {
         if std::env::var_os("EOVIEW_DEBUG").is_some() {
-            eprintln!("reload: {path}");
+            eprintln!("reload: {}", eo_core::redact(path));
         }
         let mut todo = vec![];
         for p in &self.panes {

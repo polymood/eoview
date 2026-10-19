@@ -160,7 +160,7 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
         if kind & 1 == 1 && kind & 4 == 0 && same(ifd) {
             match array(&rd, ifd, idx) {
                 Ok(a) => levels.push(a),
-                Err(e) => eprintln!("{}: overview ignored: {e}", src.name()),
+                Err(e) => eprintln!("{}: overview ignored: {e}", redact(src.name())),
             }
         }
     }

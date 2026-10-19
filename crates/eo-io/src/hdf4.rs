@@ -388,7 +388,7 @@ pub fn open(src: &Source, idx: u32, name: String) -> Result<Product> {
         let a = match f.array(get(SD), &shape, dims.collect(), dtype, le, idx) {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("{}: {vname}: {e}", src.name());
+                eprintln!("{}: {vname}: {e}", redact(src.name()));
                 continue;
             }
         };

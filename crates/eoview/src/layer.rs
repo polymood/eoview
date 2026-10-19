@@ -856,18 +856,6 @@ pub enum OpSave {
     Math { expr: String, names: Vec<String>, inputs: Vec<LayerSave> },
 }
 
-/// Path without the query, the fragment and the user information of a URL: they can contain credentials
-/// or signed tokens.
-pub fn clean_path(p: &str) -> String {
-    let Some((scheme, rest)) = p.split_once("://") else { return p.to_string() };
-    let rest = rest.split(['?', '#']).next().unwrap_or("");
-    let (host, path) = rest.split_once('/').map_or((rest, None), |(h, q)| (h, Some(q)));
-    let host = host.rsplit('@').next().unwrap_or(host);
-    match path {
-        Some(q) => format!("{scheme}://{host}/{q}"),
-        None => format!("{scheme}://{host}"),
-    }
-}
 
 impl MapLayer {
     /// True if a workspace file can keep the layer: a layer of a file, or a computed layer with its
@@ -878,7 +866,7 @@ impl MapLayer {
 
     pub fn save(&self) -> LayerSave {
         LayerSave {
-            path: clean_path(&self.path),
+            path: eo_core::redact_url(&self.path),
             kind: self.kind,
             band: self.chans.get(self.band).map_or(String::new(), |c| c.id.clone()),
             rgb: self.rgb.clone(),
@@ -890,7 +878,7 @@ impl MapLayer {
             invert: self.invert,
             opacity: self.opacity,
             visible: self.visible,
-            series: self.steps.iter().filter(|s| !s.path.is_empty()).map(|s| (clean_path(&s.path), s.t.is_finite().then_some(s.t))).collect(),
+            series: self.steps.iter().filter(|s| !s.path.is_empty()).map(|s| (eo_core::redact_url(&s.path), s.t.is_finite().then_some(s.t))).collect(),
             step: self.step,
             wind: Some([self.fill, self.arrows, self.particles]),
             op: self.op.clone(),
@@ -925,18 +913,5 @@ impl MapLayer {
             self.set_pick(eo_cache::Pick { axes: s.axes.clone(), at: s.at.clone() });
         }
         self.auto_pending = false;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clean_path_removes_credentials() {
-        assert_eq!(clean_path("https://user:pw@host.eu/a/b.tif?X-Amz-Signature=abc#f"), "https://host.eu/a/b.tif");
-        assert_eq!(clean_path("s3://bucket/key.zarr"), "s3://bucket/key.zarr");
-        assert_eq!(clean_path("https://host?token=1"), "https://host");
-        assert_eq!(clean_path("/data/a?b.tif"), "/data/a?b.tif");
     }
 }

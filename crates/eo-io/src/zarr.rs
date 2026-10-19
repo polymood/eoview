@@ -513,10 +513,10 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
                     levels.push(a);
                 }
                 Err(e) if levels.is_empty() => {
-                    eprintln!("{url}: {p}: {e}");
+                    eprintln!("{}: {p}: {e}", redact(url));
                     break;
                 }
-                Err(e) => eprintln!("{url}: {p}: overview ignored: {e}"),
+                Err(e) => eprintln!("{}: {p}: overview ignored: {e}", redact(url)),
             }
         }
         if levels.is_empty() {

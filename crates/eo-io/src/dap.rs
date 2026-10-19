@@ -323,7 +323,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         let mut arr = Array { dims, shape, chunk, dtype: dt, le: false, codecs: vec![], chunks: Chunks::Keyed { src: sources.len() as u32, n: 0 }, place: None };
         arr.chunks = Chunks::Keyed { src: sources.len() as u32, n: arr.grid().iter().product::<u64>() as usize };
         if let Err(e) = arr.validate() {
-            eprintln!("{url}: {}: {e}", v.name);
+            eprintln!("{}: {}: {e}", redact(url), v.name);
             continue;
         }
         sources.push(Arc::new(source(url, &v.name, &arr, &client, rt)));

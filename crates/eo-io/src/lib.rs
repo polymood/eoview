@@ -36,7 +36,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         match dap::open(&u, rt) {
             Ok(d) => return Ok(d),
             Err(e) if marked => return Err(e),
-            Err(e) => eprintln!("{url}: not OPeNDAP: {e}"),
+            Err(e) => eprintln!("{}: not OPeNDAP: {e}", eo_core::redact(url)),
         }
     }
     let path = std::path::Path::new(url);

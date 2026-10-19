@@ -10,8 +10,37 @@ pub struct Error(pub String);
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&redact(&self.0))
     }
+}
+
+/// Path without the query, the fragment and the user information of a URL: they can contain credentials
+/// or signed tokens (a presigned URL has its signature in the query). A path that is not a URL stays.
+pub fn redact_url(p: &str) -> String {
+    let Some((scheme, rest)) = p.split_once("://") else { return p.to_string() };
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    let (host, path) = rest.split_once('/').map_or((rest, None), |(h, q)| (h, Some(q)));
+    let host = host.rsplit('@').next().unwrap_or(host);
+    match path {
+        Some(q) => format!("{scheme}://{host}/{q}"),
+        None => format!("{scheme}://{host}"),
+    }
+}
+
+/// `text` with `redact_url` on each URL in it. Use it for each text with a URL that goes to an error
+/// message or a log. The `Display` of `Error` uses it.
+pub fn redact(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("://") {
+        let end = rest[i..].find(|c: char| c.is_whitespace() || "\"'<>()`".contains(c)).map_or(rest.len(), |e| i + e);
+        // A colon or a comma after the URL is part of the text. The text before the URL stays (see `redact_url`).
+        let url = rest[..end].trim_end_matches([':', ',', ';', '.']);
+        out += &redact_url(url);
+        out += &rest[url.len()..end];
+        rest = &rest[end..];
+    }
+    out + rest
 }
 
 impl std::error::Error for Error {}
@@ -475,6 +504,17 @@ pub struct Product {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_urls() {
+        let e = Error("https://u:pw@host.org/a/b.tif?X-Amz-Signature=abc#f: error (url https://h/x?t=1), s3://b/k?v=2. C:\\d\\f?.tif".into());
+        assert_eq!(e.to_string(), "https://host.org/a/b.tif: error (url https://h/x), s3://b/k. C:\\d\\f?.tif");
+        assert_eq!(redact("no url"), "no url");
+        assert_eq!(redact_url("https://user:pw@host.eu/a/b.tif?X-Amz-Signature=abc#f"), "https://host.eu/a/b.tif");
+        assert_eq!(redact_url("s3://bucket/key.zarr"), "s3://bucket/key.zarr");
+        assert_eq!(redact_url("https://host?token=1"), "https://host");
+        assert_eq!(redact_url("/data/a?b.tif"), "/data/a?b.tif");
+    }
 
     #[test]
     fn chunk_index_is_c_order() {

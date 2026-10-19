@@ -92,7 +92,7 @@ pub fn open(src: &Source, idx: u32, name: String) -> Result<Product> {
         // ponytail: GRIB 1 messages of more than 8 MB (ECMWF length coding) are not supported.
         let n = if h[7] == 2 { be(&h, 8, 8) } else { be(&h, 4, 3) };
         if n < 16 || n > len - p {
-            eprintln!("{}: truncated GRIB message at byte {p}", src.name());
+            eprintln!("{}: truncated GRIB message at byte {p}", redact(src.name()));
             break;
         }
         if h[7] == 2 { grib2(&mut w, idx, p, n, &mut fields)? } else { grib1(&mut w, idx, p, n, &mut fields)? }
@@ -112,7 +112,7 @@ pub fn open(src: &Source, idx: u32, name: String) -> Result<Product> {
     for fs in &groups {
         let f0 = &fs[0];
         let Some(g) = grid(f0.ed, &f0.grid) else {
-            eprintln!("{}: {}: grid not supported (reduced or spectral)", src.name(), param(f0).0);
+            eprintln!("{}: {}: grid not supported (reduced or spectral)", redact(src.name()), param(f0).0);
             continue;
         };
         // Dimensions: valid time, level, member. If two fields have the same valid time (forecasts from
@@ -136,7 +136,7 @@ pub fn open(src: &Source, idx: u32, name: String) -> Result<Product> {
             .collect();
         // Each combination of the axes is a chunk: a malformed file can give a very large count.
         let Some(count) = axes.iter().try_fold(1usize, |n, a| n.checked_mul(a.1.len())).filter(|&n| n <= MAX_CHUNKS) else {
-            eprintln!("{}: {}: too many combinations of time, level and member", src.name(), param(f0).0);
+            eprintln!("{}: {}: too many combinations of time, level and member", redact(src.name()), param(f0).0);
             continue;
         };
         let mut chunks = vec![ChunkLoc { src: idx, off: 0, len: 0 }; count];
