@@ -4,9 +4,10 @@ name: Audit
 # weak points of the workflows (zizmor). Each day too: a new advisory can come without a change of the code.
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
   schedule:
+    # GitHub runs a schedule only from the default branch (main): the daily audit starts with the next release.
     - cron: '17 5 * * *'
   workflow_dispatch:
 
