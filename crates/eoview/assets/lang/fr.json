@@ -682,5 +682,14 @@
  "Value: {}": "Valeur : {}",
  "The last point of the cursor. Click: copy its coordinates": "Le dernier point du curseur. Clic : copier ses coordonnées",
  "The scale of the active view at its center": "L'échelle de la vue active en son centre",
- "Color maps: import, edit, library": "Palettes : importer, modifier, bibliothèque"
+ "Color maps: import, edit, library": "Palettes : importer, modifier, bibliothèque",
+ "Globe: tilt the camera down": "Globe : incliner la caméra vers le bas",
+ "Globe: tilt the camera up": "Globe : incliner la caméra vers le haut",
+ "Globe: turn the camera to the left": "Globe : tourner la caméra vers la gauche",
+ "Globe: turn the camera to the right": "Globe : tourner la caméra vers la droite",
+ "Globe: north up, camera above": "Globe : nord en haut, caméra au-dessus",
+ "Terrain": "Relief",
+ "The globe view takes its heights from this layer, in meters. The other layers go on the relief. Set the opacity to 0 to hide the colors of this layer": "Le globe prend ses hauteurs de cette couche, en mètres. Les autres couches se posent sur le relief. Mettez l'opacité à 0 pour cacher les couleurs de cette couche",
+ "Exaggeration": "Exagération",
+ "Vertical exaggeration of the relief": "Exagération verticale du relief"
 }

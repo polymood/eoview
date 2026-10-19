@@ -323,6 +323,10 @@ pub struct MapLayer {
     pub invert: bool,
     pub opacity: f32,
     pub visible: bool,
+    /// The globe view takes its terrain from this layer (the first band, in meters), with this vertical
+    /// exaggeration (DESIGN section 14).
+    pub terrain: bool,
+    pub exag: f32,
     /// Layers of the used channels, when all are ready.
     pub inputs: Vec<Arc<Layer>>,
     /// Stretch again when the inputs are ready.
@@ -381,6 +385,8 @@ impl MapLayer {
             stops: crate::colormaps::stops(0),
             invert: false,
             opacity: 1.0,
+            terrain: false,
+            exag: 1.0,
             visible: true,
             inputs: vec![],
             auto_pending: true,
@@ -808,6 +814,10 @@ impl MapLayer {
     }
 }
 
+fn one() -> f32 {
+    1.0
+}
+
 /// Layer settings in a workspace file. No data and no credentials.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayerSave {
@@ -824,6 +834,11 @@ pub struct LayerSave {
     pub invert: bool,
     pub opacity: f32,
     pub visible: bool,
+    /// The terrain of the globe view, and its vertical exaggeration.
+    #[serde(default)]
+    pub terrain: bool,
+    #[serde(default = "one")]
+    pub exag: f32,
     /// A series of products: the path and the time of each step. Empty: one product.
     #[serde(default)]
     pub series: Vec<(String, Option<f64>)>,
@@ -878,6 +893,8 @@ impl MapLayer {
             invert: self.invert,
             opacity: self.opacity,
             visible: self.visible,
+            terrain: self.terrain,
+            exag: self.exag,
             series: self.steps.iter().filter(|s| !s.path.is_empty()).map(|s| (eo_core::redact_url(&s.path), s.t.is_finite().then_some(s.t))).collect(),
             step: self.step,
             wind: Some([self.fill, self.arrows, self.particles]),
@@ -902,6 +919,7 @@ impl MapLayer {
         self.invert = s.invert;
         self.opacity = s.opacity;
         self.visible = s.visible;
+        (self.terrain, self.exag) = (s.terrain, s.exag);
         if !s.series.is_empty() {
             self.set_series(s.series.iter().map(|(p, t)| (p.clone(), t.unwrap_or(f64::NAN))).collect());
         }

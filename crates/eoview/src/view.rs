@@ -7,14 +7,21 @@ use eo_render::{GLOBE_F as F, Gpu, Inst, LayerUniforms, View2d, WGS84_E2 as E2};
 use egui::Rect;
 use std::sync::Arc;
 
+/// The input with the terrain and the uniforms of its pass into the height texture (`View::layer_uniforms`).
+pub type TerrainPass = Option<(usize, LayerUniforms)>;
+
+/// Subdivisions of each side of a tile on a globe with terrain.
+const TERRAIN_MESH: u32 = 32;
+
 pub struct Input {
     pub layer: Arc<Layer>,
     pub warp: Option<(Arc<Warp>, u64)>,
 }
 
-/// Camera of a globe view: above the point (lon0, lat0) of the ellipsoid, at the distance `dist` from the
-/// surface, looking down, north up. Unit of length: the equatorial radius. `w`, `h`: view size in pixels.
-/// The layer shader of `eo_render` has the same projection.
+/// Camera of a globe view: it looks at the point (lon0, lat0) of the ellipsoid from the distance `dist`,
+/// tilted from the vertical by `tilt`, and the top of the view goes to the direction `heading` (clockwise
+/// from north). Tilt 0 and heading 0: above the point, looking down, north up. Unit of length: the
+/// equatorial radius. `w`, `h`: view size in pixels. The layer shader of `eo_render` has the same camera.
 #[derive(Clone, Copy)]
 pub struct Globe {
     lon0: f64,
@@ -22,65 +29,138 @@ pub struct Globe {
     pub dist: f64,
     w: f64,
     h: f64,
+    /// Radians.
+    pub tilt: f64,
+    pub heading: f64,
 }
 
+/// A vector in the frame east, north, up of the view center point.
+type V3 = [f64; 3];
+
+fn dot(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Maximum tilt in degrees.
+pub const MAX_TILT: f64 = 80.0;
+
 impl Globe {
+    /// The camera in the frame east, north, up of the view center point (the origin): the eye, and the
+    /// directions of the right of the view, the top of the view and the look (forward).
+    pub fn frame(&self) -> (V3, V3, V3, V3) {
+        let ((st, ct), (sh, ch)) = (self.tilt.sin_cos(), self.heading.sin_cos());
+        ([-st * sh * self.dist, -st * ch * self.dist, ct * self.dist], [ch, -sh, 0.0], [ct * sh, ct * ch, st], [st * sh, st * ch, -ct])
+    }
+
+    /// The uniform of the layer shader: sin and cos of the tilt, sin and cos of the heading.
+    pub fn cam(&self) -> [f32; 4] {
+        let ((st, ct), (sh, ch)) = (self.tilt.sin_cos(), self.heading.sin_cos());
+        [st as f32, ct as f32, sh as f32, ch as f32]
+    }
+
+    /// Near plane of the camera (reversed Z, infinite far plane).
+    pub fn near(&self) -> f64 {
+        0.02 * self.dist
+    }
+
     /// Earth-centered position of (longitude - lon0, latitude) in radians, and the normal of the ellipsoid.
-    fn ecef(dlon: f64, lat: f64) -> ([f64; 3], [f64; 3]) {
-        let (s, c) = lat.sin_cos();
-        let n = 1.0 / (1.0 - E2 * s * s).sqrt();
-        let nm = [c * dlon.cos(), c * dlon.sin(), s];
-        ([n * nm[0], n * nm[1], n * (1.0 - E2) * s], nm)
+    fn enu(&self, lon: f64, lat: f64) -> (V3, V3) {
+        eo_render::globe_enu(self.lat0.to_radians(), [(lon - self.lon0).to_radians(), lat.to_radians() - self.lat0.to_radians()])
+    }
+
+    /// View position (pixels from the top-left corner) of a point of the frame east, north, up. None:
+    /// the point is behind the camera.
+    pub fn project_enu(&self, q: V3) -> Option<[f64; 2]> {
+        let (eye, right, up, fwd) = self.frame();
+        let v = [q[0] - eye[0], q[1] - eye[1], q[2] - eye[2]];
+        let z = dot(v, fwd);
+        (z > 0.0).then(|| [self.w / 2.0 + dot(v, right) * F / z * self.h / 2.0, self.h / 2.0 - dot(v, up) * F / z * self.h / 2.0])
     }
 
     /// View position (pixels from the top-left corner) of a longitude and latitude in degrees. None: the
-    /// point is on the far side of the globe.
+    /// point is on the far side of the globe, or behind the camera.
     pub fn project(&self, lon: f64, lat: f64) -> Option<[f64; 2]> {
-        let (s0, c0) = self.lat0.to_radians().sin_cos();
-        let (p, nm) = Globe::ecef((lon - self.lon0).to_radians(), lat.to_radians());
-        let (p0, _) = Globe::ecef(0.0, self.lat0.to_radians());
-        let q = [p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]];
-        let (e, n, u) = (q[1], c0 * q[2] - s0 * q[0], c0 * q[0] + s0 * q[2]);
-        let eye = [p0[0] + c0 * self.dist, p0[1], p0[2] + s0 * self.dist];
-        let facing = nm[0] * (eye[0] - p[0]) + nm[1] * (eye[1] - p[1]) + nm[2] * (eye[2] - p[2]);
-        let z = self.dist - u;
-        (facing > 0.0).then(|| [self.w / 2.0 + e * F / z * self.h / 2.0, self.h / 2.0 - n * F / z * self.h / 2.0])
+        let (q, nm) = self.enu(lon, lat);
+        let eye = self.frame().0;
+        let facing = dot(nm, [eye[0] - q[0], eye[1] - q[1], eye[2] - q[2]]);
+        if facing <= 0.0 {
+            return None;
+        }
+        self.project_enu(q)
     }
 
-    /// Longitude and latitude in degrees at a view position. None: the position is not on the globe.
+    /// Longitude and latitude in degrees at a view position (the ellipsoid, without terrain). None: the
+    /// position is not on the globe.
     pub fn unproject(&self, p: [f64; 2]) -> Option<[f64; 2]> {
         let (s0, c0) = self.lat0.to_radians().sin_cos();
-        let (p0, _) = Globe::ecef(0.0, self.lat0.to_radians());
-        // Ray of the pixel in the frame east, north, up, then in Earth-centered coordinates.
-        let (de, dn, du) = ((p[0] - self.w / 2.0) / (F * self.h / 2.0), (self.h / 2.0 - p[1]) / (F * self.h / 2.0), -1.0);
-        let d = [-s0 * dn + c0 * du, de, c0 * dn + s0 * du];
-        let o = [p0[0] + c0 * self.dist, p0[1], p0[2] + s0 * self.dist];
+        let (eye, right, up, fwd) = self.frame();
+        // Ray of the pixel in the frame east, north, up.
+        let (x, y) = ((p[0] - self.w / 2.0) / (F * self.h / 2.0), (self.h / 2.0 - p[1]) / (F * self.h / 2.0));
+        let r: V3 = std::array::from_fn(|i| x * right[i] + y * up[i] + fwd[i]);
+        // In Earth-centered coordinates, from the view center point p0.
+        let ecef = |v: V3| [-s0 * v[1] + c0 * v[2], v[0], c0 * v[1] + s0 * v[2]];
+        let n0 = 1.0 / (1.0 - E2 * s0 * s0).sqrt();
+        let p0 = [n0 * c0, 0.0, n0 * (1.0 - E2) * s0];
+        let (d, e) = (ecef(r), ecef(eye));
+        let o = [p0[0] + e[0], p0[1] + e[1], p0[2] + e[2]];
         // With z divided by the polar radius, the ellipsoid is the unit sphere.
         let k = 1.0 / (1.0 - E2).sqrt();
         let (o2, d2) = ([o[0], o[1], o[2] * k], [d[0], d[1], d[2] * k]);
-        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let (a, b, c) = (dot(d2, d2), 2.0 * dot(o2, d2), dot(o2, o2) - 1.0);
         let disc = b * b - 4.0 * a * c;
         if disc < 0.0 {
             return None;
         }
         let t = (-b - disc.sqrt()) / (2.0 * a);
+        if t < 0.0 {
+            return None;
+        }
         let x = [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]];
         let lat = x[2].atan2((1.0 - E2) * x[0].hypot(x[1]));
         Some([self.lon0 + x[1].atan2(x[0]).to_degrees(), lat.to_degrees()])
     }
 
     /// Radius in degrees of the part of the globe that the view can show (the horizon, or the view corners).
+    /// A tilted camera sees farther: the radius grows as 1 / cos(tilt), up to the horizon.
+    // ponytail: not the exact footprint of the tilted view. The footprint is a larger disc, and the levels
+    // of the tiles come from the scale at the view center (see `View::draws`).
     pub fn cap(&self) -> f64 {
         let d = 1.0 + self.dist;
         let corner = ((1.0 + (self.w / self.h).powi(2)).sqrt() / F).atan();
-        if d * corner.sin() >= 1.0 { (1.0 / d).acos().to_degrees() } else { ((d * corner.sin()).asin() - corner).to_degrees() }
+        let horizon = (1.0 / d).acos().to_degrees();
+        let flat = if d * corner.sin() >= 1.0 { horizon } else { ((d * corner.sin()).asin() - corner).to_degrees() };
+        (flat / self.tilt.cos().max(0.25)).min(horizon)
     }
 
-    /// Radius of the globe in the view, in pixels.
-    pub fn radius_px(&self) -> f64 {
-        let s = 1.0 / (1.0 + self.dist);
-        s / (1.0 - s * s).sqrt() * F * self.h / 2.0
+    /// Outline of the globe in the view: the horizon of the sphere, as a polygon of view positions. The
+    /// part behind the camera is left out.
+    pub fn horizon(&self, scale: f64) -> Vec<[f64; 2]> {
+        // The Earth center in the frame of the view center point, and the eye. The horizon is a circle of
+        // the sphere (radius `scale` times that of the Earth) in the plane that is 1 / d from the center
+        // toward the eye, with d the distance of the eye from the center.
+        let (s0, c0) = self.lat0.to_radians().sin_cos();
+        let n0 = 1.0 / (1.0 - E2 * s0 * s0).sqrt();
+        let to_enu = |p: V3| [p[1], -s0 * p[0] + c0 * p[2], c0 * p[0] + s0 * p[2]];
+        let c = to_enu([-n0 * c0, 0.0, -n0 * (1.0 - E2) * s0]);
+        let eye = self.frame().0;
+        let ax = [eye[0] - c[0], eye[1] - c[1], eye[2] - c[2]];
+        let d = dot(ax, ax).sqrt();
+        let ax = ax.map(|v| v / d);
+        let (a, b) = {
+            let t = if ax[2].abs() < 0.9 { [0.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0] };
+            let a = [ax[1] * t[2] - ax[2] * t[1], ax[2] * t[0] - ax[0] * t[2], ax[0] * t[1] - ax[1] * t[0]];
+            let l = dot(a, a).sqrt();
+            let a = a.map(|v| v / l);
+            (a, [ax[1] * a[2] - ax[2] * a[1], ax[2] * a[0] - ax[0] * a[2], ax[0] * a[1] - ax[1] * a[0]])
+        };
+        let (mid, rad) = (scale / d, scale * (1.0 - 1.0 / (d * d)).max(0.0).sqrt());
+        (0..96)
+            .filter_map(|i| {
+                let (s, co) = (i as f64 * std::f64::consts::TAU / 96.0).sin_cos();
+                let q: V3 = std::array::from_fn(|k| c[k] + ax[k] * mid + (a[k] * co + b[k] * s) * rad);
+                self.project_enu(q)
+            })
+            .collect()
     }
 }
 
@@ -106,6 +186,13 @@ pub struct View {
     /// Globe view: the display CRS is EPSG:4326, `center` is the point below the camera, and `scale` is
     /// the scale at this point.
     pub globe: bool,
+    /// Globe view: the tilt of the camera from the vertical (0 to `MAX_TILT`) and the heading (the direction
+    /// of the top of the view, clockwise from north), in degrees. A 2D view ignores them.
+    pub tilt: f64,
+    pub heading: f64,
+    /// Globe view: the layer (its first input) that has the heights of the terrain, and the vertical
+    /// exaggeration. The caller sets it before `draws`.
+    pub terrain: Option<(u64, f32)>,
     /// Points mode: a colored point at the center of each pixel of the data, when the pixels are large on
     /// the screen (DESIGN section 16.5b).
     pub points: bool,
@@ -134,6 +221,9 @@ impl View {
             px: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1.0, 1.0)),
             fit: false,
             globe: false,
+            tilt: 0.0,
+            heading: 0.0,
+            terrain: None,
             points: false,
             inputs: vec![],
             ahead: vec![],
@@ -151,7 +241,29 @@ impl View {
     pub fn globe_cam(&self) -> Globe {
         let (w, h) = (self.px.width().max(1.0) as f64, self.px.height().max(1.0) as f64);
         // `scale` is pixels for each degree: one radian of arc at the center is one unit of length.
-        Globe { lon0: self.center[0], lat0: self.center[1], dist: F * h / (2.0 * self.scale * 180.0 / std::f64::consts::PI), w, h }
+        Globe {
+            lon0: self.center[0],
+            lat0: self.center[1],
+            dist: F * h / (2.0 * self.scale * 180.0 / std::f64::consts::PI),
+            w,
+            h,
+            tilt: self.tilt.to_radians(),
+            heading: self.heading.to_radians(),
+        }
+    }
+
+    /// Turn the camera of a globe view by `dh` degrees of heading and tilt it by `dt` degrees.
+    pub fn orbit(&mut self, dh: f64, dt: f64) {
+        (self.heading, self.tilt) = (self.heading + dh, self.tilt + dt);
+        self.clamp_globe();
+    }
+
+    /// Terrain of the globe: the window of the height texture, as (center in degrees from the view center,
+    /// width in degrees). It is the visible part of the globe, a little larger.
+    pub fn height_window(&self) -> ([f64; 2], f64) {
+        let r = self.rect();
+        let span = ((r[2] - r[0]).max(r[3] - r[1]) * 1.05).max(1e-9);
+        ([(r[0] + r[2]) / 2.0 - self.center[0], (r[1] + r[3]) / 2.0 - self.center[1]], span)
     }
 
     /// Keep the camera of a globe view in its limits: the latitude, the longitude in -180 to 180, and a
@@ -159,6 +271,8 @@ impl View {
     pub fn clamp_globe(&mut self) {
         if self.globe {
             self.center = [(self.center[0] + 180.0).rem_euclid(360.0) - 180.0, self.center[1].clamp(-89.9, 89.9)];
+            self.tilt = self.tilt.clamp(0.0, MAX_TILT);
+            self.heading = (self.heading + 180.0).rem_euclid(360.0) - 180.0;
             self.scale = self.scale.max(F * self.px.height().max(1.0) as f64 * std::f64::consts::PI / (360.0 * 2.0));
         }
     }
@@ -223,7 +337,7 @@ impl View {
     /// next time steps (prefetch), at the level of the view only.
     /// Return (tiles of the visible step are missing, the list of missing tiles changed).
     pub fn draws(&mut self, gpu: &mut Gpu, engine: &Engine) -> (bool, bool) {
-        let view = self.rect();
+        let (view, tl) = (self.rect(), self.tilt_lim());
         let full = self.full_res.then(|| gpu.capacity());
         let Some(vg) = &mut self.gpu else { return (false, false) };
         while vg.inputs.len() < self.inputs.len() {
@@ -255,7 +369,7 @@ impl View {
             // tiles of the copies are in the view, and they do not move.
             let place = if self.globe { 0.0 } else { shift };
             let n = l.levels.len();
-            let lim = 1.0 / (self.scale * warp.px_size());
+            let lim = tl / (self.scale * warp.px_size());
             let target = level(l, lim, pb, full);
             self.levels[k] = target;
             // Level-0 rectangles of the tiles of the target level that are not complete on the GPU.
@@ -333,7 +447,7 @@ impl View {
             let (l, Some((warp, _))) = (&a.input.layer, &a.input.warp) else { continue };
             let before = self.want.len();
             if let Some(pb) = warp.pixel_bbox(view) {
-                let lim = 1.0 / (self.scale * warp.px_size());
+                let lim = tl / (self.scale * warp.px_size());
                 let d = level(l, lim, pb, full);
                 let (tx0, ty0, tx1, ty1) = tile_range(&l.levels[d], pb);
                 for ty in ty0..ty1 {
@@ -355,6 +469,13 @@ impl View {
             engine.want(self.client, self.want.clone());
         }
         (missing, changed)
+    }
+
+    /// Factor of the level-0 pixels for each screen pixel of a tilted globe: the view sees a larger part of
+    /// the globe (`Globe::cap`), and its far part is small on the screen. The levels are coarser by
+    /// the square root of the growth of the radius, so that the number of tiles grows less.
+    fn tilt_lim(&self) -> f64 {
+        if self.globe { 1.0 / self.tilt.to_radians().cos().max(0.25).sqrt() } else { 1.0 }
     }
 
     /// The view is not visible: cancel its tile requests.
@@ -379,36 +500,93 @@ impl View {
         egui::pos2(rect.center().x + ((d[0] - self.center[0]) * k) as f32, rect.center().y - ((d[1] - self.center[1]) * k) as f32)
     }
 
-    /// Uniforms of each input for the layer passes.
-    pub fn layer_uniforms(&self) -> Vec<(LayerUniforms, bool)> {
+    /// Uniforms of each input for the layer passes. Second result: the input that has the terrain, and the
+    /// uniforms of its pass into the height texture.
+    pub fn layer_uniforms(&self) -> (Vec<(LayerUniforms, bool)>, TerrainPass) {
         let (w, h) = (self.px.width(), self.px.height());
-        self.inputs
+        let cam = self.globe_cam();
+        // The frame of the globe has the latitude of the view center as the shader gets it (f32): the
+        // positions and the frame agree, and the view does not jitter in a close zoom.
+        let center = [self.center[0], (self.center[1].to_radians() as f32 as f64).to_degrees()];
+        let (hc, span) = self.height_window();
+        let terrain = self.terrain.filter(|_| self.globe).and_then(|(id, e)| self.inputs.iter().position(|i| i.layer.id == id && i.warp.is_some()).map(|k| (k, e)));
+        // The heights: meters = texel * ha + hb, from the terrain input (8-bit texels are 0 to 255 in its target).
+        let th = terrain.map(|(k, _)| {
+            let l = &self.inputs[k].layer;
+            let ((a, b), raw) = (l.texel_to_phys(), if l.enc.u8 { 255.0 } else { 1.0 });
+            (a / raw, b)
+        });
+        let ins: Vec<(LayerUniforms, bool)> = self
+            .inputs
             .iter()
             .map(|i| {
                 let l = &i.layer;
                 let ((a, b), fill) = (l.texel_to_phys(), l.fill_texel());
                 let (lw, lh) = l.size();
                 let u = match &i.warp {
-                    Some((wp, _)) => LayerUniforms {
-                        off: [(wp.origin[0] - self.center[0]) as f32, (wp.origin[1] - self.center[1]) as f32],
-                        scale: self.scale as f32,
-                        n: if self.globe { eo_render::GLOBE_MESH } else { eo_render::mesh(wp.nx == 2) },
-                        view: [w, h],
-                        a,
-                        b,
-                        wsize: [lw as f32, lh as f32],
-                        fill: fill.unwrap_or(-1.0),
-                        // 16: the display is in longitude and latitude (2D or globe).
-                        flags: (fill.is_some() as u32) << 2 | (self.globe as u32) << 3 | ((self.space == Some(4326) || self.globe) as u32) << 4 | (self.points as u32) << 5,
-                        grid: [wp.nx as u32, wp.ny as u32],
-                        lat0: self.center[1].to_radians() as f32,
-                        dist: self.globe_cam().dist as f32,
-                    },
+                    Some((wp, _)) => {
+                        // The anchor: the node of the warp grid nearest to the view center (a globe). The
+                        // shader subtracts it from the positions, and `off` is it minus the view center:
+                        // both are small near the view center.
+                        let node = |a: [u32; 2]| wp.pts.get(a[1] as usize * wp.nx + a[0] as usize).filter(|p| p[0].is_finite()).map(|p| [p[0] as f32 as f64, p[1] as f32 as f64]);
+                        let anchor = wp
+                            .inverse(center[0], center[1])
+                            .map(|(x, y)| [(x / wp.w * (wp.nx - 1) as f64).round() as u32, (y / wp.h * (wp.ny - 1) as f64).round() as u32])
+                            .filter(|a| self.globe && a[0] < wp.nx as u32 && a[1] < wp.ny as u32 && node(*a).is_some())
+                            .unwrap_or([0, 0]);
+                        let nd = node(anchor).unwrap_or([0.0; 2]);
+                        let mut u = LayerUniforms {
+                            off: [(wp.origin[0] + nd[0] - center[0]) as f32, (wp.origin[1] + nd[1] - center[1]) as f32],
+                            scale: self.scale as f32,
+                            n: if self.globe { if terrain.is_some() { TERRAIN_MESH } else { eo_render::GLOBE_MESH } } else { eo_render::mesh(wp.nx == 2) },
+                            view: [w, h],
+                            a,
+                            b,
+                            wsize: [lw as f32, lh as f32],
+                            fill: fill.unwrap_or(-1.0),
+                            // 16: the display is in longitude and latitude (2D or globe). 64: terrain.
+                            flags: (fill.is_some() as u32) << 2 | (self.globe as u32) << 3 | ((self.space == Some(4326) || self.globe) as u32) << 4 | (self.points as u32) << 5 | (terrain.is_some() as u32) << 6,
+                            grid: [wp.nx as u32, wp.ny as u32],
+                            lat0: center[1].to_radians() as f32,
+                            dist: cam.dist as f32,
+                            cam: cam.cam(),
+                            near: cam.near() as f32,
+                            ..Default::default()
+                        };
+                        u.anchor = anchor;
+                        if let (Some((_, e)), Some((ha, hb))) = (terrain, th) {
+                            (u.hk, u.hc, u.hs, u.ha, u.hb) = (e / 6378137.0, [hc[0] as f32, hc[1] as f32], [(1.0 / span) as f32; 2], ha, hb);
+                        }
+                        u
+                    }
                     None => LayerUniforms::default(),
                 };
                 (u, l.enc.u8)
             })
-            .collect()
+            .collect();
+        // The pass of the terrain: the input in longitude and latitude (flag 16, not 8), over the window. The
+        // anchor is the node 0 of the grid.
+        let pass = terrain.and_then(|(k, _)| {
+            let (wp, _) = self.inputs[k].warp.as_ref()?;
+            let (u, u8) = &ins[k];
+            let n0 = wp.pts.first().filter(|p| p[0].is_finite()).map_or([0.0; 2], |p| [p[0] as f32 as f64, p[1] as f32 as f64]);
+            let c = [self.center[0] + hc[0], self.center[1] + hc[1]];
+            Some((
+                k,
+                LayerUniforms {
+                    off: [(wp.origin[0] + n0[0] - c[0]) as f32, (wp.origin[1] + n0[1] - c[1]) as f32],
+                    scale: (eo_render::HEIGHT as f64 / span) as f32,
+                    n: eo_render::mesh(wp.nx == 2),
+                    view: [eo_render::HEIGHT as f32; 2],
+                    a: if *u8 { 255.0 } else { 1.0 },
+                    b: 0.0,
+                    flags: u.flags & 4 | 16,
+                    anchor: [0, 0],
+                    ..*u
+                },
+            ))
+        });
+        (ins, pass)
     }
 }
 
@@ -475,5 +653,54 @@ mod tests {
         assert!(g.unproject([0.0, 0.0]).is_none() || g.cap() < 90.0);
         let r = v.rect();
         assert!(r[0] < 12.0 && r[2] > 12.0 && r[1] < 45.0 && r[3] > 45.0);
+    }
+
+    /// The camera frame is orthonormal, the view center is at the center of the view for any tilt and
+    /// heading, and a tilted camera keeps the position and the inverse.
+    #[test]
+    fn globe_tilt_and_heading() {
+        let mut v = View::new(1);
+        v.globe = true;
+        v.px = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        (v.center, v.scale) = ([12.0, 45.0], 8.0);
+        for (tilt, heading) in [(0.0, 0.0), (60.0, 0.0), (45.0, 90.0), (70.0, -150.0)] {
+            (v.tilt, v.heading) = (tilt, heading);
+            let g = v.globe_cam();
+            let (eye, r, u, f) = g.frame();
+            let n = |a: V3| dot(a, a);
+            assert!((n(r) - 1.0).abs() < 1e-12 && (n(u) - 1.0).abs() < 1e-12 && (n(f) - 1.0).abs() < 1e-12);
+            assert!(dot(r, u).abs() < 1e-12 && dot(r, f).abs() < 1e-12 && dot(u, f).abs() < 1e-12);
+            // The eye looks at the view center point (the origin) from `dist`.
+            assert!((n(eye).sqrt() - g.dist).abs() < 1e-12 && dot(eye, f) < 0.0);
+            let c = g.project(12.0, 45.0).unwrap();
+            assert!((c[0] - 600.0).abs() < 1e-6 && (c[1] - 400.0).abs() < 1e-6, "{tilt} {heading}: {c:?}");
+            for (lon, lat) in [(12.2, 45.1), (11.8, 44.9), (12.0, 45.3)] {
+                let p = g.project(lon, lat).unwrap();
+                let b = g.unproject(p).unwrap();
+                assert!((b[0] - lon).abs() < 1e-7 && (b[1] - lat).abs() < 1e-7, "{tilt} {heading}: {b:?}");
+            }
+        }
+        // Heading 90: the top of the view is the east.
+        (v.tilt, v.heading) = (0.0, 90.0);
+        let g = v.globe_cam();
+        let (c, e) = (g.project(12.0, 45.0).unwrap(), g.project(12.1, 45.0).unwrap());
+        assert!(e[1] < c[1] && (e[0] - c[0]).abs() < 0.01, "{c:?} {e:?}");
+        // Tilt: the north is farther, so it is higher in the view and smaller.
+        (v.tilt, v.heading) = (60.0, 0.0);
+        let g = v.globe_cam();
+        let (c, n, s) = (g.project(12.0, 45.0).unwrap(), g.project(12.0, 45.1).unwrap(), g.project(12.0, 44.9).unwrap());
+        assert!(n[1] < c[1] && s[1] > c[1] && (c[1] - n[1]) < (s[1] - c[1]));
+        // The window of the height texture holds the visible part of the globe, with a margin.
+        v.scale = 100.0;
+        let (hc, span) = v.height_window();
+        let r = v.rect();
+        assert!(span >= (r[2] - r[0]).max(r[3] - r[1]) && hc[0].abs() < 1e-9 && span < 1.06 * (r[2] - r[0]).max(r[3] - r[1]));
+        // The limits of the camera.
+        v.orbit(400.0, 100.0);
+        assert!(v.tilt == MAX_TILT && v.heading.abs() <= 180.0);
+        // The horizon is a closed curve around the view center when the camera looks down.
+        (v.tilt, v.heading) = (0.0, 0.0);
+        v.scale = 0.5;
+        assert_eq!(v.globe_cam().horizon(1.0).len(), 96);
     }
 }
