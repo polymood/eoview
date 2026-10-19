@@ -71,6 +71,10 @@ pub enum Cmd {
     Play,
     /// Multiply the scale of the view.
     Zoom(f64),
+    /// Globe: turn the camera by this many degrees of heading and tilt it by this many degrees.
+    Orbit(f64, f64),
+    /// Globe: tilt 0 and heading 0.
+    NorthUp,
     /// The next or the previous index of the first dimension that is not an image axis (DESIGN section 16).
     DimIndex(i32),
     /// Show the values of a scalar or a 1D variable of the selected layer in the values window.
@@ -230,6 +234,11 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Zoom out"), "-", Cmd::Zoom(1.0 / 1.5)),
         (t("Copy view extent (west, south, east, north)"), "Ctrl+Shift+C", Cmd::CopyExtent),
         (t("3D globe: on or off"), "G", Cmd::Globe),
+        (t("Globe: tilt the camera down"), "Shift+Up", Cmd::Orbit(0.0, 5.0)),
+        (t("Globe: tilt the camera up"), "Shift+Down", Cmd::Orbit(0.0, -5.0)),
+        (t("Globe: turn the camera to the left"), "Shift+Left", Cmd::Orbit(-5.0, 0.0)),
+        (t("Globe: turn the camera to the right"), "Shift+Right", Cmd::Orbit(5.0, 0.0)),
+        (t("Globe: north up, camera above"), "Shift+N", Cmd::NorthUp),
         (t("Smooth pixels: on or off"), "", Cmd::Smooth),
         (t("Pixel grid: on or off"), "X", Cmd::PixelGrid),
         (t("Points at the centers of the pixels: on or off"), "Shift+X", Cmd::Points),
@@ -623,12 +632,20 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         if let Some(c) = resp.interact_pointer_pos().and_then(|q| disp(p, q)) {
             edit = Some((k, v, c, [d.x as f64 / (p.v.scale * kx), -d.y as f64 / p.v.scale]));
         }
+    } else if p.v.globe && (resp.dragged_by(egui::PointerButton::Secondary) || resp.dragged_by(egui::PointerButton::Middle)) {
+        // Globe: a drag with the right or the middle button turns the camera (heading) and tilts it.
+        let d = resp.drag_delta();
+        p.v.orbit(-d.x as f64 * 0.3, -d.y as f64 * 0.3);
+        p.moved = true;
     } else if resp.dragged() {
         let d = resp.drag_delta() * ppp;
-        // Globe: a degree of longitude is shorter away from the equator.
+        // Globe: a degree of longitude is shorter away from the equator. The view turns with the heading,
+        // and a tilted view shows the vertical distances shorter (the ground follows the pointer).
         let kx = if p.v.globe { p.v.center[1].to_radians().cos().max(0.05) } else { 1.0 };
-        p.v.center[0] -= d.x as f64 / (p.v.scale * kx);
-        p.v.center[1] += d.y as f64 / p.v.scale;
+        let (dx, dy) = (d.x as f64, d.y as f64 / if p.v.globe { p.v.tilt.to_radians().cos().max(0.2) } else { 1.0 });
+        let (sh, ch) = if p.v.globe { p.v.heading.to_radians().sin_cos() } else { (0.0, 1.0) };
+        p.v.center[0] -= (dx * ch - dy * sh) / (p.v.scale * kx);
+        p.v.center[1] += (dx * sh + dy * ch) / p.v.scale;
         p.v.clamp_globe();
         p.moved = true;
     }
@@ -1366,6 +1383,11 @@ impl App {
             (sh, Key::C, Cmd::CopyExtent),
             (none, Key::F1, Cmd::Help),
             (none, Key::G, Cmd::Globe),
+            (Modifiers::SHIFT, Key::ArrowUp, Cmd::Orbit(0.0, 5.0)),
+            (Modifiers::SHIFT, Key::ArrowDown, Cmd::Orbit(0.0, -5.0)),
+            (Modifiers::SHIFT, Key::ArrowLeft, Cmd::Orbit(-5.0, 0.0)),
+            (Modifiers::SHIFT, Key::ArrowRight, Cmd::Orbit(5.0, 0.0)),
+            (Modifiers::SHIFT, Key::N, Cmd::NorthUp),
             (none, Key::Plus, Cmd::Zoom(1.5)),
             (none, Key::Equals, Cmd::Zoom(1.5)),
             (none, Key::Minus, Cmd::Zoom(1.0 / 1.5)),
@@ -1535,6 +1557,18 @@ impl App {
                 };
                 self.ctx.copy_text(text);
             }
+            Cmd::Orbit(dh, dt) => {
+                if let Some(p) = self.pane_mut(id).filter(|p| p.v.globe) {
+                    p.v.orbit(dh, dt);
+                    p.moved = true;
+                }
+            }
+            Cmd::NorthUp => {
+                if let Some(p) = self.pane_mut(id) {
+                    (p.v.tilt, p.v.heading) = (0.0, 0.0);
+                    p.moved = true;
+                }
+            }
             Cmd::Zoom(f) => {
                 if let Some(p) = self.pane_mut(id) {
                     p.v.scale = (p.v.scale * f).clamp(1e-12, 1e12);
@@ -1610,7 +1644,7 @@ impl App {
                         let Some(src) = p.layers.get(sel).map(|l| l.save()) else { return };
                         for l in p.layers.iter_mut().enumerate().filter(|(k, _)| *k != sel).map(|x| x.1) {
                             let mut s = src.clone();
-                            (s.series, s.step, s.opacity, s.visible) = (vec![], l.step, l.opacity, l.visible);
+                            (s.series, s.step, s.opacity, s.visible, s.terrain, s.exag) = (vec![], l.step, l.opacity, l.visible, l.terrain, l.exag);
                             l.apply(&s);
                         }
                         for k in (0..p.layers.len()).filter(|&k| k != sel) {
@@ -1891,6 +1925,7 @@ impl App {
                 entry(ui, cmds, id, t("Zoom in"), "+", Cmd::Zoom(1.5));
                 entry(ui, cmds, id, t("Zoom out"), "-", Cmd::Zoom(1.0 / 1.5));
                 check(ui, cmds, id, globe, t("3D globe"), "G", Cmd::Globe);
+                entry(ui, cmds, id, t("Globe: north up, camera above"), "Shift+N", Cmd::NorthUp);
                 ui.menu_button(t("Display CRS"), |ui| {
                     if let Some(e) = own.filter(|_| SPACES.iter().all(|x| x.0 != own)) {
                         check(ui, cmds, id, space == own, &tf("Layer CRS (EPSG:{})", &[&e.to_string()]), "", Cmd::Space(own));
@@ -2635,6 +2670,13 @@ impl App {
                     l.as_is();
                 }
             });
+            // The terrain of the globe view: this layer gives the heights (meters), the other layers go on it.
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut l.terrain, t("Terrain")).on_hover_text(t("The globe view takes its heights from this layer, in meters. The other layers go on the relief. Set the opacity to 0 to hide the colors of this layer"));
+                if l.terrain {
+                    ui.add(egui::Slider::new(&mut l.exag, 1.0..=20.0).text(t("Exaggeration"))).on_hover_text(t("Vertical exaggeration of the relief"));
+                }
+            });
             // A change of the limits by the user: the new layers of the view with the same bands take it.
             if l.st != before && !again {
                 l.auto_st = false;
@@ -2893,13 +2935,15 @@ impl App {
                 globe_backdrop(&p.v, &painter.with_clip_rect(p.rect), p.rect);
             }
             p.v.full_res = self.prefs.full_res;
+            // The terrain of the globe: the first visible layer that is marked as terrain.
+            p.v.terrain = p.layers.iter().find(|l| l.terrain && l.visible).and_then(|l| Some((l.inputs.first()?.id, l.exag)));
             let (miss, changed) = p.v.draws(&mut win.gpu, &self.engine);
             p.missing = miss || p.v.inputs.iter().any(|i| i.warp.is_none());
             missing |= p.missing;
             if changed {
                 ctx.request_repaint();
             }
-            let inputs = p.v.layer_uniforms();
+            let (inputs, terrain_pass) = p.v.layer_uniforms();
             let two = p.specs.len() >= 2;
             let cmp = match p.cmp {
                 Cmp::Swipe if two => Compare::Swipe,
@@ -2968,7 +3012,7 @@ impl App {
                 }
                 draws.push(eo_render::GroupDraw { range: start..end, specs, cmp: gcmp, cu });
             }
-            match vg.paint(&mut win.gpu, &draws, &inputs, p.rect, (p.v.px.width() as u32, p.v.px.height() as u32)) {
+            match vg.paint(&mut win.gpu, &draws, &inputs, terrain_pass, p.rect, (p.v.px.width() as u32, p.v.px.height() as u32)) {
                 // Longitude and latitude in 2D: one world, the GPU does not draw out of -180 to 180 degrees.
                 Ok(Some(cb)) if p.v.space == Some(4326) && !p.v.globe => {
                     let (a, b) = (p.v.to_screen([-180.0, 0.0], p.rect).x, p.v.to_screen([180.0, 0.0], p.rect).x);
@@ -3027,10 +3071,18 @@ impl App {
 
 /// Globe view, below the data: the space, and the globe where no layer has data.
 fn globe_backdrop(v: &crate::view::View, pt: &egui::Painter, r: Rect) {
-    let rad = v.globe_cam().radius_px() as f32 * r.width() / v.px.width().max(1.0);
+    let (g, k) = (v.globe_cam(), r.width() / v.px.width().max(1.0));
+    // The horizon of the globe: a disc if the camera looks down, an ellipse if it is tilted.
+    let poly = |s: f64| -> Vec<Pos2> { g.horizon(s).into_iter().map(|p| r.min + vec2(p[0] as f32, p[1] as f32) * k).collect() };
     pt.rect_filled(r, 0.0, Color32::from_rgb(5, 7, 12));
-    pt.circle_filled(r.center(), rad + 2.0, Color32::from_rgb(52, 84, 128));
-    pt.circle_filled(r.center(), rad, Color32::from_rgb(20, 30, 46));
+    let (rim, body) = (poly(1.004), poly(1.0));
+    pt.add(egui::Shape::convex_polygon(rim, Color32::from_rgb(52, 84, 128), Stroke::NONE));
+    // A part of the horizon behind the camera: the globe fills the view.
+    if body.len() < 96 {
+        pt.rect_filled(r, 0.0, Color32::from_rgb(20, 30, 46));
+    } else {
+        pt.add(egui::Shape::convex_polygon(body, Color32::from_rgb(20, 30, 46), Stroke::NONE));
+    }
 }
 
 /// Globe view, above the data: meridians and parallels. The interval depends on the visible part.

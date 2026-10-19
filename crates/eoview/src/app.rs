@@ -555,6 +555,11 @@ struct PaneSave {
     layers: Vec<LayerSave>,
     #[serde(default)]
     globe: bool,
+    /// Camera of the globe: tilt and heading in degrees.
+    #[serde(default)]
+    tilt: f64,
+    #[serde(default)]
+    heading: f64,
     #[serde(default)]
     smooth: bool,
     #[serde(default)]
@@ -1020,6 +1025,7 @@ impl App {
     fn copy_to(&mut self, id: u32, n: u32) {
         let Some(src) = self.pane(id) else { return };
         let (layers, space, center, scale, link, globe) = (src.layers.clone(), src.v.space, src.v.center, src.v.scale, src.link.max(1), src.v.globe);
+        let tilt = (src.v.tilt, src.v.heading);
         let cmp = (src.cmp, src.swipe, src.vertical, src.blend, src.flicker_hz, src.diff, src.dlo, src.dhi, src.dcmap, src.dinvert);
         let (smooth, overlays, grids, points) = (src.smooth, src.overlays, (src.pixel_grid, src.coord_grid), src.v.points);
         let uids: Vec<u64> = (0..layers.len()).map(|_| self.uid()).collect();
@@ -1028,6 +1034,7 @@ impl App {
         p.layers.iter_mut().zip(uids).for_each(|(l, u)| l.uid = u);
         p.sel = p.layers.len().saturating_sub(1);
         (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe) = (space, center, scale, link, globe);
+        (p.v.tilt, p.v.heading) = tilt;
         (p.cmp, p.swipe, p.vertical, p.blend, p.flicker_hz, p.diff, p.dlo, p.dhi, p.dcmap, p.dinvert) = cmp;
         (p.smooth, p.overlays, (p.pixel_grid, p.coord_grid), p.v.points) = (smooth, overlays, grids, points);
         // The copy asks for the channels that were not ready in the source view: their results go to the
@@ -1861,8 +1868,11 @@ impl App {
             && let Some(cam) = self.cam(d, None)
         {
             let (g, id) = (self.panes[d].link, self.panes[d].id);
+            let (tilt, heading) = (self.panes[d].v.tilt, self.panes[d].v.heading);
             for i in 0..self.panes.len() {
                 if self.panes[i].link == g && self.panes[i].id != id && !self.panes[i].v.fit {
+                    // The tilt and the heading go to the linked views (a 2D view ignores them).
+                    (self.panes[i].v.tilt, self.panes[i].v.heading) = (tilt, heading);
                     if let Some((c, s)) = self.uncam(i, cam) {
                         (self.panes[i].v.center, self.panes[i].v.scale) = (c, s);
                     }
@@ -1944,6 +1954,8 @@ impl App {
                 // not: the script makes them again.
                 layers: p.layers.iter().filter(|l| l.saveable()).map(MapLayer::save).collect(),
                 globe: p.v.globe,
+                tilt: p.v.tilt,
+                heading: p.v.heading,
                 smooth: p.smooth,
                 overlays: p.overlays,
                 pixel_grid: p.pixel_grid,
@@ -2043,6 +2055,7 @@ impl App {
             let mut p = Pane::new(id);
             if let Some(s) = ws_panes.iter().find(|s| s.id == id) {
                 (p.v.space, p.v.center, p.v.scale, p.link, p.v.globe, p.smooth) = (s.space, s.center, s.scale, s.link, s.globe, s.smooth);
+                (p.v.tilt, p.v.heading) = (s.tilt, s.heading);
                 (p.overlays, p.pixel_grid, p.coord_grid, p.colorbar, p.v.points) = (s.overlays, s.pixel_grid, s.coord_grid, !s.no_colorbar, s.points);
                 p.shapes = s.shapes.iter().chain(&s.shape).cloned().collect();
                 crate::tools::name_shapes(&mut p);
@@ -2825,6 +2838,8 @@ mod workspace_tests {
         let p = &mut app.panes[0];
         (p.v.center, p.v.scale, p.cmp, p.link) = ([12.5, -40.0], 3.25, Cmp::Swipe, 2);
         p.layers[1].opacity = 0.5;
+        // The camera of the globe and the terrain are in the file.
+        (p.v.tilt, p.v.heading, p.layers[1].terrain, p.layers[1].exag) = (55.0, -30.0, true, 7.5);
         p.layers[1].path = "https://user:pw@example.com/a.jp2?token=secret".into();
         let path = std::env::temp_dir().join(format!("eoview-test-{}.{WORKSPACE_EXT}", std::process::id()));
         let path = path.to_string_lossy().into_owned();
@@ -2846,6 +2861,7 @@ mod workspace_tests {
         assert_eq!(b.dock.iter_all_tabs().map(|t| *t.1).collect::<Vec<_>>(), tabs);
         let p = &b.panes[0];
         assert_eq!((p.v.center, p.v.scale, p.cmp, p.link), ([12.5, -40.0], 3.25, Cmp::Swipe, 2));
+        assert_eq!((p.v.tilt, p.v.heading, p.layers[1].terrain, p.layers[1].exag), (55.0, -30.0, true, 7.5));
         let mut got: Vec<Vec<LayerSave>> = b.panes.iter().map(|p| p.layers.iter().map(MapLayer::save).collect()).collect();
         got[0][1].path = saved[0][1].path.clone();
         assert_eq!(got, saved);

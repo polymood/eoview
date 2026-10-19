@@ -753,5 +753,14 @@
  "Link the output to an operation.": "Lier la sortie à une opération.",
  "A Python node takes sources, all linked.": "Un nœud Python prend des sources, toutes liées.",
  "The code of a Python node defines def f(...).": "Le code d'un nœud Python définit def f(...).",
- "Python is not available.": "Python n'est pas disponible."
+ "Python is not available.": "Python n'est pas disponible.",
+ "Globe: tilt the camera down": "Globe : incliner la caméra vers le bas",
+ "Globe: tilt the camera up": "Globe : incliner la caméra vers le haut",
+ "Globe: turn the camera to the left": "Globe : tourner la caméra vers la gauche",
+ "Globe: turn the camera to the right": "Globe : tourner la caméra vers la droite",
+ "Globe: north up, camera above": "Globe : nord en haut, caméra au-dessus",
+ "Terrain": "Relief",
+ "The globe view takes its heights from this layer, in meters. The other layers go on the relief. Set the opacity to 0 to hide the colors of this layer": "Le globe prend ses hauteurs de cette couche, en mètres. Les autres couches se posent sur le relief. Mettez l'opacité à 0 pour cacher les couleurs de cette couche",
+ "Exaggeration": "Exagération",
+ "Vertical exaggeration of the relief": "Exagération verticale du relief"
 }

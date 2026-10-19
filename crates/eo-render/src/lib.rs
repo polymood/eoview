@@ -34,17 +34,42 @@ pub const GLOBE_F: f64 = 2.414213562373095;
 /// WGS84: square of the first eccentricity.
 pub const WGS84_E2: f64 = 0.0066943799901413165;
 
+/// Position east, north and up of the point (`rel[0]` longitude and `rel[1]` latitude minus those of the
+/// view center, in radians) from the view center point (latitude `lat0` in radians) on the WGS84 ellipsoid,
+/// in equatorial radii, and the normal of the ellipsoid at the point in the same frame. Half-angle formulas:
+/// no difference of two large numbers. The shader (`globe`) has the same formulas in f32.
+pub fn globe_enu(lat0: f64, rel: [f64; 2]) -> ([f64; 3], [f64; 3]) {
+    let (s0, c0) = lat0.sin_cos();
+    let (s, c) = (lat0 + rel[1]).sin_cos();
+    let (n0, n) = (1.0 / (1.0 - WGS84_E2 * s0 * s0).sqrt(), 1.0 / (1.0 - WGS84_E2 * s * s).sqrt());
+    let hy = (0.5 * rel[1]).sin();
+    let mid = lat0 + 0.5 * rel[1];
+    let (ds, dc) = (2.0 * mid.cos() * hy, -2.0 * mid.sin() * hy);
+    let dn = WGS84_E2 * (s + s0) * ds * n * n * n0 * n0 / (n + n0);
+    let hx = (0.5 * rel[0]).sin();
+    let dx = -2.0 * n * c * hx * hx + n * dc + dn * c0;
+    let dy = n * c * rel[0].sin();
+    let dz = (1.0 - WGS84_E2) * (n * ds + dn * s0);
+    let m = [c * rel[0].cos(), c * rel[0].sin(), s];
+    ([dy, c0 * dz - s0 * dx, c0 * dx + s0 * dz], [m[1], c0 * m[2] - s0 * m[0], c0 * m[0] + s0 * m[2]])
+}
+
 const LAYER_SHADER: &str = r#"
 struct U {
     off: vec2f, scale: f32, n: u32,
     view: vec2f, a: f32, b: f32,
     wsize: vec2f, fill: f32, flags: u32,
     grid: vec2u, lat0: f32, dist: f32,
+    cam: vec4f,
+    anchor: vec2u, near: f32, hk: f32,
+    hc: vec2f, hs: vec2f,
+    ha: f32, hb: f32, pad: vec2f,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var smp: sampler;
 @group(0) @binding(2) var tiles: texture_2d_array<f32>;
 @group(0) @binding(3) var warp: texture_2d<f32>;
+@group(0) @binding(4) var height: texture_2d<f32>;
 
 struct VO {
     @builtin(position) pos: vec4f,
@@ -57,12 +82,17 @@ struct VO {
 const GLOBE_F: f32 = 2.4142135;
 const E2: f32 = 0.00669438;
 
-// Globe view. `rel`: longitude and latitude minus those of the view center, in radians. The camera is
-// above the view center and looks down, north is up. Result: the position east, north and up of the view
-// center point on the WGS84 ellipsoid (unit: the equatorial radius), and a value that is positive if the
-// surface at the point faces the camera (the far side of the globe is not drawn).
-// ponytail: f32 positions give about 0.5 m. Compute the position relative to the camera for more zoom.
-fn globe(rel: vec2f) -> vec4f {
+struct G {
+    q: vec3f,
+    nrm: vec3f,
+};
+
+// Globe view. `rel`: longitude and latitude minus those of the view center, in radians. Result: the
+// position east, north and up of the view center point on the WGS84 ellipsoid (unit: the equatorial
+// radius), and the normal of the ellipsoid in the same frame. The differences use the half-angle
+// formulas: the error is relative to the distance from the view center, not to the radius of the Earth
+// (`globe_enu` has the same formulas in f64, with a test).
+fn globe(rel: vec2f) -> G {
     let s0 = sin(u.lat0);
     let c0 = cos(u.lat0);
     let lat = u.lat0 + rel.y;
@@ -70,13 +100,38 @@ fn globe(rel: vec2f) -> vec4f {
     let c = cos(lat);
     let n0 = 1.0 / sqrt(1.0 - E2 * s0 * s0);
     let n = 1.0 / sqrt(1.0 - E2 * s * s);
-    // Earth-centered coordinates, with the meridian of the view center at longitude 0.
-    let normal = vec3f(c * cos(rel.x), c * sin(rel.x), s);
-    let p = vec3f(n * normal.x, n * normal.y, n * (1.0 - E2) * s);
-    let p0 = vec3f(n0 * c0, 0.0, n0 * (1.0 - E2) * s0);
-    let up = vec3f(c0, 0.0, s0);
-    let q = p - p0;
-    return vec4f(q.y, c0 * q.z - s0 * q.x, dot(up, q), dot(normal, p0 + up * u.dist - p));
+    let hy = sin(0.5 * rel.y);
+    let ds = 2.0 * cos(u.lat0 + 0.5 * rel.y) * hy;
+    let dc = -2.0 * sin(u.lat0 + 0.5 * rel.y) * hy;
+    let dn = E2 * (s + s0) * ds * n * n * n0 * n0 / (n + n0);
+    let hx = sin(0.5 * rel.x);
+    let dx = -2.0 * n * c * hx * hx + n * dc + dn * c0;
+    let dy = n * c * sin(rel.x);
+    let dz = (1.0 - E2) * (n * ds + dn * s0);
+    let m = vec3f(c * cos(rel.x), c * sin(rel.x), s);
+    return G(vec3f(dy, c0 * dz - s0 * dx, c0 * dx + s0 * dz), vec3f(m.y, c0 * m.z - s0 * m.x, c0 * m.x + s0 * m.z));
+}
+
+// Height in meters of the terrain texel i. No data and no tile: 0.
+fn texel_h(i: vec2i) -> f32 {
+    let r = textureLoad(height, i, 0).r;
+    return select(0.0, r * u.ha + u.hb, (bitcast<u32>(r) & 0x7fffffffu) < 0x7f800000u);
+}
+
+// Height in meters of the terrain at `rel` (degrees from the view center): bilinear in the height texture,
+// which covers 1 / hs degrees around the point `hc`, north up. Out of it: 0.
+fn terrain(rel: vec2f) -> f32 {
+    var d = rel - u.hc;
+    d.x = d.x - 360.0 * round(d.x / 360.0);
+    let sz = vec2f(textureDimensions(height));
+    let g = vec2f(0.5 + d.x * u.hs.x, 0.5 - d.y * u.hs.y) * sz - 0.5;
+    if (any(g < vec2f(0.0)) || any(g > sz - 1.0)) {
+        return 0.0;
+    }
+    let i = vec2i(floor(g));
+    let t = g - floor(g);
+    let j = min(i + 1, vec2i(sz) - 1);
+    return mix(mix(texel_h(i), texel_h(vec2i(j.x, i.y)), t.x), mix(texel_h(vec2i(i.x, j.y)), texel_h(j), t.x), t.y);
 }
 
 fn node(i: vec2u) -> vec2f {
@@ -109,11 +164,12 @@ fn near(x: f32, a: f32) -> f32 {
 }
 
 // rect: tile corners in level-0 pixels. The tile is a mesh of n x n quads.
-@vertex fn vs(@builtin(vertex_index) vi: u32, @location(0) rect: vec4f, @location(1) uvl: vec4f) -> VO {
+@vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32, @location(0) rect: vec4f, @location(1) uvl: vec4f) -> VO {
     let q = vi / 6u;
     let k = vi % 6u;
     let corner = array(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0));
     let t = (vec2f(f32(q % u.n), f32(q / u.n)) + corner[k]) / f32(u.n);
+    let uvmax = uvl.xy - vec2f(0.5 / 512.0);
     // uvl.w: the tile is at this distance to the east, in display units (a layer that repeats in longitude).
     var w = warped(mix(rect.xy, rect.zw, t));
     if ((u.flags & 16u) != 0u) {
@@ -128,20 +184,42 @@ fn near(x: f32, a: f32) -> f32 {
         let c = near(warped(mix(rect.xy, rect.zw, (qi + vec2f(0.0, 1.0)) / f32(u.n))).x, a);
         let d = near(warped(mix(rect.xy, rect.zw, (qi + vec2f(1.0, 1.0)) / f32(u.n))).x, a);
         if ((u.flags & 8u) == 0u && max(max(a, b), max(c, d)) - min(min(a, b), min(c, d)) > 180.0) {
-            return VO(vec4f(2.0, 2.0, 0.0, 1.0), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), -1.0);
+            return VO(vec4f(2.0, 2.0, 0.0, 1.0), t * uvl.xy, uvmax, u32(uvl.z), -1.0);
         }
     }
-    w += u.off + vec2f(uvl.w, 0.0);
+    // Position relative to the view center. `off` is the anchor node minus the view center, computed in
+    // f64: near the view center, the two terms are small and f32 keeps their precision (no jitter in a
+    // close view).
+    w = (w - node(u.anchor)) + u.off + vec2f(uvl.w, 0.0);
     if ((u.flags & 8u) != 0u) {
         // A point outside the domain of the projection is not on the globe.
         if (abs(w.x) > 1.0e4 || abs(w.y) > 1.0e4) {
-            return VO(vec4f(0.0, 0.0, 0.0, 1.0), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), -1.0);
+            return VO(vec4f(0.0, 0.0, 0.0, 1.0), t * uvl.xy, uvmax, u32(uvl.z), -1.0);
         }
         let g = globe(w * 0.017453293);
-        return VO(vec4f(g.x * GLOBE_F * u.view.y / u.view.x, g.y * GLOBE_F, 0.0, u.dist - g.z), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), g.w);
+        var p = g.q;
+        // Flag 64: the terrain moves the point along the normal (hk: the exaggeration / equatorial radius).
+        if ((u.flags & 64u) != 0u) {
+            p += g.nrm * (terrain(w) * u.hk);
+        }
+        // The camera: at `dist` from the view center point, tilted from the vertical by the tilt, to the side
+        // opposite to the heading (`Globe::frame`). cam = (sin tilt, cos tilt, sin heading, cos heading).
+        let st = u.cam.x;
+        let ct = u.cam.y;
+        let sh = u.cam.z;
+        let ch = u.cam.w;
+        let eye = vec3f(-st * sh, -st * ch, ct) * u.dist;
+        let v = p - eye;
+        let x = dot(v, vec3f(ch, -sh, 0.0));
+        let y = dot(v, vec3f(ct * sh, ct * ch, st));
+        let z = dot(v, vec3f(st * sh, st * ch, -ct));
+        // Reversed Z (the depth is near / distance, 1 at the near plane and 0 far away). The tiles that
+        // come later in the draw (finer levels) are a little nearer: they win where tiles overlap.
+        let zn = u.near * (1.0 + 2.0e-6 * f32(ii));
+        return VO(vec4f(x * GLOBE_F * u.view.y / u.view.x, y * GLOBE_F, zn, z), t * uvl.xy, uvmax, u32(uvl.z), dot(g.nrm, eye - p));
     }
     let d = w * u.scale / (u.view * 0.5);
-    return VO(vec4f(d.x, d.y, 0.0, 1.0), t * uvl.xy, uvl.xy - vec2f(0.5 / 512.0), u32(uvl.z), 1.0);
+    return VO(vec4f(d.x, d.y, 0.0, 1.0), t * uvl.xy, uvmax, u32(uvl.z), 1.0);
 }
 
 @fragment fn fs(v: VO) -> @location(0) vec4f {
@@ -450,7 +528,8 @@ pub struct CompositeUniforms {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LayerUniforms {
-    /// Warp origin minus view center, in display units.
+    /// Position of the node `anchor` of the warp grid minus the view center, in display units (the caller
+    /// computes it in f64).
     pub off: [f32; 2],
     /// Physical pixels for each display unit.
     pub scale: f32,
@@ -465,12 +544,28 @@ pub struct LayerUniforms {
     pub fill: f32,
     /// 4: u8 fill value is no data. 8: globe view (the display coordinates are longitude and latitude).
     /// 16: the display is in longitude and latitude. 32: points mode (a point at the center of each pixel).
+    /// 64: the globe has terrain (the height texture of the view).
     pub flags: u32,
     pub grid: [u32; 2],
     /// Globe view: latitude of the view center in radians, and distance of the camera from the surface
     /// in equatorial radii.
     pub lat0: f32,
     pub dist: f32,
+    /// Globe view: sin and cos of the tilt, sin and cos of the heading (`Globe::frame`).
+    pub cam: [f32; 4],
+    /// The node of the warp grid that `off` is the position of (see `off`), and the near plane of the
+    /// camera in equatorial radii.
+    pub anchor: [u32; 2],
+    pub near: f32,
+    /// Terrain (flag 64): the vertical exaggeration divided by the equatorial radius in meters.
+    pub hk: f32,
+    /// The height texture covers `1 / hs` degrees around the point `hc` (degrees from the view center).
+    pub hc: [f32; 2],
+    pub hs: [f32; 2],
+    /// Height in meters = texel * ha + hb.
+    pub ha: f32,
+    pub hb: f32,
+    pub pad: [f32; 2],
 }
 
 #[repr(C)]
@@ -528,6 +623,8 @@ pub struct Gpu {
     pub queue: wgpu::Queue,
     format: wgpu::TextureFormat,
     layer_pipe: wgpu::RenderPipeline,
+    /// The same without the depth test (the height texture).
+    flat_pipe: wgpu::RenderPipeline,
     layer_bgl: wgpu::BindGroupLayout,
     comp_bgl: wgpu::BindGroupLayout,
     comp_pipes: HashMap<String, wgpu::RenderPipeline>,
@@ -577,6 +674,45 @@ fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }
 }
 
+/// Depth buffer of the layer passes: reversed Z (1 at the near plane, 0 far away).
+const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// The pipeline of the layer shader. 2D views write z = 0: with the test "greater or equal", the later
+/// tile goes over the earlier one, as without depth.
+fn layer_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, depth: bool) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("layer"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Inst>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
+            })],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(TARGET.into())],
+        }),
+        primitive: Default::default(),
+        depth_stencil: depth.then(|| wgpu::DepthStencilState {
+            format: DEPTH,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 impl Gpu {
     /// `budget` is the GPU memory budget in bytes for the tile arrays.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat, budget: usize) -> Gpu {
@@ -589,6 +725,7 @@ impl Gpu {
                 sampler_entry(1),
                 tex_entry(2, wgpu::TextureViewDimension::D2Array, true, frag),
                 tex_entry(3, d2, false, wgpu::ShaderStages::VERTEX),
+                tex_entry(4, d2, false, wgpu::ShaderStages::VERTEX),
             ],
         });
         let mut ce = vec![uniform_entry(0), sampler_entry(1), tex_entry(2, d2, true, frag)];
@@ -596,31 +733,8 @@ impl Gpu {
         let comp_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("composite"), entries: &ce });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("layer"), source: wgpu::ShaderSource::Wgsl(LAYER_SHADER.into()) });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layer_bgl)], immediate_size: 0 });
-        let layer_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("layer"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Inst>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
-                })],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(TARGET.into())],
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let layer_pipe = layer_pipeline(&device, &shader, &layout, true);
+        let flat_pipe = layer_pipeline(&device, &shader, &layout, false);
         // Nearest when magnified (show the real pixels). Linear when minified.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Nearest,
@@ -648,6 +762,7 @@ impl Gpu {
             queue,
             format,
             layer_pipe,
+            flat_pipe,
             layer_bgl,
             comp_bgl,
             comp_pipes: HashMap::new(),
@@ -911,8 +1026,9 @@ pub struct Input {
     ubuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     warp: Option<(wgpu::Texture, u64)>,
-    /// Bind group, with its tile array (u8) and its generation, warp and sampler (smooth).
-    bind: Option<(wgpu::BindGroup, bool, u64, bool, u64)>,
+    /// Bind group, with its tile array (u8) and its generation, warp, sampler (smooth) and the generation of
+    /// the height texture of the view.
+    bind: Option<(wgpu::BindGroup, bool, u64, bool, u64, u64)>,
     /// Instances of the next draw, coarse tiles first. The application fills it.
     pub insts: Vec<Inst>,
 }
@@ -1008,6 +1124,13 @@ pub struct View2d {
     /// The accumulation texture of a view with more than one group, and the uniform of its last pass.
     accum: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     ubuf: Option<wgpu::Buffer>,
+    /// The depth buffer of the layer passes, and its size.
+    depth: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
+    /// The height texture of a globe with terrain (`HEIGHT` x `HEIGHT`), its generation, and the uniform
+    /// of its pass.
+    height: Option<(wgpu::Texture, wgpu::TextureView)>,
+    hgen: u64,
+    hubuf: Option<wgpu::Buffer>,
     pub inputs: Vec<Input>,
     /// Magnified pixels are smooth (linear), not squares. Data at a low resolution, for example a
     /// weather model. The tiles do not have the pixels of the next tiles: their edges show.
@@ -1016,7 +1139,7 @@ pub struct View2d {
 
 impl View2d {
     pub fn new(_: &Gpu) -> View2d {
-        View2d { groups: vec![], targets: vec![], size: (0, 0), accum: None, ubuf: None, inputs: vec![], smooth: false }
+        View2d { groups: vec![], targets: vec![], size: (0, 0), accum: None, ubuf: None, depth: None, height: None, hgen: 0, hubuf: None, inputs: vec![], smooth: false }
     }
 
     fn group(&mut self, gpu: &Gpu, g: usize) -> &mut Group {
@@ -1090,10 +1213,41 @@ impl View2d {
         v
     }
 
+    /// The depth buffer of the view size, and the height texture if the view has terrain.
+    fn depth_height(&mut self, gpu: &mut Gpu, w: u32, h: u32, terrain: bool) -> wgpu::TextureView {
+        let tex = |label, w, h, format, usage| gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        });
+        if self.depth.as_ref().is_none_or(|d| d.2 != (w, h)) {
+            let old = self.depth.as_ref().map_or(0, |d| d.2.0 * d.2.1 * 4);
+            let t = tex("depth", w, h, DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT);
+            let v = t.create_view(&Default::default());
+            self.depth = Some((t, v, (w, h)));
+            gpu.target_bytes = gpu.target_bytes + (w * h * 4) as usize - old as usize;
+        }
+        if terrain != self.height.is_some() {
+            self.height = terrain.then(|| {
+                let t = tex("height", HEIGHT, HEIGHT, TARGET, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT);
+                let v = t.create_view(&Default::default());
+                (t, v)
+            });
+            self.hgen += 1;
+        }
+        self.depth.as_ref().unwrap().1.clone()
+    }
+
     /// Write the buffers and make the paint callback for egui of the groups `groups` of the view.
     /// `inputs[k]` are the uniforms and the u8 flag of input k of the view. `rect` is the view in points,
-    /// `px` its size in physical pixels.
-    pub fn paint(&mut self, gpu: &mut Gpu, groups: &[GroupDraw], inputs: &[(LayerUniforms, bool)], rect: egui::Rect, px: (u32, u32)) -> Result<Option<egui::PaintCallback>, String> {
+    /// `px` its size in physical pixels. `terrain`: the input that has the heights of the globe, and the
+    /// uniforms of its pass into the height texture (a 2D draw of the input in longitude and latitude).
+    pub fn paint(&mut self, gpu: &mut Gpu, groups: &[GroupDraw], inputs: &[(LayerUniforms, bool)], terrain: Option<(usize, LayerUniforms)>, rect: egui::Rect, px: (u32, u32)) -> Result<Option<egui::PaintCallback>, String> {
         if px.0 == 0 || px.1 == 0 {
             return Ok(None);
         }
@@ -1105,6 +1259,8 @@ impl View2d {
         }
         let n = groups.iter().map(|g| count(g)).max().unwrap_or(0);
         self.targets(gpu, px.0, px.1, n);
+        let terrain = terrain.filter(|t| t.0 < inputs.len() && t.0 < self.inputs.len());
+        let depth = self.depth_height(gpu, px.0, px.1, terrain.is_some());
         let many = groups.len() > 1;
         let accum = if many { Some(self.accum(gpu, px.0, px.1)) } else {
             if let Some((_, _, sz)) = self.accum.take() {
@@ -1141,8 +1297,9 @@ impl View2d {
                 }
                 let tv = gpu.array(*u8).view.clone();
                 let (smooth, version) = (self.smooth, gpu.array_version(*u8));
-                if inp.bind.as_ref().is_none_or(|b| b.1 != *u8 || b.2 != *wid || b.3 != smooth || b.4 != version) {
+                if inp.bind.as_ref().is_none_or(|b| b.1 != *u8 || b.2 != *wid || b.3 != smooth || b.4 != version || b.5 != self.hgen) {
                     let wv = warp.create_view(&Default::default());
+                    let hv = self.height.as_ref().map_or(&gpu.dummy, |h| &h.1);
                     let bg = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: None,
                         layout: &gpu.layer_bgl,
@@ -1151,9 +1308,10 @@ impl View2d {
                             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if smooth { &gpu.smooth } else { &gpu.sampler }) },
                             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tv) },
                             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&wv) },
+                            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(hv) },
                         ],
                     });
-                    inp.bind = Some((bg, *u8, *wid, smooth, version));
+                    inp.bind = Some((bg, *u8, *wid, smooth, version, self.hgen));
                 }
                 let draw = (!inp.insts.is_empty()).then(|| LayerDraw {
                     bind: inp.bind.as_ref().unwrap().0.clone(),
@@ -1179,6 +1337,29 @@ impl View2d {
             let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &gpu.comp_bgl, entries: &entries });
             steps.push(Step { passes, pipe, bind });
         }
+        // The height pass: the terrain input in the height texture, with its own uniforms and no depth.
+        let height = terrain.and_then(|(t, hu)| {
+            let (hv, u8) = (&self.height.as_ref()?.1, inputs[t].1);
+            let ub = self.hubuf.get_or_insert_with(|| {
+                gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("height pass"), size: std::mem::size_of::<LayerUniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
+            });
+            gpu.queue.write_buffer(ub, 0, bytemuck::bytes_of(&hu));
+            let inp = &self.inputs[t];
+            let (warp, _) = inp.warp.as_ref()?;
+            let (tv, wv) = (gpu.array(u8).view.clone(), warp.create_view(&Default::default()));
+            let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &gpu.layer_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&tv) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&wv) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&gpu.dummy) },
+                ],
+            });
+            Some(HeightPass { view: hv.clone(), draw: (!inp.insts.is_empty()).then(|| LayerDraw { bind, ibuf: inp.ibuf.clone(), verts: 6 * hu.n * hu.n, insts: inp.insts.len() as u32 }) })
+        });
         // The last pass of more groups: the accumulation texture (premultiplied alpha) on the window.
         let blit = match &accum {
             Some(view) => {
@@ -1196,7 +1377,7 @@ impl View2d {
             }
             None => None,
         };
-        let cb = Draw { layer_pipe: gpu.layer_pipe.clone(), steps, blit };
+        let cb = Draw { layer_pipe: gpu.layer_pipe.clone(), flat_pipe: gpu.flat_pipe.clone(), depth, height, steps, blit };
         Ok(Some(egui_wgpu::Callback::new_paint_callback(rect, cb)))
     }
 
@@ -1205,6 +1386,9 @@ impl View2d {
         self.groups.truncate(n.max(1));
     }
 }
+
+/// Size of the height texture of a globe with terrain.
+pub const HEIGHT: u32 = 2048;
 
 /// Mesh vertices of a tile: 6 per quad, `MESH` x `MESH` quads for a warp that is not affine.
 pub fn mesh(affine: bool) -> u32 {
@@ -1225,8 +1409,17 @@ struct Step {
     bind: wgpu::BindGroup,
 }
 
+/// The pass that draws the terrain input in the height texture.
+struct HeightPass {
+    view: wgpu::TextureView,
+    draw: Option<LayerDraw>,
+}
+
 struct Draw {
     layer_pipe: wgpu::RenderPipeline,
+    flat_pipe: wgpu::RenderPipeline,
+    depth: wgpu::TextureView,
+    height: Option<HeightPass>,
     steps: Vec<Step>,
     /// More groups: the pipeline and the bind group of the last pass, and the accumulation texture.
     blit: Option<(wgpu::RenderPipeline, wgpu::BindGroup, wgpu::TextureView)>,
@@ -1248,7 +1441,11 @@ impl Draw {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -1272,6 +1469,27 @@ impl egui_wgpu::CallbackTrait for Draw {
         enc: &mut wgpu::CommandEncoder,
         _: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        if let Some(h) = &self.height {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("height"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &h.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: f64::NEG_INFINITY, g: 0.0, b: 0.0, a: 1.0 }), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if let Some(d) = &h.draw {
+                pass.set_pipeline(&self.flat_pipe);
+                pass.set_bind_group(0, &d.bind, &[]);
+                pass.set_vertex_buffer(0, d.ibuf.slice(..));
+                pass.draw(0..d.verts, 0..d.insts);
+            }
+        }
         let Some((_, _, accum)) = &self.blit else {
             // One group: its inputs now, its composite in `paint`.
             self.inputs(enc, &self.steps[0]);
@@ -1333,6 +1551,29 @@ mod tests {
     use super::*;
 
     /// All compare modes with gray and RGB layers compile (WGSL front end and validation of naga).
+    /// The half-angle formulas give the same position as the difference of the Earth-centered positions, and
+    /// they keep their precision for a point 1 m from the view center.
+    #[test]
+    fn globe_enu_is_the_difference_of_positions() {
+        let ecef = |dlon: f64, lat: f64| {
+            let (s, c) = lat.sin_cos();
+            let n = 1.0 / (1.0 - WGS84_E2 * s * s).sqrt();
+            [n * c * dlon.cos(), n * c * dlon.sin(), n * (1.0 - WGS84_E2) * s]
+        };
+        for (lat0, rel) in [(0.8f64, [0.01f64, -0.02]), (-0.3, [1.0, 0.5]), (1.5, [-0.4, 0.1])] {
+            let (q, nrm) = globe_enu(lat0, rel);
+            let (p, p0) = (ecef(rel[0], lat0 + rel[1]), ecef(0.0, lat0));
+            let d = [p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]];
+            let (s0, c0) = lat0.sin_cos();
+            let want = [d[1], c0 * d[2] - s0 * d[0], c0 * d[0] + s0 * d[2]];
+            assert!(q.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-12), "{q:?} {want:?}");
+            assert!((nrm.iter().map(|x| x * x).sum::<f64>() - 1.0).abs() < 1e-12);
+        }
+        // 1 m to the north: 1.57e-7 radians. The up component is the curvature (about 1e-14).
+        let (q, _) = globe_enu(0.8, [0.0, 1.0 / 6378137.0]);
+        assert!((q[1] * 6378137.0 - 1.0).abs() < 0.01 && q[2].abs() < 1e-12, "{q:?}");
+    }
+
     #[test]
     fn composite_programs_are_valid() {
         let gray = LayerSpec { mode: Mode::Gray("((v0 - v1) / (v0 + v1))".into()), inputs: vec![0, 1] };
@@ -1355,6 +1596,6 @@ mod tests {
         // The layer shader (2D and globe).
         let m = naga::front::wgsl::parse_str(LAYER_SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(LAYER_SHADER)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default()).validate(&m).unwrap();
-        assert_eq!(std::mem::size_of::<LayerUniforms>(), 64);
+        assert_eq!(std::mem::size_of::<LayerUniforms>(), 128);
     }
 }
