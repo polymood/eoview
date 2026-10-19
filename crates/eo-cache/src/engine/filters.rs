@@ -75,10 +75,10 @@ impl Filter {
             Filter::Gaussian { .. } => "Gaussian",
             Filter::Boxcar { .. } => "Boxcar mean",
             Filter::Median { .. } => "Median",
-            Filter::Erode { .. } => "Erode",
-            Filter::Dilate { .. } => "Dilate",
-            Filter::Open { .. } => "Open",
-            Filter::Close { .. } => "Close",
+            Filter::Erode { .. } => "Erosion",
+            Filter::Dilate { .. } => "Dilation",
+            Filter::Open { .. } => "Opening",
+            Filter::Close { .. } => "Closing",
             Filter::Sobel => "Sobel edges",
             Filter::Laplace => "Laplacian",
             Filter::Lee { .. } => "Lee speckle filter",
@@ -238,17 +238,17 @@ impl Filter {
     }
 }
 
-fn min(v: &mut Vec<f32>) -> f32 {
+fn min(v: &mut [f32]) -> f32 {
     v.iter().copied().fold(f32::INFINITY, f32::min)
 }
 
-fn max(v: &mut Vec<f32>) -> f32 {
+fn max(v: &mut [f32]) -> f32 {
     v.iter().copied().fold(f32::NEG_INFINITY, f32::max)
 }
 
 /// `f` of the values with data in the square of 2 r + 1 pixels around each pixel of `p` (pw x ph pixels),
 /// for the (pw - 2 r) x (ph - 2 r) pixels that have the full square. NaN where the pixel has no data.
-fn reduce(p: &[f32], pw: usize, ph: usize, r: usize, f: &dyn Fn(&mut Vec<f32>) -> f32) -> Vec<f32> {
+fn reduce(p: &[f32], pw: usize, ph: usize, r: usize, f: &dyn Fn(&mut [f32]) -> f32) -> Vec<f32> {
     let (w, h) = (pw - 2 * r, ph - 2 * r);
     let mut out = vec![f32::NAN; w * h];
     let mut v = Vec::with_capacity((2 * r + 1).pow(2));
@@ -363,7 +363,7 @@ mod tests {
         // A plane that goes up 10 m to the east for each pixel of 10 m: slope 45, faces west, the light
         // from the west at 45 degrees is on its normal.
         let p = pad(3, 3, 1, |x, _| 10.0 * x as f32);
-        let run = |f: Filter| f.run(&[p.clone()], 3, 3, 1.0, (10.0, 10.0))[4];
+        let run = |f: Filter| f.run(std::slice::from_ref(&p), 3, 3, 1.0, (10.0, 10.0))[4];
         assert!((run(Filter::Slope { z: 1.0 }) - 45.0).abs() < 1e-4);
         assert!((run(Filter::Aspect) - 270.0).abs() < 1e-4);
         assert!((run(Filter::Hillshade { azimuth: 270.0, altitude: 45.0, z: 1.0 }) - 1.0).abs() < 1e-5);

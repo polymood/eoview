@@ -471,11 +471,13 @@ fn stamp(path: &str) -> Option<u64> {
     Some(sum)
 }
 
-/// A layer math of a workspace file: it starts when all its inputs are ready.
+/// A layer math or a filter of a workspace file: it starts when all its inputs are ready.
 struct MathLoad {
     open: Open,
     expr: String,
     names: Vec<String>,
+    /// A filter (`expr` and `names` are not used).
+    filter: Option<eo_cache::Filter>,
     got: Vec<Option<Arc<Layer>>>,
 }
 
@@ -1680,6 +1682,8 @@ impl App {
         }
         if let Some(s) = &o.save {
             m.apply(s);
+            // A new parameter of an operation: the values change, the colors stay.
+            m.auto_pending |= o.replace.is_some() && o.op.is_some();
         }
         let space = m.default_space();
         let Some(p) = self.pane_mut(o.pane) else { return };
@@ -1977,7 +1981,7 @@ impl App {
             s.series.iter_mut().for_each(|x| fix(&mut x.0));
             match &mut s.op {
                 Some(OpSave::Agg { source, .. } | OpSave::AggDim { source, .. }) => fix_save(source, fix),
-                Some(OpSave::Math { inputs, .. }) => inputs.iter_mut().for_each(|i| fix_save(i, fix)),
+                Some(OpSave::Math { inputs, .. } | OpSave::Filter { inputs, .. }) => inputs.iter_mut().for_each(|i| fix_save(i, fix)),
                 None => {}
             }
         }
@@ -2013,17 +2017,12 @@ impl App {
     }
 
     /// Open the saved layer `s` in view `pane` at position `order`, or as input `to` of a layer math. A
-    /// computed layer opens its source (an aggregate) or its inputs (a layer math) first.
+    /// computed layer opens its source (an aggregate) or its inputs (a layer math, a filter) first.
     fn load_layer(&mut self, pane: u32, order: usize, s: LayerSave, to: Option<(u64, usize)>) {
         let open = Open { pane, save: Some(s.clone()), order, path: s.path.clone(), series: vec![], band: None, op: s.op.clone(), to, replace: None, var: None };
         match &s.op {
-            Some(OpSave::Math { expr, names, inputs }) => {
-                let mid = self.uid();
-                self.maths.insert(mid, MathLoad { open, expr: expr.clone(), names: names.clone(), got: vec![None; inputs.len()] });
-                for (k, i) in inputs.iter().enumerate() {
-                    self.load_layer(pane, order, i.clone(), Some((mid, k)));
-                }
-            }
+            Some(OpSave::Math { expr, names, inputs }) => self.load_inputs(open, expr.clone(), names.clone(), None, inputs),
+            Some(OpSave::Filter { filter, inputs }) => self.load_inputs(open, String::new(), vec![], Some(filter.clone()), inputs),
             op => {
                 let src = match op {
                     Some(OpSave::Agg { source, .. } | OpSave::AggDim { source, .. }) => &source.path,
@@ -2032,6 +2031,15 @@ impl App {
                 let req = self.engine.open(src.clone());
                 self.opens.insert(req, open);
             }
+        }
+    }
+
+    /// Open the inputs of the layer math `expr` (or of the filter `filter`) of `open`. It starts when all are ready.
+    fn load_inputs(&mut self, open: Open, expr: String, names: Vec<String>, filter: Option<eo_cache::Filter>, inputs: &[LayerSave]) {
+        let (mid, pane, order) = (self.uid(), open.pane, open.order);
+        self.maths.insert(mid, MathLoad { open, expr, names, filter, got: vec![None; inputs.len()] });
+        for (k, i) in inputs.iter().enumerate() {
+            self.load_layer(pane, order, i.clone(), Some((mid, k)));
         }
     }
 
@@ -2061,6 +2069,10 @@ impl App {
         ml.got[k] = Some(l);
         if ml.got.iter().all(Option::is_some) {
             let ml = self.maths.remove(&mid).unwrap();
+            if let Some(f) = ml.filter {
+                let req = self.engine.filter(ml.open.path.clone(), f, ml.got.into_iter().flatten().collect());
+                return drop(self.opens.insert(req, ml.open));
+            }
             match math_start(&self.engine, &ml.expr, &ml.names, &ml.got) {
                 Ok((req, _)) => drop(self.opens.insert(req, ml.open)),
                 Err(e) => self.error = Some(format!("{}: {e}", ml.expr)),
@@ -2192,6 +2204,67 @@ impl App {
             }
             Err(e) => self.error = Some(e),
         }
+    }
+}
+
+impl App {
+    /// Make a new layer in view `id`: filter `i` of `FILTERS` of the selected layer. An index uses the bands
+    /// of the product of the layer with the names of its inputs.
+    pub fn add_filter(&mut self, id: u32, i: usize) {
+        let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
+        let Some((_, name, f, bands)) = crate::layer::FILTERS.get(i) else { return };
+        let mut f = f.clone();
+        if !bands.is_empty() {
+            let chans = match l.index_bands(bands) {
+                Ok(c) => c,
+                Err(b) => return self.error = Some(tf("The product has no band {}. Use band math.", &[&b])),
+            };
+            let inputs: Vec<LayerSave> = chans
+                .iter()
+                .map(|&c| {
+                    let mut s = l.save();
+                    (s.kind, s.band) = (Kind::Band, l.chans[c].id.clone());
+                    s
+                })
+                .collect();
+            let path = format!("{} {}", t(name), l.name);
+            let op = OpSave::Filter { filter: f.clone(), inputs: inputs.clone() };
+            let open = Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None, replace: None, var: None };
+            return self.load_inputs(open, String::new(), vec![], Some(f), &inputs);
+        }
+        let Some(inp) = l.inputs.first().filter(|_| l.kind == Kind::Band && l.inputs.len() == 1).cloned() else {
+            return self.error = Some(t("A filter uses one band: show one band of the layer.").into());
+        };
+        // A threshold starts at the middle of the stretch.
+        if let eo_cache::Filter::Threshold { lo, hi } = &mut f {
+            (*lo, *hi) = (((l.st[0].lo + l.st[0].hi) / 2.0) as f64, inp.sample.last().map_or(l.st[0].hi as f64, |&v| v as f64));
+        }
+        let op = l.saveable().then(|| OpSave::Filter { filter: f.clone(), inputs: vec![l.save()] });
+        let path = format!("{} {}", t(name), l.label(40));
+        let req = self.engine.filter(path.clone(), f, vec![inp]);
+        self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op, to: None, replace: None, var: None });
+    }
+
+    /// The selected layer of view `id` (a computed layer) with the operation `op`: the engine makes the layer
+    /// again from the same inputs. The new layer takes the place of the old one, with its colors.
+    pub fn set_op(&mut self, id: u32, op: OpSave) {
+        let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
+        let Some(e) = l.any().and_then(|x| x.op.clone()) else { return };
+        let mut path = l.path.clone();
+        let req = match (&op, &e.kind, &l.op) {
+            (OpSave::Filter { filter, .. }, eo_cache::OpKind::Filter { inputs, .. }, _) => self.engine.filter(path.clone(), filter.clone(), inputs.clone()),
+            (OpSave::Agg { how, .. } | OpSave::AggDim { how, .. }, eo_cache::OpKind::Agg { inputs, .. }, Some(OpSave::Agg { how: old, .. } | OpSave::AggDim { how: old, .. })) => {
+                let new = eo_cache::Agg::ALL.iter().find(|a| a.1 == how).map_or(eo_cache::Agg::Mean, |a| a.0);
+                path = path.replace(&t(old).to_lowercase(), &t(how).to_lowercase());
+                let b = inputs[0].clone();
+                self.engine.aggregate(b.clone(), b.var, b.choice, inputs.iter().cloned().map(eo_cache::StepIn::Layer).collect(), new)
+            }
+            _ => return,
+        };
+        let mut s = l.save();
+        (s.path, s.op) = (path.clone(), Some(op.clone()));
+        let o = Open { pane: id, save: Some(s), order: l.order, path, series: vec![], band: None, op: Some(op), to: None, replace: Some(l.uid), var: None };
+        self.opens.insert(req, o);
     }
 }
 
@@ -2607,6 +2680,37 @@ mod workspace_tests {
         let m = &b.panes[0].layers[2];
         assert_eq!(m.save(), saved);
         assert!(matches!(m.inputs[0].op.as_deref().map(|o| &o.kind), Some(eo_cache::OpKind::Math { inputs, .. }) if inputs.len() == 2));
+    }
+
+    /// A median of a Gaussian of a layer (a chain of filters), then a new radius: the layer is made again in its
+    /// place. The workspace file keeps the chain.
+    #[test]
+    fn filter_chain_round_trip() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/nc4_grid.nc");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        let ready = |n: usize| move |a: &App| a.panes[0].layers.len() == n && a.panes[0].layers.iter().all(|l| !l.inputs.is_empty());
+        let find = |n: &str| crate::layer::FILTERS.iter().position(|f| f.1 == n).unwrap();
+        app.open(1, path.into(), false);
+        wait(&mut app, ready(1));
+        app.run(crate::ui::Cmd::Filter(find("Gaussian")), 1);
+        wait(&mut app, ready(2));
+        app.run(crate::ui::Cmd::Filter(find("Median")), 1);
+        wait(&mut app, ready(3));
+        let Some(OpSave::Filter { inputs, .. }) = app.panes[0].layers[2].op.clone() else { panic!() };
+        assert!(matches!(&inputs[0].op, Some(OpSave::Filter { filter: eo_cache::Filter::Gaussian { .. }, .. })));
+        let op = OpSave::Filter { filter: eo_cache::Filter::Median { r: 2.0 }, inputs };
+        app.run(crate::ui::Cmd::SetOp(op.clone()), 1);
+        wait(&mut app, |a| a.panes[0].layers.len() == 3 && a.panes[0].layers[2].op.as_ref() == Some(&op) && !a.panes[0].layers[2].inputs.is_empty());
+        let saved = app.panes[0].layers[2].save();
+        let ws = std::env::temp_dir().join(format!("eoview-filter-{}.{WORKSPACE_EXT}", std::process::id())).to_string_lossy().into_owned();
+        app.save_workspace(&ws).unwrap();
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut b = App::new(e, rx, 1 << 20, None);
+        b.load_workspace(&ws);
+        wait(&mut b, ready(3));
+        std::fs::remove_file(&ws).ok();
+        assert_eq!(b.panes[0].layers[2].save(), saved);
     }
 
     /// Save a workspace with two views, then open it: the layout, the cameras, the layers and their

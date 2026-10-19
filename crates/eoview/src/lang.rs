@@ -89,8 +89,9 @@ mod tests {
                 }
             }
         }
-        // The names of the aggregates are in the engine.
+        // The names of the aggregates and of the filters are in the engine.
         all += &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../eo-cache/src/engine/ops.rs")).unwrap();
+        all += &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../eo-cache/src/engine/filters.rs")).unwrap();
         let fr = &super::TABLES[0];
         let missing: Vec<&String> = keys.iter().filter(|k| !fr.contains_key(*k)).collect();
         assert!(missing.is_empty(), "{} texts without a French translation:\n{}", missing.len(), missing.iter().map(|s| format!("    {s:?}: \"\",")).collect::<Vec<_>>().join("\n"));
