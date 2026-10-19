@@ -347,6 +347,7 @@ impl Pane {
 pub const PY_TAB: u32 = u32::MAX;
 pub const CHARTS_TAB: u32 = u32::MAX - 1;
 pub const FIGURE_TAB: u32 = u32::MAX - 2;
+pub const GRAPH_TAB: u32 = u32::MAX - 3;
 
 /// True if dock tab `id` is a view (not `PY_TAB`, ...).
 pub fn is_view(id: u32) -> bool {
@@ -595,6 +596,9 @@ struct Workspace {
     /// The settings of the figure.
     #[serde(default)]
     figure: crate::figure::FigSet,
+    /// The graph of the Graph tab, with the positions of its nodes.
+    #[serde(default, skip_serializing_if = "crate::graph::Graph::is_empty")]
+    graph: crate::graph::Graph,
 }
 
 pub struct App {
@@ -730,6 +734,10 @@ pub struct App {
     /// The figure: its settings, its tab open or not, its state (the image of the map).
     pub figure: crate::figure::FigSet,
     pub figure_open: bool,
+    /// The graph of layers (the Graph tab), its tab open or not, its view state.
+    pub graph: crate::graph::Graph,
+    pub graph_open: bool,
+    pub graph_ui: crate::graph::GraphUi,
     pub fig: crate::figure::FigState,
     /// The expression of the layer math of the side panel.
     pub math: String,
@@ -827,6 +835,9 @@ impl App {
             values: Default::default(),
             figure: Default::default(),
             figure_open: false,
+            graph: Default::default(),
+            graph_open: false,
+            graph_ui: Default::default(),
             fig: Default::default(),
             math: String::new(),
             maths: HashMap::new(),
@@ -876,7 +887,7 @@ impl App {
     pub fn show_tab(&mut self, tab: u32, on: bool) {
         match (self.dock.find_tab(&tab), on) {
             (Some(t), false) => drop(self.dock.remove_tab(t)),
-            (None, true) if tab == FIGURE_TAB => {
+            (None, true) if tab == FIGURE_TAB || tab == GRAPH_TAB => {
                 if let Some(t) = self.dock.find_tab(&self.active) {
                     self.dock.set_focused_node_and_surface(egui_dock::NodePath { surface: t.surface, node: t.node });
                 }
@@ -1948,7 +1959,7 @@ impl App {
         let fig_job = self.fig.job.as_ref().map(|j| j.pane);
         self.floating.iter().filter(|&&id| Some(id) != job && Some(id) != fig_job).for_each(|&id| dock.push_to_focused_leaf(id));
         let python = self.py.as_ref().filter(|p| p.used).map(|p| p.docs[0].cells[0].code.clone());
-        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes, render: self.render_set.clone(), pins: self.pins.clone(), python, figure: self.figure.clone() };
+        let ws = Workspace { version: 1, dock, active: self.active, link_px: self.link_px, panes, render: self.render_set.clone(), pins: self.pins.clone(), python, figure: self.figure.clone(), graph: self.graph.clone() };
         let mut v = serde_json::to_value(&ws).map_err(|e| e.to_string())?;
         finite(&mut v);
         let s = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
@@ -2010,6 +2021,9 @@ impl App {
         self.pins = ws.pins;
         self.figure = ws.figure;
         self.figure_open |= ws.dock.find_tab(&FIGURE_TAB).is_some();
+        self.graph = ws.graph;
+        self.graph_ui = Default::default();
+        self.graph_open |= ws.dock.find_tab(&GRAPH_TAB).is_some();
         self.fig = Default::default();
         if let (Some(code), Some(p)) = (ws.python, &mut self.py) {
             *p.code() = code;
@@ -2272,6 +2286,30 @@ impl App {
         let path = format!("{} {}", t(name), l.comp_name());
         let req = self.engine.filter(path.clone(), f, vec![inp]);
         self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op, to: None, replace: None, var: None });
+    }
+
+    /// "Make layer" of the output node `out` of the graph: a computed layer in the active view, or the run of
+    /// the script of a Python node (it makes the layer with `ev.output`).
+    pub fn graph_make(&mut self, out: u32) {
+        let id = self.active;
+        match self.graph.make(out) {
+            Err(e) => self.error = Some(e),
+            Ok(crate::graph::Made::Python(s)) => self.py_graph(&s),
+            Ok(crate::graph::Made::Layer(path, s)) => match s.op.clone() {
+                // The layer of an aggregate opens its source first, as in a workspace file.
+                Some(OpSave::Agg { .. } | OpSave::AggDim { .. }) => self.load_layer(id, usize::MAX, LayerSave { path, ..s }, None),
+                Some(op) => {
+                    let (expr, names, filter, inputs) = match &op {
+                        OpSave::Math { expr, names, inputs } => (expr.clone(), names.clone(), None, inputs.clone()),
+                        OpSave::Filter { filter, inputs } => (String::new(), vec![], Some(filter.clone()), inputs.clone()),
+                        _ => return,
+                    };
+                    let open = Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None, replace: None, var: None };
+                    self.load_inputs(open, expr, names, filter, &inputs);
+                }
+                None => {}
+            },
+        }
     }
 
     /// The selected layer of view `id` (a computed layer) with the operation `op`: the engine makes the layer
@@ -2719,6 +2757,28 @@ mod workspace_tests {
         let m = &b.panes[0].layers[2];
         assert_eq!(m.save(), saved);
         assert!(matches!(m.inputs[0].op.as_deref().map(|o| &o.kind), Some(eo_cache::OpKind::Math { inputs, .. }) if inputs.len() == 2));
+    }
+
+    /// "Make layer" of a graph (source, Gaussian, output) makes the computed layer, and the graph of the
+    /// new layer has the same nodes.
+    #[test]
+    fn graph_makes_a_layer() {
+        use crate::graph::{NodeKind as K, Graph};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/nc4_grid.nc");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, path.into(), false);
+        wait(&mut app, |a| a.panes[0].layers.len() == 1 && !a.panes[0].layers[0].inputs.is_empty());
+        let s = app.panes[0].layers[0].save();
+        let mut g = Graph::default();
+        let a = g.add(K::Source { name: "a".into(), layer: s }, [0.0; 2], vec![]);
+        let f = g.add(K::Filter(eo_cache::Filter::Gaussian { sigma: 2.0 }), [0.0; 2], vec![Some(a)]);
+        let o = g.add(K::Output { name: "g".into() }, [0.0; 2], vec![Some(f)]);
+        app.graph = g;
+        app.graph_make(o);
+        wait(&mut app, |a| a.panes[0].layers.len() == 2 && a.panes[0].layers.iter().all(|l| !l.inputs.is_empty()));
+        app.graph_show(1);
+        assert_eq!(app.graph.nodes.len(), 3);
     }
 
     /// A median of a Gaussian of a layer (a chain of filters), then a new radius: the layer is made again in its

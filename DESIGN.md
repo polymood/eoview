@@ -563,3 +563,52 @@ reversed y axis), wavelength by across-track position (a spectrogram), the spect
   its values.
 - The Dimensions part of the layer panel has a "Plot" button, and "Plot the profile". The command palette
   has the three plots.
+
+## 18. Graph editor (2026-10-19)
+
+The Graph tab is a node graph of layers (item 9 of NEXT.md). The graph is the `OpSave` tree of a computed
+layer, with node positions. "Make layer" on an output node calls the same engine functions as the Layer menu
+(`Engine::filter`, `Engine::math`, `Engine::aggregate`). The workspace file keeps the graph (`graph`).
+
+### 18.1 Where Python runs
+
+- The graph uses the Python of the Python panel: the module `eoview`, the socket server of the app, and the
+  Python of the preferences. A Python node does not add a process type or a PyO3 dependency.
+- "Make layer" on a Python node writes a script (`graph-node.py` in the module directory) and starts it as
+  the Run command does. The output goes to the log of the panel. The result comes back with `ev.output`.
+- Shared memory is not needed now. The module sends the values on the local socket as 32-bit floats.
+
+### 18.2 How a node gets its data
+
+- A Python node is `def f(a, b, ...)`. Input k of the node is the source node that is linked to it. The
+  script reads each source with `ev.layer(name, extent="all", level=0)` and calls `f` on numpy arrays.
+  The layer is the whole layer at level 0. `ev.layer` refuses a size above the memory budget: this is the
+  size limit. No data is NaN.
+- Done now: the whole layer at level 0 for the layers that fit in memory. Not done: tile by tile.
+- Next step, tile by tile with halo pixels. The filters already have the model: `Filter::halo(k)` gives the
+  halo, and a tile reads its window with the halo from the inputs. A Python node adds a `halo` field in
+  pixels. The module gets a command `tile` that returns the window of a tile with the halo. The app calls the
+  function through a long-running Python worker that holds `f`, and cuts the halo from the result. The
+  worker must be a pool of one, as the interpreter has one lock.
+- A Python node takes sources only, and an output only takes its result. The result of a node cannot feed
+  a filter yet, because the engine has no operation for values that Python computes by tile.
+
+### 18.3 How results are cached
+
+- A computed layer of the engine keeps the existing caches: the tile cache in memory, and the disk cache
+  with the key of the operation (`Op::key`). A graph of filters, layer math and aggregates is cached as any
+  computed layer. A new parameter makes a new key, and the unchanged inputs stay in the cache.
+- The result of a Python node is a layer in memory (`Engine::memory`), as for `ev.output`. The workspace
+  file does not keep it. The workspace file keeps the graph, and the user runs "Make layer" again.
+- Next step: the key of a Python node is the hash of its code, its halo and the keys of its inputs. The tiles
+  go to the same disk cache.
+
+### 18.4 The tab
+
+- A source is a layer of the active view with one band. An operation is a filter, a layer math, an aggregate
+  or a Python node. An output has a name and the button "Make layer".
+- A link goes from the output of a node to an input. Click the output, then the input. A click on an input
+  alone removes its link. A link that makes a cycle is refused.
+- "Show the selected layer" and the command Graph (F9) with an empty graph show the tree of the selected
+  layer. The parameters of a node change the graph. The user makes the layer again with "Make layer".
+- An aggregate takes a source, as the Layer menu does.
