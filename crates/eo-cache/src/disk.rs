@@ -1,6 +1,8 @@
 //! Disk cache for remote data: encoded chunk bytes and generated overview tiles. One file for each entry.
 //! The file name is a hash of the key: the cache contains no URL (a URL can contain credentials).
-//! When the cache is over its budget, the oldest files go first. A read makes a file new again.
+//! When the cache is over its budget, the oldest files go first. A read makes a file new again. The cleanup
+//! counts and deletes only the files of the cache (see `ours`): the user can set the cache directory to a
+//! directory with other files. It does not follow links.
 // ponytail: no check that the remote object is the same as before (no ETag). Products do not change.
 // Delete the cache directory to read all data again.
 use bytes::Bytes;
@@ -64,8 +66,9 @@ impl Disk {
             .flatten()
             .flatten()
             .filter_map(|e| {
+                // The metadata of the entry, not of the target of a link: a link is not a file here.
                 let m = e.metadata().ok()?;
-                m.is_file().then(|| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len(), e.path()))
+                (m.is_file() && ours(&e.file_name().to_string_lossy())).then(|| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len(), e.path()))
             })
             .collect();
         let mut total: u64 = files.iter().map(|f| f.1).sum();
@@ -83,6 +86,15 @@ impl Disk {
         self.used.store(total, Relaxed);
         self.busy.store(false, Relaxed);
     }
+}
+
+/// `name` is the name of a file of the cache: an entry (32 hexadecimal digits, see `path`), or a temporary
+/// file of `put` that a crash left (the entry, a dot, the process and a number).
+fn ours(name: &str) -> bool {
+    let (Some(h), Some(tmp)) = (name.get(..32), name.get(32..)) else { return false };
+    let digits = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
+    h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        && (tmp.is_empty() || tmp.strip_prefix('.').and_then(|t| t.split_once('-')).is_some_and(|(p, n)| digits(p) && digits(n)))
 }
 
 #[cfg(test)]
@@ -111,6 +123,23 @@ mod tests {
         let d = Disk::new(dir.clone(), 250).unwrap();
         d.trim();
         assert_eq!(d.used.load(Relaxed), 200);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn deletes_only_its_files() {
+        assert!(ours("0123456789abcdef0123456789abcdef") && ours("0123456789abcdef0123456789abcdef.12-0"));
+        assert!(!ours("notes.txt") && !ours("0123456789abcdef0123456789abcdeé") && !ours("0123456789abcdef0123456789abcdeF") && !ours("0123456789abcdef0123456789abcdef.tif") && !ours("0123456789abcdef0123456789abcdef.1-"));
+        let dir = std::env::temp_dir().join(format!("eoview-disk-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let d = Disk::new(dir.join("cache"), 50).unwrap();
+        let (other, outside) = (dir.join("cache/notes.txt"), dir.join("outside"));
+        std::fs::write(&other, [0; 100]).unwrap();
+        std::fs::write(&outside, [0; 100]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, dir.join("cache/00000000000000000000000000000000")).unwrap();
+        d.put(&("a", 1u64), &[1; 100]);
+        assert!(other.exists() && outside.exists() && d.get(&("a", 1u64)).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
