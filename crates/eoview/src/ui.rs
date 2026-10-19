@@ -1127,6 +1127,7 @@ impl App {
             self.palette_ui(&ctx);
         }
         self.url_ui(&ctx);
+        self.net_ui(&ctx);
         self.update_ui(&ctx);
         self.ask_ui(&ctx);
         self.help_ui(&ctx);
@@ -1693,6 +1694,33 @@ impl App {
             }
         } else if r.should_close() {
             self.url = None;
+        }
+    }
+
+    /// Dialog for a workspace file with network paths (Windows, see `load_workspace_net`).
+    fn net_ui(&mut self, ctx: &egui::Context) {
+        let Some((path, nets)) = &self.net_ask else { return };
+        let (mut open, mut close) = (false, false);
+        let r = egui::Modal::new(egui::Id::new("net")).show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.heading(t("Network paths"));
+            ui.label(t("This workspace opens files on other computers. Windows sends your login to these computers. Open the workspace only if you trust it."));
+            ui.monospace(path);
+            // ponytail: the first 10 paths, a scroll list if workspaces get more.
+            for p in nets.iter().take(10) {
+                ui.monospace(format!("  {p}"));
+            }
+            ui.horizontal(|ui| {
+                open = ui.button(t("Open")).clicked();
+                close = ui.button(t("Cancel")).clicked();
+            });
+        });
+        if open {
+            let path = path.clone();
+            self.net_ask = None;
+            self.load_workspace_net(&path, true);
+        } else if close || r.should_close() {
+            self.net_ask = None;
         }
     }
 

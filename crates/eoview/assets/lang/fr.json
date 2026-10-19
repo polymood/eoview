@@ -232,6 +232,8 @@
  "Nature, 1 column": "Nature, 1 colonne",
  "Nature, 2 columns": "Nature, 2 colonnes",
  "Network": "Réseau",
+ "Network paths": "Chemins réseau",
+ "This workspace opens files on other computers. Windows sends your login to these computers. Open the workspace only if you trust it.": "Cet espace de travail ouvre des fichiers sur d'autres ordinateurs. Windows envoie votre identifiant à ces ordinateurs. Ouvrez l'espace de travail seulement si vous lui faites confiance.",
  "New line": "Nouvelle ligne",
  "New notebook": "Nouveau notebook",
  "New region": "Nouvelle région",

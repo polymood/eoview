@@ -441,6 +441,15 @@ impl Watcher {
 
 /// The stamp of a local product: the modification time and the size of the file, or of the files of a
 /// directory (SAFE, SEN3, Zarr: 4 levels, 20000 entries at most). None: it does not exist now.
+/// `p` is a network path of Windows: `\\host\share`, `//host/share` or `\\?\UNC\host\share`. Windows opens it
+/// with the login of the user. A device path of a drive (`\\?\C:\`) is local. An other device path counts as
+/// a network path.
+fn network_path(p: &str) -> bool {
+    let sep = |c: &u8| *c == b'\\' || *c == b'/';
+    let b = p.as_bytes();
+    b.len() >= 2 && sep(&b[0]) && sep(&b[1]) && !matches!(b.get(2..6), Some([b'?' | b'.', s, d, b':']) if sep(s) && d.is_ascii_alphabetic())
+}
+
 fn stamp(path: &str) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     let m = std::fs::metadata(path).ok()?;
@@ -634,6 +643,8 @@ pub struct App {
     pub palette: Option<crate::ui::Palette>,
     /// URL field of the "open URL" dialog: text, add as a layer, view.
     pub url: Option<(String, bool, u32)>,
+    /// A workspace file with network paths, and the paths: the dialog asks the user to open them.
+    pub net_ask: Option<(String, Vec<String>)>,
     /// Recent products and workspaces, newest first, and their file. Without credentials (see `eo_core::redact_url`).
     pub recent: Vec<String>,
     pub recent_file: Option<std::path::PathBuf>,
@@ -767,6 +778,7 @@ impl App {
             gpu_budget,
             bench,
             url: None,
+            net_ask: None,
             recent: vec![],
             recent_file: None,
             quit: false,
@@ -1940,10 +1952,47 @@ impl App {
     }
 
     pub fn load_workspace(&mut self, path: &str) {
-        let ws: Workspace = match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string())) {
+        self.load_workspace_net(path, false);
+    }
+
+    /// Open the workspace file `path`. Windows: a network path in the file (`network_path`) opens only with
+    /// `net`. Else the dialog `net_ask` asks the user first.
+    pub fn load_workspace_net(&mut self, path: &str, net: bool) {
+        let mut ws: Workspace = match std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string())) {
             Ok(w) => w,
             Err(e) => return self.error = Some(format!("{path}: {e}")),
         };
+        // Paths relative to the workspace file. On Windows, a network path sends the login of the user to
+        // the computer of the path (NTLM): a workspace file from an other person must not open it silently.
+        let dir = std::path::Path::new(path).parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let mut nets = vec![];
+        let mut fix = |p: &mut String| {
+            if cfg!(windows) && network_path(p) {
+                nets.push(p.clone());
+            }
+            if !p.contains("://") && std::path::Path::new(p.as_str()).is_relative() {
+                *p = dir.join(&*p).to_string_lossy().into_owned();
+            }
+        };
+        fn fix_save(s: &mut LayerSave, fix: &mut dyn FnMut(&mut String)) {
+            // The path of a computed layer is its name.
+            if s.op.is_none() {
+                fix(&mut s.path);
+            }
+            s.series.iter_mut().for_each(|x| fix(&mut x.0));
+            match &mut s.op {
+                Some(OpSave::Agg { source, .. } | OpSave::AggDim { source, .. }) => fix_save(source, fix),
+                Some(OpSave::Math { inputs, .. }) => inputs.iter_mut().for_each(|i| fix_save(i, fix)),
+                None => {}
+            }
+        }
+        ws.panes.iter_mut().flat_map(|p| p.layers.iter_mut()).for_each(|s| fix_save(s, &mut fix));
+        if cfg!(windows) && network_path(&ws.render.out) {
+            nets.push(ws.render.out.clone());
+        }
+        if !nets.is_empty() && !net {
+            return self.net_ask = Some((path.into(), nets));
+        }
         for p in std::mem::take(&mut self.panes) {
             self.engine.want(p.id, vec![]);
         }
@@ -1962,27 +2011,7 @@ impl App {
             *p.code() = code;
             (p.open, p.ask, p.cur) = (true, true, 0);
         }
-        // Paths relative to the workspace file.
-        let dir = std::path::Path::new(path).parent().map(|d| d.to_path_buf()).unwrap_or_default();
-        let fix = |p: &mut String| {
-            if !p.contains("://") && std::path::Path::new(p.as_str()).is_relative() {
-                *p = dir.join(&*p).to_string_lossy().into_owned();
-            }
-        };
-        fn fix_save(s: &mut LayerSave, fix: &dyn Fn(&mut String)) {
-            // The path of a computed layer is its name.
-            if s.op.is_none() {
-                fix(&mut s.path);
-            }
-            s.series.iter_mut().for_each(|x| fix(&mut x.0));
-            match &mut s.op {
-                Some(OpSave::Agg { source, .. } | OpSave::AggDim { source, .. }) => fix_save(source, fix),
-                Some(OpSave::Math { inputs, .. }) => inputs.iter_mut().for_each(|i| fix_save(i, fix)),
-                None => {}
-            }
-        }
-        let mut ws_panes = ws.panes;
-        ws_panes.iter_mut().flat_map(|p| p.layers.iter_mut()).for_each(|s| fix_save(s, &fix));
+        let ws_panes = ws.panes;
         self.dock = ws.dock;
         self.link_px = ws.link_px;
         self.error = None;
@@ -2308,6 +2337,16 @@ fn finite(v: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_paths() {
+        for p in [r"\\host\share\a.tif", "//host/share/a.tif", r"\\?\UNC\host\share\a.tif", r"\/host\share", r"\\.\pipe\x"] {
+            assert!(network_path(p), "{p}");
+        }
+        for p in [r"C:\data\a.tif", "/data/a.tif", r"\\?\C:\data\a.tif", r"\\.\D:\a.tif", "https://host/a.tif", "a.tif", r"\a.tif"] {
+            assert!(!network_path(p), "{p}");
+        }
+    }
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() <= tol * b.abs().max(1.0)
