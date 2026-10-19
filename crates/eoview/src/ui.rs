@@ -36,6 +36,8 @@ pub enum Cmd {
     Export,
     /// The Figure tab: open or close it. Export the figure to a file of this type (pdf, svg, png, csv).
     Figure,
+    /// The Graph tab: open or close it.
+    Graph,
     FigureExport(&'static str),
     NewView,
     Duplicate,
@@ -188,6 +190,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Save workspace..."), "Ctrl+S", Cmd::Save),
         (t("Export data (GeoTIFF)..."), "", Cmd::Export),
         (t("Figure"), "F8", Cmd::Figure),
+        (t("Graph"), "F9", Cmd::Graph),
         (t("Open workspace..."), "", Cmd::Load),
         (t("New view"), "Ctrl+N", Cmd::NewView),
         (t("Duplicate view"), "Ctrl+D", Cmd::Duplicate),
@@ -321,6 +324,7 @@ impl TabViewer for Tabs<'_> {
             crate::app::PY_TAB => return t("Python").into(),
             crate::app::CHARTS_TAB => return t("Charts").into(),
             crate::app::FIGURE_TAB => return t("Figure").into(),
+            crate::app::GRAPH_TAB => return t("Graph").into(),
             _ => {}
         }
         let p = self.app.pane(*tab);
@@ -340,6 +344,7 @@ impl TabViewer for Tabs<'_> {
             crate::app::PY_TAB => self.app.py_tab(ui),
             crate::app::CHARTS_TAB => self.app.charts_tab(ui),
             crate::app::FIGURE_TAB => self.app.figure_tab(ui, &mut self.cmds),
+            crate::app::GRAPH_TAB => self.app.graph_tab(ui),
             id => pane_ui(self.app, ui, id, self.screen, &mut self.cmds),
         }
     }
@@ -355,6 +360,7 @@ impl TabViewer for Tabs<'_> {
             crate::app::PY_TAB => self.app.py.iter_mut().for_each(|p| p.open = false),
             crate::app::CHARTS_TAB => self.app.py.iter_mut().for_each(|p| p.charts_open = false),
             crate::app::FIGURE_TAB => self.app.figure_open = false,
+            crate::app::GRAPH_TAB => self.app.graph_open = false,
             id => self.closed.push(id),
         }
         OnCloseResponse::Close
@@ -1130,6 +1136,7 @@ impl App {
             self.show_tab(crate::app::PY_TAB, py);
             self.show_tab(crate::app::CHARTS_TAB, charts);
             self.show_tab(crate::app::FIGURE_TAB, self.figure_open);
+            self.show_tab(crate::app::GRAPH_TAB, self.graph_open);
             let mut dock = std::mem::replace(&mut self.dock, DockState::new(vec![]));
             let mut tabs = Tabs { app: self, closed: vec![], cmds: vec![], screen };
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
@@ -1354,6 +1361,7 @@ impl App {
             (none, Key::F6, Cmd::Animate),
             (none, Key::F7, Cmd::Python),
             (none, Key::F8, Cmd::Figure),
+            (none, Key::F9, Cmd::Graph),
             (cmd, Key::Q, Cmd::Quit),
             (sh, Key::C, Cmd::CopyExtent),
             (none, Key::F1, Cmd::Help),
@@ -1434,6 +1442,12 @@ impl App {
             Cmd::Save => self.dialog = Some(Dialog::Save),
             Cmd::Export => self.dialog = Some(Dialog::Export(id)),
             Cmd::Figure => self.figure_open ^= true,
+            Cmd::Graph => {
+                self.graph_open ^= true;
+                if self.graph_open && self.graph.is_empty() {
+                    self.graph_show(id);
+                }
+            }
             Cmd::FigureExport(ext) => self.dialog = Some(Dialog::Figure(id, ext)),
             Cmd::Load => self.dialog = Some(Dialog::Load),
             Cmd::NewView => drop(self.split(id)),
@@ -1967,6 +1981,7 @@ impl App {
                 ui.add_enabled_ui(pins, |ui| entry(ui, cmds, id, t("Remove the pinned points"), "", Cmd::ClearPins));
                 ui.separator();
                 entry(ui, cmds, id, t("Python..."), "F7", Cmd::Python);
+                entry(ui, cmds, id, t("Graph..."), "F9", Cmd::Graph);
                 ui.separator();
                 check(ui, cmds, id, grids.0, t("Pixel grid"), "X", Cmd::PixelGrid);
                 check(ui, cmds, id, grids.1, t("Coordinate grid"), "N", Cmd::CoordGrid);
@@ -1996,6 +2011,9 @@ impl App {
                     cmds.push((Cmd::Animate, id));
                 }
                 ui.separator();
+                if ui.selectable_label(self.graph_open, t("Graph")).on_hover_text(t("Sources, operations and outputs of layers as a graph (F9)")).clicked() {
+                    cmds.push((Cmd::Graph, id));
+                }
                 if ui.selectable_label(self.figure_open, t("Figure")).on_hover_text(t("Maps and plots for a publication: PDF, SVG, PNG, CSV (F8)")).clicked() {
                     cmds.push((Cmd::Figure, id));
                 }

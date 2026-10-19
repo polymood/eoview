@@ -544,9 +544,32 @@ impl App {
                 f
             }
         };
+        let own_dir = d.path.is_some();
+        self.py_spawn(&file, own_dir);
+    }
+
+    /// Run the script of a Python node of the graph, as the Run command does for a script of the panel.
+    pub fn py_graph(&mut self, code: &str) {
+        let Some(p) = &mut self.py else { return self.error = Some(t("Python is not available.").into()) };
+        let Some(file) = p.path.clone().map(|d| d.join("graph-node.py")) else { return };
+        if let Err(e) = std::fs::write(&file, code) {
+            return self.error = Some(format!("{}: {e}", file.display()));
+        }
+        p.open = true;
+        self.py_spawn(&file, false);
+    }
+
+    /// Start the script `file` in the Python of the preferences (the output goes to the log of the panel).
+    /// `own_dir`: the current directory is the directory of the file.
+    fn py_spawn(&mut self, file: &std::path::Path, own_dir: bool) {
+        let cmd = self.py_command();
+        let Some(p) = &mut self.py else { return };
+        if let Some(mut c) = p.child.take() {
+            let _ = c.kill();
+        }
         let Some(mut cmd) = cmd else { return };
-        cmd.arg("-u").arg(&file);
-        if let Some(d) = file.parent().filter(|_| d.path.is_some()) {
+        cmd.arg("-u").arg(file);
+        if let Some(d) = file.parent().filter(|_| own_dir) {
             cmd.current_dir(d);
         }
         cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());

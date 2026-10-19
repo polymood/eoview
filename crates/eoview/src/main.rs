@@ -11,6 +11,7 @@ mod layer;
 mod outlines;
 mod prefs;
 mod figure;
+mod graph;
 mod py;
 mod plot;
 mod products;
