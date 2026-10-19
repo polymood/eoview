@@ -654,7 +654,7 @@ impl Inner {
             times: Default::default(),
             dims: vec![],
         };
-        let product = Product { name: name.into(), desc: format!("{name}: {} of {} layers", f.name(), inputs.len()), vars: vec![var], small: vec![], valid: None, info: Default::default() };
+        let product = Product { name: name.into(), desc: format!("{} of {}", f.name(), inputs.iter().map(|l| l.var().name.as_str()).collect::<Vec<_>>().join(", ")), vars: vec![var], small: vec![], valid: None, info: Default::default() };
         let ds = Arc::new(Dataset { product, sources: inputs[0].ds.sources.clone() });
         let key = format!("{f:?} {:?}", inputs.iter().map(|l| l.id).collect::<Vec<_>>());
         let (id, ds_id, levels) = (self.next.fetch_add(1, Relaxed), self.next.fetch_add(1, Relaxed), inputs[0].levels.clone());

@@ -2227,7 +2227,7 @@ impl App {
                     s
                 })
                 .collect();
-            let path = format!("{} {}", t(name), l.name);
+            let path = format!("{} {}", t(name), l.name.replace('.', "_"));
             let op = OpSave::Filter { filter: f.clone(), inputs: inputs.clone() };
             let open = Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op: Some(op), to: None, replace: None, var: None };
             return self.load_inputs(open, String::new(), vec![], Some(f), &inputs);
@@ -2240,7 +2240,7 @@ impl App {
             (*lo, *hi) = (((l.st[0].lo + l.st[0].hi) / 2.0) as f64, inp.sample.last().map_or(l.st[0].hi as f64, |&v| v as f64));
         }
         let op = l.saveable().then(|| OpSave::Filter { filter: f.clone(), inputs: vec![l.save()] });
-        let path = format!("{} {}", t(name), l.label(40));
+        let path = format!("{} {}", t(name), l.comp_name());
         let req = self.engine.filter(path.clone(), f, vec![inp]);
         self.opens.insert(req, Open { pane: id, save: None, order: usize::MAX, path, series: vec![], band: None, op, to: None, replace: None, var: None });
     }
