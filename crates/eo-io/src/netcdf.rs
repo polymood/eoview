@@ -1,6 +1,7 @@
 //! NetCDF-4 files (HDF5 inside): each dataset with 2 or more dimensions is a variable. The CF attributes
 //! give the scale, the offset, the fill value and the units. The last two dimensions are the rows and
-//! the columns. A dimension before them with the length of the `time` coordinate is the time dimension.
+//! the columns. The dimension named `time` before them (or, without dimension names, a dimension with the
+//! length of the `time` coordinate) is the time dimension.
 //!
 //! Specifications: NetCDF-4 format, <https://docs.unidata.ucar.edu/netcdf-c/current/file_format_specifications.html>;
 //! CF conventions, <https://cfconventions.org/>.
@@ -65,8 +66,9 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<Variable>
             dims: names(&d),
         });
     }
-    // Time dimension: the reader does not read the dimension lists of HDF5, it compares the lengths.
-    // The coordinate in the group of the variable is used first, then the coordinate nearest to the root.
+    // Time dimension: the dimension named `time` (dimension lists of HDF5). A file without dimension names:
+    // a dimension with the length of a `time` coordinate. The coordinate in the group of the variable is used
+    // first, then the coordinate nearest to the root.
     let leaf = |p: &str| p.rsplit('/').next().unwrap_or(p).to_lowercase();
     let dir = |p: &str| p.rsplit_once('/').map_or(String::new(), |d| d.0.to_string());
     let mut coords: Vec<&H5> = one_d.iter().filter(|d| leaf(&d.path) == "time").collect();
@@ -74,7 +76,12 @@ pub fn variables(src: &Source, idx: u32) -> Result<(Vec<Variable>, Vec<Variable>
     for v in &mut vars {
         let n = v.levels[0].shape.len();
         let t = coords.iter().filter(|c| dir(&v.name).starts_with(&dir(&c.path))).rev().chain(&coords);
-        let Some((c, k)) = t.filter_map(|c| Some((*c, v.levels[0].shape[..n - 2].iter().position(|&s| s == c.shape[0])?))).next() else { continue };
+        let named = v.dims.get(..n - 2).map(|d| d.iter().position(|x| x.eq_ignore_ascii_case("time")));
+        let at = |c: &H5| match named {
+            Some(k) => k.filter(|&k| v.levels[0].shape[k] == c.shape[0]),
+            None => v.levels[0].shape[..n - 2].iter().position(|&s| s == c.shape[0]),
+        };
+        let Some((c, k)) = t.filter_map(|c| Some((*c, at(c)?))).next() else { continue };
         v.levels[0].dims[k] = "time".into();
         if let (Some((unit, t0)), Ok(vals)) = (c.text("units").and_then(time::cf), read_1d(src, c)) {
             v.times = std::sync::Arc::new(vals.into_iter().map(|x| t0 + x * unit).collect());

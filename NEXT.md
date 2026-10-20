@@ -156,8 +156,9 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. Done
     (2026-10-20): Sentinel-1 (manifest.safe) and Sentinel-2 (MTD_MSIL1C/2A.xml) SAFE, the first element of
     each tag (`eo_io::xml_leaves`, also for the SMOS header). To do: NITF header fields, JPEG 2000 boxes.
-    Done (2026-10-14): the names of the dimensions come from `DIMENSION_LIST` (object references). To
-    do: the time dimension of NetCDF still comes from the length of the `time` coordinate.
+    Done (2026-10-14): the names of the dimensions come from `DIMENSION_LIST` (object references). Done
+    (2026-10-20): the time dimension is the dimension named `time` (the length only for a file without
+    dimension names).
 12. **Color bar (2026-10-09).** Code done (Shift+B, on by default, in the render frames too). To do: check
     it on screen, with gamma and dB, and in the light theme.
 13. **Any variable, any dimensions (2026-10-14, first priority).** A tester could not see `stokes_vector`
@@ -196,7 +197,6 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
       Gaussian grids, spectral fields, GRIB 1 second-order packing.
     - HDF4: RLE, skipping Huffman, NBIT, SZIP and JPEG compression, GCTP projections other than
       geographic (MODIS sinusoidal), a block cache for remote files.
-    - NetCDF-4: the time dimension from `DIMENSION_LIST` (now from the length of the time coordinate).
 14a. **Native plots (2026-10-14).** DESIGN section 17. Done: the plot of a plane with the axes of its
     coordinates (Hovmoller diagram, vertical section with a logarithmic and reversed pressure axis,
     spectrogram), the profile at the cursor, the line plot of a 1D variable, in the Figure tab with all
@@ -260,8 +260,7 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 - Disk cache: no check that a remote object changed. A URL with a new signature does not find its old
   entries.
 - S3: no credentials from the instance metadata service. Signed requests are not tested.
-- Time: UTC only (a UTC offset in a text is ignored). The NetCDF reader finds the time dimension by its
-  length, not by the HDF5 dimension lists.
+- Time: UTC only (a UTC offset in a text is ignored).
 - A STAC item opens one asset at a time: no composite of bands that are in different files of an item.
 - URLs in errors: a URL with a space or a `)` before its query is cut there. The debug form (`{:?}`) of an
   error is not redacted.
