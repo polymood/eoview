@@ -43,9 +43,12 @@ pub fn decode<'a>(a: &Array, src: &'a [u8]) -> Result<Cow<'a, [u8]>> {
     if need > MAX_CHUNK {
         return Err(Error(format!("chunk of {} MB is too large to decode (limit {} MB)", need >> 20, MAX_CHUNK >> 20)));
     }
+    // A checksum after a decompressor in the pipeline (HDF5 Fletcher-32 as the first filter of the writer):
+    // the decompressed data has its 4 bytes too.
+    let room = need + 4 * a.codecs.iter().filter(|c| matches!(c, Codec::Checksum)).count();
     let mut cur: Cow<[u8]> = Cow::Borrowed(src);
     for c in &a.codecs {
-        cur = step(a, c, cur, need).map_err(|e| Error(format!("{c:?}: {e}")))?;
+        cur = step(a, c, cur, room).map_err(|e| Error(format!("{c:?}: {e}")))?;
     }
     let mut out = cur.into_owned();
     out.resize(need, 0);
@@ -255,6 +258,16 @@ mod tests {
         let mut out = [0u8; 6];
         packbits(&src, &mut out);
         assert_eq!(out, [0xAA, 0xAA, 0xAA, 0x80, 0x00, 0x2A]);
+    }
+
+    /// HDF5 with Fletcher-32 as the first filter of the writer: the checksum is in the deflated data.
+    #[test]
+    fn deflate_shuffle_checksum() {
+        let raw: Vec<u8> = [1f32, 2.0].iter().flat_map(|v| v.to_le_bytes()).chain([9; 4]).collect();
+        let shuffled: Vec<u8> = (0..4).flat_map(|b| (0..3).map(move |i| (b, i))).map(|(b, i)| raw[i * 4 + b]).collect();
+        use eo_core::{Chunks, DType};
+        let a = Array { dims: vec!["x".into()], shape: vec![2], chunk: vec![2], dtype: DType::F32, le: true, codecs: vec![Codec::Deflate, Codec::Shuffle { size: 4 }, Codec::Checksum], chunks: Chunks::List(vec![]), place: None };
+        assert_eq!(&decode(&a, &zlib(&shuffled)).unwrap()[..], &raw[..8]);
     }
 
     #[test]

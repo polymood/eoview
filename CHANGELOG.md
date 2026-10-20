@@ -17,6 +17,9 @@ The changes of each version of eoview, the newest first. The
 - Products of points (1D latitude and longitude, for example altimetry tracks) open as images on a grid of
   longitude and latitude.
 - SMOS products (Earth Explorer format): soil moisture, ocean salinity, and the grid points of level 1C.
+- Sentinel-5P L2 products open (a fix of deflate chunks with a checksum). The .nc files of Sentinel-6 L2
+  products open as a track.
+- NetCDF and HDF5: the view shows the main variable first (a georeferenced image, not a coordinate).
 - CEOS SAR products (Radarsat-1, ALOS PALSAR, ERS): all polarizations, the metadata, and the position of
   geocoded products.
 - Envisat N1 products: ASAR, MERIS and AATSR level 1 images, and all the headers as metadata.

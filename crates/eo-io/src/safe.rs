@@ -37,7 +37,8 @@ pub fn kind(dir: &Path) -> Option<&'static str> {
         Some("S2")
     } else if dir.join("manifest.safe").exists() && dir.join("measurement").is_dir() && dir.join("annotation").is_dir() {
         Some("S1")
-    } else if dir.join("xfdumanifest.xml").exists() {
+    } else if dir.join("xfdumanifest.xml").exists() && !dir.to_string_lossy().ends_with(".SEN6") {
+        // Sentinel-6 products have an xfdumanifest.xml too: their NetCDF files open one by one.
         Some("S3")
     } else {
         None

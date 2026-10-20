@@ -14,12 +14,12 @@ const CH: u64 = 256;
 /// The largest number of cells of level 0.
 const MAX_CELLS: f64 = 64e6;
 
-fn is_lat(n: &str) -> bool {
+pub(crate) fn is_lat(n: &str) -> bool {
     let n = n.to_ascii_lowercase();
     n == "lat" || n.ends_with("latitude") || n.ends_with("_lat")
 }
 
-fn is_lon(n: &str) -> bool {
+pub(crate) fn is_lon(n: &str) -> bool {
     let n = n.to_ascii_lowercase();
     n == "lon" || n.ends_with("longitude") || n.ends_with("_lon")
 }

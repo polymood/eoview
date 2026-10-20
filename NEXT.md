@@ -219,12 +219,17 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 
 ## Specification, not done
 
-- Phase 3: Sentinel-5P (NetCDF-4 with groups, swath), ESA CCI checks with real products, signed S3 requests
+- Phase 3: ESA CCI checks with real products, signed S3 requests
   and the CDSE endpoint with real keys, spectral profile, histogram of the visible region.
 - Phase 3 acceptance with the GPU: remote product open to first pixels in less than 1.5 s (engine only:
   0.6 to 1.0 s), a 30-step series that plays without gaps after the first pass.
 - Phase 4: swath meshes. Done: globe (item 4), DEM terrain (item 14).
-- Phase 5: Earth Explorer (CryoSat-2), HDF5 (EarthCARE, Proba-V), Sentinel-6, BIOMASS.
+- Phase 5: Earth Explorer (CryoSat-2), HDF5 (EarthCARE, Proba-V), BIOMASS.
+  Done (2026-10-20), checked with products of CDSE: Sentinel-5P L2 NO2 (the swath with its latitude and
+  longitude arrays, the values agree with netCDF4) and Sentinel-6 L2 LR (the .nc files of a .SEN6 product:
+  a track at 1 Hz). Fixed: a deflate chunk with a Fletcher-32 checksum after it (all S5P variables), a .SEN6
+  folder that opened as Sentinel-3. To do in Sentinel-6: the 20 Hz groups (their own latitude and longitude),
+  the folder opens the STD file. The first variable can have no data (S6B `rad_tb_238`).
   Done (2026-10-20): SMOS (Earth Explorer .HDR and .DBL): L2 soil moisture (MIR_SMUDP2) and ocean salinity
   (MIR_OSUDP2), and the grid points of the L1C products (browse and science). The header as metadata, each
   field as a 1D variable and as an image (points). Checked with 4 sample products. Not done in SMOS: the

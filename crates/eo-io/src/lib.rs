@@ -93,6 +93,13 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         for v in &mut vars {
             v.georef = netcdf::georef(&src, v, &one_d, &all);
         }
+        // The main variable first (the view shows it): a georeferenced image, not a coordinate, float values,
+        // in the fewest groups, the largest. The workspace file keeps the band by its name, not by its index.
+        vars.sort_by_key(|v| {
+            let (s, leaf) = (&v.levels[0].shape, v.name.rsplit('/').next().unwrap_or(""));
+            let area = s[s.len().saturating_sub(2)..].iter().product::<u64>();
+            (matches!(v.georef, eo_core::Georef::None), points::is_lat(leaf) || points::is_lon(leaf), !matches!(v.levels[0].dtype, eo_core::DType::F32 | eo_core::DType::F64), v.name.matches('/').count(), std::cmp::Reverse(area))
+        });
         let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len() + small.len());
         Product { name, desc, vars, small, valid: None, info }
     } else if envisat::is_envisat(&head) {
