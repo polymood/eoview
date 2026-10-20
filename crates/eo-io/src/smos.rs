@@ -59,21 +59,6 @@ pub fn files(path: &Path) -> Option<(PathBuf, PathBuf)> {
     (head.len() < 1 << 24 && String::from_utf8_lossy(&head).contains("<Datablock_Schema>DBL_SM_") && d.exists()).then_some((h, d))
 }
 
-/// The text of the `<Tag>value</Tag>` lines of the fixed header and of the main product header.
-fn header(text: &str) -> Attrs {
-    let main = text.split("<Specific_Product_Header>").next().unwrap_or("");
-    main.lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            let (tag, rest) = l.strip_prefix('<')?.split_once('>')?;
-            let tag = tag.split(' ').next()?;
-            let v = rest.strip_suffix(&format!("</{tag}>"))?.trim();
-            (!v.is_empty()).then(|| (tag.to_string(), v.to_string()))
-        })
-        .take(200)
-        .collect()
-}
-
 fn var(name: &str, a: Array) -> Variable {
     let fill = (a.dtype == DType::F32).then_some(-999.0);
     Variable { name: name.into(), group: String::new(), levels: vec![a], bands: vec![name.into()], fill, scale: 1.0, offset: 0.0, units: String::new(), georef: Georef::None, times: Default::default(), dims: vec!["grid_point".into()] }
@@ -139,7 +124,7 @@ pub fn open(hdr: &Path, dbl: &Path, rt: &tokio::runtime::Handle) -> Result<Datas
         _ => "BT_Data_Counter",
     };
     small.sort_by_key(|v| v.name != main);
-    let info = Info { attrs: header(&text), dims: vec![("grid_point".into(), small[0].levels[0].shape[0])], vars: vec![] };
+    let info = Info { attrs: crate::xml_leaves(text.split("<Specific_Product_Header>").next().unwrap_or(""), 200), dims: vec![("grid_point".into(), small[0].levels[0].shape[0])], vars: vec![] };
     let desc = format!("SMOS {kind}, {} grid points", small[0].levels[0].shape[0]);
     let mut ds = Dataset { product: Product { name, desc, vars: vec![], small, valid: None, info }, sources: vec![Arc::new(src)] };
     crate::points::add_images(&mut ds, rt)?;

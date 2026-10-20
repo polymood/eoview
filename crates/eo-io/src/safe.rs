@@ -146,7 +146,8 @@ fn s2(dir: &Path, rt: &Handle) -> Result<Dataset> {
     }
     let pname = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into());
     let desc = format!("Sentinel-2 {} SAFE, {} bands, {}", if l2a { "L2A" } else { "L1C" }, vars.len(), crs.name);
-    Ok(Dataset { product: Product { name: pname, desc, vars, small: vec![], valid: None, info: Default::default() }, sources })
+    let info = Info { attrs: crate::xml_leaves(&mtd, 300), ..Default::default() };
+    Ok(Dataset { product: Product { name: pname, desc, vars, small: vec![], valid: None, info }, sources })
 }
 
 /// Sentinel-1 Level 1 (GRD, SLC): one variable for each measurement file (polarisation, and swath for SLC).
@@ -206,7 +207,9 @@ fn s1(dir: &Path, rt: &Handle) -> Result<Dataset> {
     let pname = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into());
     let kind = pname.split('_').filter(|s| !s.is_empty()).skip(1).take(2).collect::<Vec<_>>().join(" ");
     let desc = format!("Sentinel-1 {kind} SAFE, {} measurement(s), {:?}", vars.len(), vars[0].levels[0].dtype);
-    Ok(Dataset { product: Product { name: pname, desc, vars, small: vec![], valid: None, info: Default::default() }, sources })
+    let manifest = std::fs::read_to_string(dir.join("manifest.safe")).unwrap_or_default();
+    let info = Info { attrs: crate::xml_leaves(&manifest, 300), ..Default::default() };
+    Ok(Dataset { product: Product { name: pname, desc, vars, small: vec![], valid: None, info }, sources })
 }
 
 /// Sentinel-3: the variables of all NetCDF files. A name that is in two files gets the file name first.

@@ -153,8 +153,9 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
    - The trend is per step: unequal time intervals have no weight.
    - Filter tiles do not go to the disk cache. Two tiles that need the same input tile both compute it.
 
-11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. To
-    do: Sentinel-1 and Sentinel-2 SAFE (manifest, metadata XML), NITF header fields, JPEG 2000 boxes.
+11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. Done
+    (2026-10-20): Sentinel-1 (manifest.safe) and Sentinel-2 (MTD_MSIL1C/2A.xml) SAFE, the first element of
+    each tag (`eo_io::xml_leaves`, also for the SMOS header). To do: NITF header fields, JPEG 2000 boxes.
     Done (2026-10-14): the names of the dimensions come from `DIMENSION_LIST` (object references). To
     do: the time dimension of NetCDF still comes from the length of the `time` coordinate.
 12. **Color bar (2026-10-09).** Code done (Shift+B, on by default, in the render frames too). To do: check
