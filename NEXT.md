@@ -24,8 +24,8 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 - `DESIGN.md` step 3 (operations core), first version: computed layers in the engine (`eo_cache::Op`),
   with the aggregate over time (mean, median, minimum, maximum, standard deviation, count) of a cube or
   of a list of products, and layer math (arithmetic and mask between layers of different products on
-  the same grid), in the workspace file. To do: the operations in the layer list (on/off, parameters,
-  remove), an option "exact at level 0" for the view (3.5), export with time steps (NetCDF) and as a
+  the same grid), in the workspace file. Done (2026-10-19): the operation and its parameters in the Data
+  tab of a computed layer (an edit makes the layer again). To do: an option "exact at level 0" for the view (3.5), export with time steps (NetCDF) and as a
   COG with overviews (now: a tiled GeoTIFF without overviews), export of a region only, progress of the
   steps in the view. Done: export of a layer to GeoTIFF (3.6).
 - `DESIGN.md` step 5 (Python), first version: the module `eoview` (`python/`), the notebooks
@@ -62,9 +62,18 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
   0.2.1: done on Ubuntu (dialog, download, restart). It works.
 - 2026-10-15, security audit (on develop, for the next release): reader limits, Python fixes, log path,
   install signature check, CI audit (cargo audit, zizmor), pinned actions, release environment, rulesets
-  for main and the v* tags, secret scanning. Not done: the URL with its query in error messages, an older
-  signed release as an update (the signature does not cover the version), no size limit on the update
-  download, UNC paths in workspaces on Windows, the cache cleanup deletes any file in the cache directory.
+  for main and the v* tags, secret scanning.
+- 2026-10-19, the rest of the security audit (on develop, not released):
+  - Updates: a second signature (`<asset>.version.sig`) covers the text `eoview <version> <asset> <sha256>`.
+    The client refuses a version that is not newer. The old `.sig` stays for the 0.2.x clients and the old
+    install script. A size limit on the downloads (256 MB for the executable).
+  - The disk cache cleanup deletes only the files of the cache (by their names) and does not follow links.
+  - Windows: a network path (UNC) in a workspace file opens only after the user says yes.
+  - Errors and logs: no query and no `user:password@` in a URL (`eo_core::redact`).
+  - CI and the audit also run on develop. `scripts/bench_compare.sh` (open benchmark against the last
+    release), `scripts/build_windows.sh` (not run yet).
+- 2026-10-19: filters (item 10), the pipeline graph (item 9), the DEM on the globe (item 14), the Envisat N1
+  reader (phase 5). See the items.
 
 ## In work
 
@@ -78,13 +87,14 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 4. **3D globe.** Done: a view can be a globe (toolbar, G, `--globe`). The layer shader projects the
    tiles on the WGS84 ellipsoid from their longitude and latitude, the far side is not drawn, the view has
    meridians and parallels, and the globe uses the same camera as the 2D view (so links, layers, compare
-   modes and the timeline work). To do:
-   - Tilt and turn the camera (now it looks down, north up).
+   modes and the timeline work). Done (2026-10-19): tilt and heading (right drag, Shift+arrows, Shift+N
+   for north up), depth buffer with reversed Z, positions near the view center, DEM terrain (item 14).
+   To do:
    - A base map or coastlines, to see where the data is.
-   - Depth buffer (reversed Z) and DEM terrain.
-   - Positions relative to the camera (now f32: about 0.5 m).
    - Data on the two sides of the 180 degree meridian in a zoomed view.
-   - Tile requests from the real footprint of the view, and the level from the distance of each tile.
+   - Tile requests from the real footprint of the view, and the level from the distance of each tile (now:
+     a tilted view asks for a larger area, radius times 1 / cos tilt, at coarser levels).
+   - The camera does not stop at the terrain: the eye can go into a mountain.
    - Checks: a globe view in a link group with 2D views, and 4 layers at 60 frames per second.
 
 5. **Render and wind (the maintainer, 2026-10-06).** Done: the render of a view to a video file or to PNG files
@@ -103,40 +113,39 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
      fix of the open of large cubes: only a test cube with the same structure.
    - A mosaic layer: many products of an area as one image.
 
-## Asked by the maintainer, not started
+## Asked by the maintainer
 
 6. **Precise control of the bounding box.** Done: draw a box and read its coordinates, type a box or a
    polygon (a region), copy the extent of the view (Ctrl+Shift+C). To do: type the limits of the view
    (west, south, east, north, or center and scale), go to a latitude and longitude, use a region as the
    area of a STAC search and of an export.
-7. **1D data.** A variable with one dimension has no view now (the readers ignore it). Show it as a
-   line plot: along-track data (Sentinel-6, CryoSat-2 altimetry), coordinates, time series. A 1D variable
-   with latitude and longitude can also be a track on the map and on the globe.
-8. **Plots for publications.** Scientists make figures from the data. Plot types: histogram, scatter
-   plot of two bands (density), spectral profile, time profile, transect along a line, Hovmoller diagram.
-   Each plot needs axes with units, a legend, a color bar, and an export to PNG, SVG and PDF. A map figure
-   export: the view with a graticule, a scale bar, a color bar and a title.
-9. **Pipeline graph editor (Python).** A node graph: sources (layers), operations, outputs (a new layer,
-   a plot, a file). Nodes run Python functions (numpy, xarray) on the tiles that the view needs, so the
-   result stays interactive. Premade nodes, and a node with user code. The specification lists processing
-   chains and scripting as non-goals "unless the user asks": the maintainer asked for it on 2026-10-06.
-   Questions to answer first: where does Python run (a child process with shared memory, or PyO3), how
-   does a node get the data (chunks, with halo pixels for filters), how are results cached.
-10. **Filters and nodes that are useful for EO data.** To examine, then select a first set:
-   - Radiometry: SAR calibration (sigma0, gamma0, beta0), dB, top-of-atmosphere to reflectance, scale and
-     offset.
-   - SAR: speckle filters (Lee, refined Lee, Gamma-MAP, boxcar), multilook, coherence and interferogram of
-     an SLC pair, polarimetric decompositions (dual-pol H/alpha).
-   - Optical: cloud and shadow mask (Sentinel-2 SCL, Fmask-type rules), indices (NDVI, EVI, SAVI, NDWI,
-     NDMI, NBR, NDSI), pan sharpening, tasseled cap.
-   - Space filters: Gaussian, median, Sobel and Laplace edges, unsharp mask, morphology (erode, dilate,
-     open, close), texture (GLCM).
-   - Time: composite (median, maximum NDVI, percentile), gap fill, moving mean, anomaly from a
-     climatology, trend, change detection (difference, log ratio).
-   - Terrain (DEM): hillshade, slope, aspect, contour lines.
-   - Statistics: zonal statistics of a box or a polygon, threshold to a mask, classification with
-     k-means, histogram match between two layers.
-   - Geometry: resample to the grid of another layer, mosaic, crop to the bounding box.
+7. **1D data.** Done (2026-10-14, item 13): the 1D variables of a product as line charts. To do: a 1D
+   variable with latitude and longitude as a track on the map and on the globe (along-track altimetry:
+   Sentinel-6, CryoSat-2).
+8. **Plots for publications.** Most of it is done (DESIGN step 4, item 14a). To do: the time profile of a
+   point or a region, the spectral profile, figures with several panels, a north arrow, a choice of fonts.
+9. **Pipeline graph editor (Python).** Done (2026-10-19), first version: the Graph tab (F9, Tools menu),
+   nodes for sources, filters, layer math, aggregates, Python and outputs, "Make layer", the graph of a
+   computed layer, the graph in the workspace file. DESIGN section 18 answers the 3 questions. To do:
+   - The Python node runs on the whole layer at level 0 (the limit is the memory budget). Next step: tile by
+     tile with halo pixels (DESIGN 18.2). Then a Python node can feed a filter or another node.
+   - The result of a Python node is a memory layer: it is not in the workspace file (the graph is).
+   - A change of a node parameter does not update the layer: "Make layer" again.
+   - Each run of a Python node starts a new Python process.
+10. **Filters for EO data.** Done (2026-10-19), first set, as computed layers (Layer > Filter, the menu of
+   a layer row, the palette, the Data tab edits the parameters, the workspace file keeps them): scale and
+   offset, dB, normalized difference (NDVI, NDWI, NDMI, NBR, NDSI), EVI, SAVI, Gaussian, boxcar, median,
+   Sobel, Laplace, erosion, dilation, opening, closing, Lee, multilook (a boxcar), hillshade, slope,
+   aspect, threshold to a mask. The aggregates over time get percentiles (10, 25, 75, 90) and a trend.
+   Space filters read halo pixels from the tiles around: no seams, exact f32 values. To do:
+   - Refined Lee, Gamma-MAP, unsharp mask, texture (GLCM), contour lines, tasseled cap, pan sharpening,
+     cloud and shadow masks, SAR calibration, coherence, decompositions, k-means, histogram match.
+   - An index finds its bands by Sentinel-2 or STAC names only: a dialog to choose the bands.
+   - Anomaly: "Aggregate mean", then layer math `a - b` (no single operation).
+   - At a coarse level, an area filter runs on the overview: near the level-0 result, not equal.
+   - Terrain uses one cell size for the image (at its center): a small error for a DEM in degrees.
+   - The trend is per step: unequal time intervals have no weight.
+   - Filter tiles do not go to the disk cache. Two tiles that need the same input tile both compute it.
 
 11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. To
     do: Sentinel-1 and Sentinel-2 SAFE (manifest, metadata XML), NITF header fields, JPEG 2000 boxes.
@@ -187,8 +196,15 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
     its exports, several profiles in one chart (Keep), the zonal and the meridional mean, the scatter of
     two layers with its statistics. To do: the time series of a pinned point or of a region (now: a profile
     along time at the cursor), the time series of a list of products, figures with several panels.
-14. **A DEM in 3D on the globe (2026-10-09).** Camera tilt and heading, depth buffer, terrain mesh from a
-    DEM layer with an exaggeration, the layers draped on it. DESIGN section 14.
+14. **A DEM in 3D on the globe.** Done (2026-10-19): the "Terrain" check box and the "Exaggeration"
+    (1 to 20) of a layer in the Display tab. The globe draws a mesh with the heights of that layer, and the
+    other layers go on the relief. Missing tiles have height 0 (no holes). To do:
+    - The terrain layer must be visible (set its opacity to 0 to hide its colors).
+    - The heights are f16 in a 2048 x 2048 texture of the visible window: far mountains outside have
+      height 0.
+    - Mouse picking and overlays use the ellipsoid, not the terrain. No light on the terrain.
+    - The Copernicus DEM as a default terrain (DESIGN 14.3).
+    - Not checked: a real DEM, several pyramid levels in a tilted view, other GPUs, speed.
 15. **Panoply parity, other items.** DESIGN section 16.7 has the full list, with a decision for each
     function.
 16. **Repository size.** Done (2026-10-15): a rewrite of the history removed the frames of an old render
@@ -201,11 +217,13 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
   and the CDSE endpoint with real keys, spectral profile, histogram of the visible region.
 - Phase 3 acceptance with the GPU: remote product open to first pixels in less than 1.5 s (engine only:
   0.6 to 1.0 s), a 30-step series that plays without gaps after the first pass.
-- Phase 4: globe (see item 4), swath meshes, optional DEM terrain.
-- Phase 5: Earth Explorer, HDF5 (EarthCARE, Proba-V), Envisat N1, CEOS, Sentinel-6, SMOS, CryoSat-2,
-  BIOMASS.
-- Section 12 and 13: CI on Windows and macOS, clippy, benchmark comparison with the last release, Windows
-  executable from WSL.
+- Phase 4: swath meshes. Done: globe (item 4), DEM terrain (item 14).
+- Phase 5: Earth Explorer (SMOS, CryoSat-2), HDF5 (EarthCARE, Proba-V), CEOS, Sentinel-6, BIOMASS.
+  Done (2026-10-19): Envisat N1 (headers, ASAR, MERIS and AATSR level 1 images, the ASAR geolocation grid
+  and the MERIS tie points), checked with 5 sample products. Not done in Envisat: wave mode, level 2,
+  the AATSR geolocation and scaling. Samples of CEOS and SMOS products are in `target/scratch/heritage/`.
+- Section 12 and 13: the Windows executable from WSL (`scripts/build_windows.sh`, not run yet). Done: CI
+  on Linux, Windows and macOS with clippy, `scripts/bench_compare.sh`.
 
 ## Known limits
 
@@ -219,4 +237,8 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 - Time: UTC only (a UTC offset in a text is ignored). The NetCDF reader finds the time dimension by its
   length, not by the HDF5 dimension lists.
 - A STAC item opens one asset at a time: no composite of bands that are in different files of an item.
-- Error messages show the URL of a remote object, with its query.
+- URLs in errors: a URL with a space or a `)` before its query is cut there. The debug form (`{:?}`) of an
+  error is not redacted.
+- Updates: the client needs `<asset>.version.sig`, which only the releases after 0.2.2 have.
+- UNC paths: the paths in a product list file are not checked, only the paths of the workspace file.
+- The daily audit runs only when `audit.yml` is on main (the next release).

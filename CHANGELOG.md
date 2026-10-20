@@ -5,6 +5,15 @@ The changes of each version of eoview, the newest first. The
 
 ## Next version
 
+- Filters (Layer > Filter): scale and offset, dB, NDVI, NDWI, NDMI, NBR, NDSI, EVI, SAVI, Gaussian, boxcar,
+  median, Sobel, Laplace, erosion, dilation, opening, closing, Lee, multilook, hillshade, slope, aspect and
+  threshold. A filter makes a new layer. Change its parameters in the Data tab. The aggregates over time
+  get percentiles and a trend.
+- Graph tab (F9): connect layers, filters, layer math, aggregates and Python code, then make a new layer.
+- Globe: tilt and turn the camera (right drag, Shift+arrows, Shift+N for north up). A layer can be the
+  terrain of the globe, with a vertical exaggeration. The other layers go on the relief.
+- Envisat N1 products: ASAR, MERIS and AATSR level 1 images, and all the headers as metadata.
+
 Security (an audit of the CI, the repository, the install and the application, 2026-10-15):
 
 - Readers: a malformed file gives an error, not a crash. Limits for the sizes that come from the file,
@@ -17,6 +26,11 @@ Security (an audit of the CI, the repository, the install and the application, 2
 - CI: a daily audit of the dependencies (`cargo audit`) and of the workflows (`zizmor`). The actions are
   pinned to a commit. Only the release job can write, and only `v*` tags can use the signing key.
 - `rustls` 0.23.46 (RUSTSEC-2026-0346 to 0349).
+- Updates: a second signature covers the version and the name of the executable. eoview does not install
+  an older release as an update. A size limit on the downloads.
+- The cleanup of the disk cache deletes only the files of the cache.
+- Windows: a workspace file with a network path (`\\computer\share`) asks before it opens the path.
+- Errors and logs do not show the query or the password of a URL.
 
 ## 0.2.2 (2026-10-15)
 
