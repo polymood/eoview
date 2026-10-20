@@ -219,8 +219,13 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 
 ## Specification, not done
 
-- Phase 3: ESA CCI checks with real products, signed S3 requests
-  and the CDSE endpoint with real keys, spectral profile, histogram of the visible region.
+- Phase 3: signed S3 requests and the CDSE S3 endpoint with real keys, spectral profile, histogram of the
+  visible region. Done (2026-10-20): ESA CCI check with a real product (soil moisture COMBINED v09.2 of
+  CEDA: variable `sm` first, global grid of 0.25 degrees, fill, units), and the land surface temperature
+  series of `examples/`.
+- No public samples (registration or approval needed): Proba-V (VITO Terrascope, free registration),
+  EarthCARE and BIOMASS level 1 (ESA MAAP, restricted). These are HDF5 products: the HDF5 reader probably
+  opens them, not checked.
 - Phase 3 acceptance with the GPU: remote product open to first pixels in less than 1.5 s (engine only:
   0.6 to 1.0 s), a 30-step series that plays without gaps after the first pass.
 - Phase 4: swath meshes. Done: globe (item 4), DEM terrain (item 14).
