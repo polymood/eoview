@@ -779,5 +779,7 @@
  "The box is empty: west < east and south < north.": "La boîte est vide : ouest < est et sud < nord.",
  "Not a scale: {}": "Pas une échelle : {}",
  "Not a coordinate: {}": "Pas une coordonnée : {}",
- "Type a latitude and a longitude (and a scale 1:N), or west, south, east, north.": "Tapez une latitude et une longitude (et une échelle 1:N), ou ouest, sud, est, nord."
+ "Type a latitude and a longitude (and a scale 1:N), or west, south, east, north.": "Tapez une latitude et une longitude (et une échelle 1:N), ou ouest, sud, est, nord.",
+ "Loading: {} / {} tiles": "Chargement : {} / {} tuiles",
+ "Opening or computing a layer": "Ouverture ou calcul d'une couche"
 }

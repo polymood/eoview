@@ -331,6 +331,8 @@ pub struct MapLayer {
     pub inputs: Vec<Arc<Layer>>,
     /// Stretch again when the inputs are ready.
     pub auto_pending: bool,
+    /// The input layers of the layer that this one replaced (see `view::Input::prev`).
+    pub prev: Vec<u64>,
     /// The stretch is automatic (not a change of the user), and it is new (`App::same_stretch`).
     pub auto_st: bool,
     pub fresh: bool,
@@ -390,6 +392,7 @@ impl MapLayer {
             visible: true,
             inputs: vec![],
             auto_pending: true,
+            prev: vec![],
             auto_st: true,
             fresh: false,
             hist: vec![],

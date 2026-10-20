@@ -714,7 +714,25 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     if resp.drag_stopped() {
         app.shape_drag = None;
     }
+    // Loading bar at the top of the view: the part of the visible tiles that is complete. A layer that the
+    // engine opens or computes now (no tiles yet): a moving bar.
+    let busy = app.busy(id);
     let p = app.pane_mut(id).unwrap();
+    let (done, all) = p.v.progress;
+    if busy || done < all {
+        let bar = Rect::from_min_size(rect.left_top(), vec2(rect.width(), 3.0));
+        let (x0, x1) = if done < all {
+            (0.0, done as f32 / all as f32)
+        } else {
+            let t = (ui.input(|i| i.time) * 0.8).fract() as f32;
+            (t, (t + 0.25).min(1.0))
+        };
+        ui.painter().rect_filled(bar, 0.0, Color32::from_black_alpha(120));
+        ui.painter().rect_filled(Rect::from_x_y_ranges(bar.left() + x0 * bar.width()..=bar.left() + x1 * bar.width(), bar.y_range()), 0.0, ui.visuals().selection.bg_fill);
+        let tip = if done < all { tf("Loading: {} / {} tiles", &[&done.to_string(), &all.to_string()]) } else { t("Opening or computing a layer").to_string() };
+        ui.interact(bar.expand2(vec2(0.0, 3.0)), ui.id().with(("loading", id)), Sense::hover()).on_hover_text(tip);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
+    }
     // Link badge: one click links or unlinks the view.
     if !p.layers.is_empty() {
         let (txt, tip) = if p.link > 0 { (tf("link {}", &[&p.link.to_string()]), t("Linked: this view pans and zooms with the other linked views. Click to unlink (L)")) } else { (t("unlinked").to_string(), t("Click to link this view (L)")) };

@@ -311,14 +311,15 @@ impl Pane {
         }
         self.more = groups.collect();
         let space = self.v.space;
-        self.v.inputs = inputs.into_iter().map(|layer| Input { warp: warps.get(&(layer.id, space)).cloned(), layer }).collect();
+        let prev: HashMap<u64, u64> = self.layers.iter().flat_map(|l| l.inputs.iter().zip(&l.prev).map(|(x, p)| (x.id, *p))).collect();
+        self.v.inputs = inputs.into_iter().map(|layer| Input { warp: warps.get(&(layer.id, space)).cloned(), prev: prev.get(&layer.id).copied(), layer }).collect();
         // The next time steps of the layers with a timeline, the nearest step first.
         let mut ahead: Vec<Ahead> = vec![];
         for k in 1..=AHEAD {
             for l in self.layers.iter().filter(|l| l.visible && l.steps.len() > k) {
                 for x in l.inputs_at((l.step + k * l.stride.max(1)) % l.steps.len()).into_iter().flatten() {
                     if !self.v.inputs.iter().any(|i| i.layer.id == x.id) && !ahead.iter().any(|a| a.input.layer.id == x.id) {
-                        ahead.push(Ahead { miss: true, input: Input { warp: warps.get(&(x.id, space)).cloned(), layer: x } });
+                        ahead.push(Ahead { miss: true, input: Input { warp: warps.get(&(x.id, space)).cloned(), prev: None, layer: x } });
                     }
                 }
             }
@@ -1747,8 +1748,9 @@ impl App {
         }
         if let Some(s) = &o.save {
             m.apply(s);
-            // A new parameter of an operation: the values change, the colors stay.
-            m.auto_pending |= o.replace.is_some() && o.op.is_some();
+            // A new parameter of an operation: the values change, the colors and the stretch stay (A: a new
+            // automatic stretch).
+            m.auto_pending &= o.replace.is_none();
         }
         let space = m.default_space();
         let Some(p) = self.pane_mut(o.pane) else { return };
@@ -1764,6 +1766,7 @@ impl App {
         if let Some(i) = old {
             let sel = p.sel;
             m.order = p.layers[i].order;
+            m.prev = p.layers[i].inputs.iter().map(|x| x.id).collect();
             p.layers[i] = m;
             p.sel = sel;
             return self.compile(o.pane, i);
@@ -1993,6 +1996,11 @@ impl App {
         let p = self.pane_mut(id).ok_or("no view")?;
         (p.v.fit, p.moved) = (false, true);
         Ok(())
+    }
+
+    /// The engine opens or computes a layer for view `id` now.
+    pub fn busy(&self, id: u32) -> bool {
+        self.opens.values().any(|o| o.pane == id) || self.requests.values().any(|r| r.0 == id)
     }
 
     pub fn meters_per_px(&mut self, id: u32) -> Option<f64> {

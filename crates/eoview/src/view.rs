@@ -16,6 +16,9 @@ const TERRAIN_MESH: u32 = 32;
 pub struct Input {
     pub layer: Arc<Layer>,
     pub warp: Option<(Arc<Warp>, u64)>,
+    /// The layer that this input replaces (a new parameter of an operation): its tiles stay on the screen
+    /// where the tiles of the new layer are not there yet. Same grid and levels, thus the same tile keys.
+    pub prev: Option<u64>,
 }
 
 /// Camera of a globe view: it looks at the point (lon0, lat0) of the ellipsoid from the distance `dist`,
@@ -201,6 +204,8 @@ pub struct View {
     pub ahead: Vec<Ahead>,
     pub gpu: Option<View2d>,
     want: Vec<(Arc<Layer>, TileKey)>,
+    /// The tiles of the target level of the visible inputs: (complete on the GPU, all). The loading bar.
+    pub progress: (u32, u32),
     sent: Vec<TileKey>,
     /// Display coordinates under the cursor.
     pub cursor: Option<[f64; 2]>,
@@ -229,6 +234,7 @@ impl View {
             ahead: vec![],
             gpu: None,
             want: vec![],
+            progress: (0, 0),
             sent: vec![],
             cursor: None,
             full_res: false,
@@ -344,6 +350,7 @@ impl View {
             vg.inputs.push(eo_render::Input::new(gpu));
         }
         self.want.clear();
+        self.progress = (0, 0);
         self.levels.resize(self.inputs.len(), 0);
         self.wraps.resize(self.inputs.len(), false);
         for (k, inp) in self.inputs.iter().enumerate() {
@@ -388,8 +395,18 @@ impl View {
                                 gi.insts.push(shifted(inst(lv, tx, ty, layer), place));
                                 done
                             }
-                            None => false,
+                            None => {
+                                // The tile of the layer that this one replaces, until the new tile comes.
+                                if let Some(layer) = inp.prev.and_then(|p| gpu.peek(&TileKey { layer: p, ..key }, l.enc.u8)) {
+                                    gi.insts.push(shifted(inst(lv, tx, ty, layer), place));
+                                }
+                                false
+                            }
                         };
+                        if d == target {
+                            self.progress.1 += 1;
+                            self.progress.0 += done as u32;
+                        }
                         if !done && d == target {
                             let r = inst(lv, tx, ty, 0).rect;
                             holes.push([r[0] as f64, r[1] as f64, r[2] as f64, r[3] as f64]);
