@@ -302,7 +302,22 @@ pub fn open(src: &Source, idx: u32) -> Result<Product> {
         units: String::new(),
         georef,
     };
-    Ok(Product { name, desc, vars: vec![var], small: vec![], valid: None, info: Default::default() })
+    // The fields of the file header and of the first image subheader (MIL-STD-2500C tables A-1 and A-3).
+    let sub = src.read(hl..(hl + 333).min(len))?;
+    let mut attrs: Attrs = vec![];
+    for (b, fields) in [(&head[..], &[("FVER", 4, 5), ("CLEVEL", 9, 2), ("OSTAID", 15, 10), ("FDT", 25, 14), ("FTITLE", 39, 80), ("FSCLAS", 119, 1), ("ONAME", 300, 24)][..]), (&sub[..], &[("IID1", 2, 10), ("IDATIM", 12, 14), ("TGTID", 26, 17), ("IID2", 43, 80), ("ISCLAS", 123, 1), ("ISORCE", 291, 42)][..])] {
+        for &(k, o, n) in fields {
+            if let Some(v) = b.get(o..o + n).map(trim).filter(|v| !v.is_empty()) {
+                attrs.push((k.into(), v.into()));
+            }
+        }
+    }
+    for (k, v) in [("NROWS", f.rows.to_string()), ("NCOLS", f.cols.to_string()), ("PVTYPE", f.pvtype.clone()), ("IREP", f.irep.clone()), ("ICAT", f.icat.trim().into()), ("NBANDS", f.nbands.to_string()), ("NBPP", f.nbpp.to_string()), ("IC", f.ic.clone()), ("IMODE", f.imode.clone()), ("ICORDS", f.icords.clone()), ("IGEOLO", f.igeolo.trim().into())] {
+        if !v.is_empty() {
+            attrs.push((k.into(), v));
+        }
+    }
+    Ok(Product { name, desc, vars: vec![var], small: vec![], valid: None, info: Info { attrs, ..Default::default() } })
 }
 
 /// Georeferencing: SIDD plane projection, else SICD/SIDD image corners, else IGEOLO. Grid positions are
@@ -381,6 +396,14 @@ fn igeolo(icords: &str, g: &str) -> Option<Vec<(f64, f64)>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn header_fields() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let d = crate::open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/nitf_u8.ntf"), rt.handle()).unwrap();
+        let get = |k: &str| d.product.info.attrs.iter().find(|a| a.0 == k).map(|a| a.1.clone());
+        assert_eq!((get("OSTAID").as_deref(), get("FDT").as_deref(), get("NROWS").as_deref()), (Some("GDAL"), Some("20021216151629"), Some("200")));
+    }
+
     #[test]
     fn igeolo_dms() {
         let c = super::igeolo("G", "511407N0041916E511647N0041840E511709N0042256E511429N0042331E").unwrap();

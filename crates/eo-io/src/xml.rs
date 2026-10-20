@@ -97,6 +97,26 @@ pub fn unescape(s: &str) -> String {
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
+/// The leaf elements of an XML file (`<Tag>value</Tag>` on one line), as metadata: the tag without its
+/// namespace prefix, the first element of each tag, at most `max`. ESA metadata files have one element on
+/// each line.
+pub fn leaves(text: &str, max: usize) -> eo_core::Attrs {
+    let mut out: eo_core::Attrs = vec![];
+    for l in text.lines() {
+        let Some((tag, rest)) = l.trim().strip_prefix('<').and_then(|l| l.split_once('>')) else { continue };
+        let tag = tag.split(' ').next().unwrap_or("");
+        let Some(v) = rest.strip_suffix(&format!("</{tag}>")).map(str::trim).filter(|v| !v.is_empty() && !v.contains('<')) else { continue };
+        let name = tag.rsplit(':').next().unwrap_or(tag);
+        if !out.iter().any(|a| a.0 == name) {
+            out.push((name.to_string(), unescape(v)));
+        }
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +131,16 @@ mod tests {
         assert_eq!(text(x, "Root").map(|s| s.len()).unwrap() > 10, true);
         assert_eq!(attr(elems(x, "b")[0].0, "k"), Some("v"));
         assert_eq!(unescape(a[1].1), "t & u");
+    }
+}
+
+#[cfg(test)]
+mod leaves_tests {
+    #[test]
+    fn leaves_of_esa_xml() {
+        let t = "<xfdu:XFDU>\n  <safe:familyName>SENTINEL-1</safe:familyName>\n  <s1:pass>DESCENDING</s1:pass>\n  <safe:orbitNumber type=\"start\">4945</safe:orbitNumber>\n  <safe:orbitNumber type=\"stop\">4946</safe:orbitNumber>\n  <A><B>x</B></A>\n  <Empty> </Empty>\n";
+        let a = super::leaves(t, 10);
+        let v: Vec<(&str, &str)> = a.iter().map(|x| (x.0.as_str(), x.1.as_str())).collect();
+        assert_eq!(v, [("familyName", "SENTINEL-1"), ("pass", "DESCENDING"), ("orbitNumber", "4945")]);
     }
 }

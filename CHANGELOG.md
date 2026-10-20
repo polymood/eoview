@@ -20,6 +20,7 @@ The changes of each version of eoview, the newest first. The
 - Sentinel-5P L2 products open (a fix of deflate chunks with a checksum). The .nc files of Sentinel-6 L2
   products open as a track.
 - NetCDF and HDF5: the view shows the main variable first (a georeferenced image, not a coordinate).
+- Metadata of Sentinel-1 and Sentinel-2 SAFE products, NITF headers and JPEG 2000 boxes.
 - CEOS SAR products (Radarsat-1, ALOS PALSAR, ERS): all polarizations, the metadata, and the position of
   geocoded products.
 - Envisat N1 products: ASAR, MERIS and AATSR level 1 images, and all the headers as metadata.

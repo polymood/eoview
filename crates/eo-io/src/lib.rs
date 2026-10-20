@@ -32,26 +32,6 @@ pub struct Dataset {
     pub sources: Vec<Arc<Source>>,
 }
 
-/// The leaf elements of an XML file (`<Tag>value</Tag>` on one line), as metadata: the tag without its
-/// namespace prefix, the first element of each tag, at most `max`. ESA metadata files have one element on
-/// each line.
-pub fn xml_leaves(text: &str, max: usize) -> eo_core::Attrs {
-    let mut out: eo_core::Attrs = vec![];
-    for l in text.lines() {
-        let Some((tag, rest)) = l.trim().strip_prefix('<').and_then(|l| l.split_once('>')) else { continue };
-        let tag = tag.split(' ').next().unwrap_or("");
-        let Some(v) = rest.strip_suffix(&format!("</{tag}>")).map(str::trim).filter(|v| !v.is_empty() && !v.contains('<')) else { continue };
-        let name = tag.rsplit(':').next().unwrap_or(tag);
-        if !out.iter().any(|a| a.0 == name) {
-            out.push((name.to_string(), v.to_string()));
-        }
-        if out.len() >= max {
-            break;
-        }
-    }
-    out
-}
-
 /// Open a local path or an HTTP(S) URL. This function blocks: do not call it on the UI thread.
 /// A directory can be a SAFE product. A metadata file of a SAFE product opens its directory.
 pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
@@ -104,7 +84,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         let (w, h) = (levels[0].len_of("x"), levels[0].len_of("y"));
         let desc = format!("JPEG 2000 {:?}, {w} x {h}, {} level(s)", levels[0].dtype, levels.len());
         let var = Variable { name: name.clone(), group: String::new(), levels, bands, fill: None, scale: 1.0, offset: 0.0, units: String::new(), georef: Georef::None, times: Default::default(), dims: vec![] };
-        Product { name, desc, vars: vec![var], small: vec![], valid: None, info: Default::default() }
+        Product { name, desc, vars: vec![var], small: vec![], valid: None, info: eo_core::Info { attrs: jp2::info(&src), ..Default::default() } }
     } else if nitf::is_nitf(&head) {
         nitf::open(&src, 0)?
     } else if head.starts_with(&[0x89, b'H', b'D', b'F']) {
@@ -237,16 +217,5 @@ mod malformed {
         let r = crate::zarr::open(dir.to_str().unwrap(), rt.handle());
         std::fs::remove_dir_all(dir).unwrap();
         assert!(r.is_err());
-    }
-}
-
-#[cfg(test)]
-mod xml_tests {
-    #[test]
-    fn leaves_of_esa_xml() {
-        let t = "<xfdu:XFDU>\n  <safe:familyName>SENTINEL-1</safe:familyName>\n  <s1:pass>DESCENDING</s1:pass>\n  <safe:orbitNumber type=\"start\">4945</safe:orbitNumber>\n  <safe:orbitNumber type=\"stop\">4946</safe:orbitNumber>\n  <A><B>x</B></A>\n  <Empty> </Empty>\n";
-        let a = super::xml_leaves(t, 10);
-        let v: Vec<(&str, &str)> = a.iter().map(|x| (x.0.as_str(), x.1.as_str())).collect();
-        assert_eq!(v, [("familyName", "SENTINEL-1"), ("pass", "DESCENDING"), ("orbitNumber", "4945")]);
     }
 }

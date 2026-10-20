@@ -66,6 +66,74 @@ fn siz(h: &[u8]) -> Result<(usize, Siz)> {
     Err("JPEG 2000 without SIZ marker".into())
 }
 
+/// Metadata of a JP2 file: its boxes (ISO/IEC 15444-1 Annex I), the image header (ihdr), the colour
+/// specification (colr), the text of the XML boxes (GMLJP2) and the size of the tiles and the number of
+/// resolution levels of the codestream (SIZ and COD markers, Annex A). A raw codestream has only the last.
+pub fn info(src: &Source) -> Attrs {
+    let mut out: Attrs = vec![];
+    let Ok(len) = src.len() else { return out };
+    let (mut p, mut cs) = (0, 0);
+    if src.read(0..12.min(len)).is_ok_and(|b| b.starts_with(&[0, 0, 0, 12])) {
+        let mut boxes = vec![];
+        // ponytail: the boxes of the first level, and the boxes in jp2h; at most 64.
+        while p + 8 <= len && boxes.len() < 64 {
+            let Ok(b) = src.read(p..(p + 16).min(len)) else { break };
+            let (Ok(bl), ty) = (be32(&b, 0), String::from_utf8_lossy(&b[4..8]).into_owned()) else { break };
+            let bl = if bl == 0 { len - p } else { bl };
+            if bl < 8 || p + bl > len {
+                break;
+            }
+            boxes.push(format!("{ty} ({bl} bytes)"));
+            let body = |n: u64| src.read(p + 8..(p + 8 + n).min(p + bl)).ok();
+            match ty.as_str() {
+                "jp2h" => {
+                    let Some(h) = body(bl.min(4096)) else { break };
+                    if let Some(i) = h.windows(4).position(|w| w == b"ihdr").map(|i| i + 4).filter(|i| i + 11 <= h.len()) {
+                        let (hh, ww) = (be32(&h, i).unwrap_or(0), be32(&h, i + 4).unwrap_or(0));
+                        out.push(("ihdr".into(), format!("{ww} x {hh}, {} components, {} bits", be16(&h, i + 8).unwrap_or(0), (h[i + 10] & 0x7f) + 1)));
+                    }
+                    if let Some(i) = h.windows(4).position(|w| w == b"colr").map(|i| i + 4).filter(|i| i + 7 <= h.len()) {
+                        let cs = match (h[i], be32(&h, i + 3).unwrap_or(0)) {
+                            (1, 16) => "sRGB".into(),
+                            (1, 17) => "greyscale".into(),
+                            (1, 18) => "sYCC".into(),
+                            (1, e) => format!("enumerated {e}"),
+                            (m, _) => format!("method {m}"),
+                        };
+                        out.push(("colr".into(), cs));
+                    }
+                }
+                "xml " => {
+                    if let Some(x) = body(bl.min(65536)) {
+                        out.push(("xml".into(), String::from_utf8_lossy(&x).trim().to_string()));
+                    }
+                }
+                "jp2c" => cs = p + 8,
+                _ => {}
+            }
+            p += bl;
+        }
+        out.push(("boxes".into(), boxes.join(", ")));
+    }
+    // SIZ (0xFF51) and COD (0xFF52) of the main header.
+    if let Ok(h) = src.read(cs..(cs + 4096).min(len)) {
+        let mut q = 2;
+        while let (Ok(m), Ok(l)) = (be16(&h, q), be16(&h, q + 2)) {
+            if m == 0xFF51 && q + 42 <= h.len() {
+                let v = |k: usize| be32(&h, q + 4 + k).unwrap_or(0);
+                out.push(("SIZ".into(), format!("image {} x {}, tiles {} x {}, {} components", v(2), v(6), v(18), v(22), be16(&h, q + 38).unwrap_or(0))));
+            } else if m == 0xFF52 && q + 12 <= h.len() {
+                out.push(("COD".into(), format!("{} layers, {} decomposition levels, progression {}", be16(&h, q + 6).unwrap_or(0), h[q + 9], ["LRCP", "RLCP", "RPCL", "PCRL", "CPRL"].get(h[q + 5] as usize).unwrap_or(&"?"))));
+            }
+            if m == 0xFF90 || l < 2 {
+                break;
+            }
+            q += 2 + l;
+        }
+    }
+    out
+}
+
 /// True if the colour specification box of a JP2 file says sRGB or sYCC: the components are colors.
 /// JP2 box structure: ISO/IEC 15444-1 Annex I (jp2h superbox, colr box: method 1, then the enumerated
 /// colourspace: 16 sRGB, 17 greyscale, 18 sYCC).
@@ -309,4 +377,17 @@ pub fn decode_tile(a: &Array, src: &[u8], reduce: u8, header: &[u8]) -> Result<V
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod info_tests {
+    #[test]
+    fn boxes_and_markers() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let src = crate::Source::open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/u16_tiles.jp2"), rt.handle()).unwrap();
+        let a = super::info(&src);
+        let get = |k: &str| a.iter().find(|x| x.0 == k).map(|x| x.1.as_str());
+        assert_eq!(get("ihdr"), Some("700 x 500, 1 components, 16 bits"));
+        assert_eq!(get("SIZ"), Some("image 700 x 500, tiles 256 x 256, 1 components"));
+    }
 }

@@ -124,7 +124,7 @@ pub fn open(hdr: &Path, dbl: &Path, rt: &tokio::runtime::Handle) -> Result<Datas
         _ => "BT_Data_Counter",
     };
     small.sort_by_key(|v| v.name != main);
-    let info = Info { attrs: crate::xml_leaves(text.split("<Specific_Product_Header>").next().unwrap_or(""), 200), dims: vec![("grid_point".into(), small[0].levels[0].shape[0])], vars: vec![] };
+    let info = Info { attrs: crate::xml::leaves(text.split("<Specific_Product_Header>").next().unwrap_or(""), 200), dims: vec![("grid_point".into(), small[0].levels[0].shape[0])], vars: vec![] };
     let desc = format!("SMOS {kind}, {} grid points", small[0].levels[0].shape[0]);
     let mut ds = Dataset { product: Product { name, desc, vars: vec![], small, valid: None, info }, sources: vec![Arc::new(src)] };
     crate::points::add_images(&mut ds, rt)?;

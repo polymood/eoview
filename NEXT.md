@@ -155,7 +155,8 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 
 11. **Metadata for all formats (2026-10-09).** Done for NetCDF-4, HDF5, Zarr, TIFF, Sentinel-3 SAFE. Done
     (2026-10-20): Sentinel-1 (manifest.safe) and Sentinel-2 (MTD_MSIL1C/2A.xml) SAFE, the first element of
-    each tag (`eo_io::xml_leaves`, also for the SMOS header). To do: NITF header fields, JPEG 2000 boxes.
+    each tag (`eo_io::xml::leaves`, also for the SMOS header), NITF (the fields of the file header and of the
+    first image subheader), JPEG 2000 (boxes, ihdr, colr, the XML boxes of GMLJP2, SIZ and COD).
     Done (2026-10-14): the names of the dimensions come from `DIMENSION_LIST` (object references). Done
     (2026-10-20): the time dimension is the dimension named `time` (the length only for a file without
     dimension names).
