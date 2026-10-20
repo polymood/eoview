@@ -71,6 +71,7 @@ pub enum Made {
 }
 
 /// The state of the tab that the workspace file does not keep.
+#[derive(Default)]
 pub struct GraphUi {
     /// Zoom and pan of the tab (zoom 0: all the nodes at the first frame).
     pub cam: crate::canvas::Canvas,
@@ -87,12 +88,6 @@ pub struct GraphUi {
     asked: HashMap<u32, Option<OpSave>>,
     /// The message of each output node that cannot make its layer.
     errors: HashMap<u32, String>,
-}
-
-impl Default for GraphUi {
-    fn default() -> Self {
-        GraphUi { cam: Default::default(), sel: HashSet::new(), link: None, boxsel: None, add: None, edit: None, asked: HashMap::new(), errors: HashMap::new() }
-    }
 }
 
 impl NodeKind {

@@ -13,11 +13,11 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    pub fn to_screen(&self, r: Rect, p: Pos2) -> Pos2 {
+    pub fn to_screen(self, r: Rect, p: Pos2) -> Pos2 {
         r.min + self.off + p.to_vec2() * self.zoom
     }
 
-    pub fn to_graph(&self, r: Rect, s: Pos2) -> Pos2 {
+    pub fn to_graph(self, r: Rect, s: Pos2) -> Pos2 {
         ((s - r.min - self.off) / self.zoom).to_pos2()
     }
 
