@@ -1,7 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod animate;
 mod app;
-mod canvas;
 mod dims;
 mod bench;
 mod colormaps;

@@ -858,6 +858,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-noodle"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "serde",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1001,6 +1009,7 @@ version = "0.2.2"
 dependencies = [
  "aws-lc-rs",
  "egui",
+ "egui-noodle",
  "egui-wgpu",
  "egui-winit",
  "egui_dock",

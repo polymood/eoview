@@ -2099,7 +2099,7 @@ impl App {
         }
         ws.panes.iter_mut().flat_map(|p| p.layers.iter_mut()).for_each(|s| fix_save(s, &mut fix));
         for n in &mut ws.graph.nodes {
-            if let crate::graph::NodeKind::Source { layer, .. } = &mut n.kind {
+            if let crate::graph::NodeKind::Source { layer, .. } = &mut n.data {
                 fix_save(layer, &mut fix);
             }
         }
@@ -2416,6 +2416,7 @@ impl App {
     /// the script of a Python node (it makes the layer with `ev.output`).
     pub fn graph_make(&mut self, out: u32) {
         let id = self.active;
+        use crate::graph::Ops;
         match self.graph.make(out) {
             Err(e) => self.error = Some(e),
             Ok(crate::graph::Made::Python(s)) => self.py_graph(&s),
@@ -2887,7 +2888,7 @@ mod workspace_tests {
     /// new layer has the same nodes.
     #[test]
     fn graph_makes_a_layer() {
-        use crate::graph::{NodeKind as K, Graph};
+        use crate::graph::{Graph, NodeKind as K, Ops};
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/nc4_grid.nc");
         let (e, rx) = Engine::new(64 << 20, || {});
         let mut app = App::new(e, rx, 1 << 20, None);
@@ -2895,14 +2896,14 @@ mod workspace_tests {
         wait(&mut app, |a| a.panes[0].layers.len() == 1 && !a.panes[0].layers[0].inputs.is_empty());
         let s = app.panes[0].layers[0].save();
         let mut g = Graph::default();
-        let a = g.add(K::Source { name: "a".into(), layer: s }, [0.0; 2], vec![]);
-        let f = g.add(K::Filter(eo_cache::Filter::Gaussian { sigma: 2.0 }), [0.0; 2], vec![Some(a)]);
-        let o = g.add(K::Output { name: "g".into(), view: 0 }, [0.0; 2], vec![Some(f)]);
+        let a = g.add_kind(K::Source { name: "a".into(), layer: s }, [0.0; 2], vec![]);
+        let f = g.add_kind(K::Filter(eo_cache::Filter::Gaussian { sigma: 2.0 }), [0.0; 2], vec![Some(a)]);
+        let o = g.add_kind(K::Output { name: "g".into(), view: 0 }, [0.0; 2], vec![Some(f)]);
         app.graph = g;
         app.graph_make(o);
         wait(&mut app, |a| a.panes[0].layers.len() == 2 && a.panes[0].layers.iter().all(|l| !l.inputs.is_empty()));
         // The graph is live: a new sigma makes the layer of the output again, in its place.
-        if let K::Filter(eo_cache::Filter::Gaussian { sigma }) = &mut app.graph.nodes[1].kind {
+        if let K::Filter(eo_cache::Filter::Gaussian { sigma }) = &mut app.graph.nodes[1].data {
             *sigma = 4.0;
         }
         let ctx = app.ctx.clone();

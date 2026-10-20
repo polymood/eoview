@@ -773,20 +773,18 @@
  "Type a latitude and a longitude (and a scale 1:N), or west, south, east, north.": "Tapez une latitude et une longitude (et une échelle 1:N), ou ouest, sud, est, nord.",
  "Loading: {} / {} tiles": "Chargement : {} / {} tuiles",
  "Opening or computing a layer": "Ouverture ou calcul d'une couche",
- "Add node (Shift+A)": "Ajouter un nœud (Maj+A)",
  "Input": "Entrée",
  "Input {}": "Entrée {}",
  "Math": "Calcul",
  "Result": "Résultat",
- "Run the function and make the layer of the outputs of this node": "Exécuter la fonction et créer la couche des sorties de ce nœud",
  "Search": "Rechercher",
  "Visible": "Visible",
- "Wheel: zoom. Middle button: pan. Drag from a socket: link. X: remove, M: mute, H: collapse, Shift+D: duplicate.": "Molette : zoom. Bouton du milieu : déplacer. Glisser depuis une prise : lien. X : supprimer, M : désactiver, H : réduire, Maj+D : dupliquer.",
- "active view": "vue active",
  "computing...": "calcul...",
  "first": "premier",
  "last": "dernier",
  "max": "max",
  "min": "min",
- "muted": "désactivé"
+ "muted": "désactivé",
+ "Colors": "Couleurs",
+ "Shift+A: add a node. Wheel: zoom. Middle button: pan. Drag from a socket: link. X: remove, M: mute, H: collapse, Shift+D: duplicate, Home: all.": "Maj+A : ajouter un nœud. Molette : zoom. Bouton du milieu : déplacer. Glisser depuis une prise : lien. X : supprimer, M : désactiver, H : réduire, Maj+D : dupliquer, Origine : tout."
 }
