@@ -116,9 +116,11 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 ## Asked by the maintainer
 
 6. **Precise control of the bounding box.** Done: draw a box and read its coordinates, type a box or a
-   polygon (a region), copy the extent of the view (Ctrl+Shift+C). To do: type the limits of the view
-   (west, south, east, north, or center and scale), go to a latitude and longitude, use a region as the
-   area of a STAC search and of an export.
+   polygon (a region), copy the extent of the view (Ctrl+Shift+C). Done (2026-10-20): "Go to" (Ctrl+G,
+   Edit menu): a latitude and a longitude (decimal or 43°36'N 1°26'E), with a scale 1:N, or west, south,
+   east, north. Export of the visible area or of the selected region (the pixels outside the polygon are
+   no data). To do: a box across the 180 degree meridian, a region as the area of a STAC search (no STAC
+   dialog yet).
 7. **1D data.** Done (2026-10-14, item 13): the 1D variables of a product as line charts. To do: a 1D
    variable with latitude and longitude as a track on the map and on the globe (along-track altimetry:
    Sentinel-6, CryoSat-2).

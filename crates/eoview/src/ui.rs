@@ -91,6 +91,8 @@ pub enum Cmd {
     CmapPrefs,
     /// Copy the limits of the view (west, south, east, north) to the clipboard.
     CopyExtent,
+    /// The "Go to" dialog: show a place, a point or a box.
+    GoTo,
     Help,
     Quit,
     /// Globe view or 2D view.
@@ -235,6 +237,7 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Zoom in"), "+", Cmd::Zoom(1.5)),
         (t("Zoom out"), "-", Cmd::Zoom(1.0 / 1.5)),
         (t("Copy view extent (west, south, east, north)"), "Ctrl+Shift+C", Cmd::CopyExtent),
+        (t("Go to a place (latitude and longitude, or a box)..."), "Ctrl+G", Cmd::GoTo),
         (t("3D globe: on or off"), "G", Cmd::Globe),
         (t("Globe: tilt the camera down"), "Shift+Up", Cmd::Orbit(0.0, 5.0)),
         (t("Globe: tilt the camera up"), "Shift+Down", Cmd::Orbit(0.0, -5.0)),
@@ -1203,6 +1206,7 @@ impl App {
         }
         self.url_ui(&ctx);
         self.net_ui(&ctx);
+        self.goto_ui(&ctx);
         self.update_ui(&ctx);
         self.ask_ui(&ctx);
         self.help_ui(&ctx);
@@ -1383,6 +1387,7 @@ impl App {
             (none, Key::F9, Cmd::Graph),
             (cmd, Key::Q, Cmd::Quit),
             (sh, Key::C, Cmd::CopyExtent),
+            (cmd, Key::G, Cmd::GoTo),
             (none, Key::F1, Cmd::Help),
             (none, Key::G, Cmd::Globe),
             (Modifiers::SHIFT, Key::ArrowUp, Cmd::Orbit(0.0, 5.0)),
@@ -1552,12 +1557,13 @@ impl App {
             Cmd::Quit => self.quit = true,
             Cmd::Help => self.help ^= true,
             Cmd::CopyExtent => {
-                let Some(r) = self.pane(id).map(|p| p.v.rect()) else { return };
-                let text = match (self.lonlat(id, [r[0], r[1]]), self.lonlat(id, [r[2], r[3]])) {
-                    (Some(a), Some(b)) => format!("{:.6}, {:.6}, {:.6}, {:.6}", a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)),
-                    _ => format!("{}, {}, {}, {}", r[0], r[1], r[2], r[3]),
-                };
+                let Some(text) = self.extent_text(id) else { return };
                 self.ctx.copy_text(text);
+            }
+            Cmd::GoTo => {
+                if let Some(text) = self.extent_text(id) {
+                    self.goto = Some((id, text, String::new()));
+                }
             }
             Cmd::Orbit(dh, dt) => {
                 if let Some(p) = self.pane_mut(id).filter(|p| p.v.globe) {
@@ -1799,6 +1805,48 @@ impl App {
     }
 
     /// Dialog for a workspace file with network paths (Windows, see `load_workspace_net`).
+    /// The limits of view `id`: west, south, east, north (columns and rows in a view without a CRS).
+    fn extent_text(&mut self, id: u32) -> Option<String> {
+        let r = self.pane(id).map(|p| p.v.rect())?;
+        Some(match (self.lonlat(id, [r[0], r[1]]), self.lonlat(id, [r[2], r[3]])) {
+            (Some(a), Some(b)) => format!("{:.6}, {:.6}, {:.6}, {:.6}", a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)),
+            _ => format!("{}, {}, {}, {}", r[0], r[1], r[2], r[3]),
+        })
+    }
+
+    fn goto_ui(&mut self, ctx: &egui::Context) {
+        let Some((id, text, err)) = &mut self.goto else { return };
+        let (mut go, mut close) = (false, false);
+        let r = egui::Modal::new(egui::Id::new("goto")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.heading(t("Go to"));
+            ui.label(t("Latitude, longitude (and a scale 1:N), or west, south, east, north. Decimal degrees or 43°36'N 1°26'E."));
+            let f = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+            f.request_focus();
+            go = f.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if !err.is_empty() {
+                ui.colored_label(RED, err.as_str());
+            }
+            ui.horizontal(|ui| {
+                go |= ui.button(t("Go")).clicked();
+                close = ui.button(t("Cancel")).clicked();
+            });
+        });
+        if go {
+            let (id, text) = (*id, text.clone());
+            match crate::tools::parse_goto(&text).and_then(|g| self.go_to(id, g)) {
+                Ok(()) => self.goto = None,
+                Err(e) => {
+                    if let Some(g) = &mut self.goto {
+                        g.2 = e;
+                    }
+                }
+            }
+        } else if close || r.should_close() {
+            self.goto = None;
+        }
+    }
+
     fn net_ui(&mut self, ctx: &egui::Context) {
         let Some((path, nets)) = &self.net_ask else { return };
         let (mut open, mut close) = (false, false);
@@ -1916,6 +1964,7 @@ impl App {
             });
             ui.menu_button(t("Edit"), |ui| {
                 entry(ui, cmds, id, t("Copy view extent"), "Ctrl+Shift+C", Cmd::CopyExtent);
+                entry(ui, cmds, id, t("Go to..."), "Ctrl+G", Cmd::GoTo);
                 ui.separator();
                 entry(ui, cmds, id, t("Command palette..."), "Ctrl+K", Cmd::Palette);
                 ui.separator();

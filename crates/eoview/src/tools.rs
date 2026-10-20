@@ -117,6 +117,54 @@ pub struct ShapeEdit {
     pub pts: String,
 }
 
+/// A place to show in a view (the "Go to" dialog).
+#[derive(Debug, PartialEq)]
+pub enum GoTo {
+    /// A latitude and a longitude, and a scale 1:N (None: the scale stays).
+    Point { lat: f64, lon: f64, scale: Option<f64> },
+    /// West, south, east, north.
+    Box([f64; 4]),
+}
+
+/// One coordinate: decimal degrees ("-1.43") or degrees, minutes and seconds ("43°36'30\"N"). The letter
+/// of the hemisphere (N, S, E, W) can be first or last: S and W make the value negative.
+fn coord(s: &str) -> Option<(f64, Option<char>)> {
+    let up = s.to_ascii_uppercase();
+    let hemi = ['N', 'S', 'E', 'W'].into_iter().find(|&c| up.ends_with(c) || up.starts_with(c));
+    let num = up.trim_matches(|c| ['N', 'S', 'E', 'W'].contains(&c));
+    let neg = num.starts_with('-') || matches!(hemi, Some('S' | 'W'));
+    let parts: Vec<&str> = num.trim_start_matches(['-', '+']).split(['°', '\'', '"', '′', '″']).filter(|x| !x.is_empty()).collect();
+    if parts.is_empty() || parts.len() > 3 {
+        return None;
+    }
+    let v = parts.iter().zip([1.0, 60.0, 3600.0]).map(|(p, d)| p.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| x / d)).sum::<Option<f64>>()?;
+    Some((if neg { -v } else { v }, hemi))
+}
+
+/// The text of the "Go to" dialog: "latitude, longitude", "latitude, longitude, 1:N" or "west, south, east,
+/// north". The values are separated by commas, semicolons or spaces. With hemisphere letters, the order of a
+/// point is free ("1°26'E 43°36'N").
+pub fn parse_goto(s: &str) -> Result<GoTo, String> {
+    let toks: Vec<&str> = s.split([',', ';', ' ', '\t']).filter(|x| !x.is_empty()).collect();
+    let mut scale = None;
+    let mut cs = vec![];
+    for tk in &toks {
+        if let Some(n) = tk.strip_prefix("1:") {
+            scale = Some(n.replace(['_', '\u{a0}'], "").parse::<f64>().ok().filter(|n| *n > 0.0).ok_or_else(|| tf("Not a scale: {}", &[tk]))?);
+        } else {
+            cs.push(coord(tk).ok_or_else(|| tf("Not a coordinate: {}", &[tk]))?);
+        }
+    }
+    match cs.as_slice() {
+        [a, b] => {
+            let (lat, lon) = if matches!(a.1, Some('E' | 'W')) || matches!(b.1, Some('N' | 'S')) { (b.0, a.0) } else { (a.0, b.0) };
+            Ok(GoTo::Point { lat, lon, scale })
+        }
+        [w, s, e, n] if scale.is_none() => Ok(GoTo::Box([w.0, s.0, e.0, n.0])),
+        _ => Err(t("Type a latitude and a longitude (and a scale 1:N), or west, south, east, north.").into()),
+    }
+}
+
 /// The points of a text: two numbers on each line (separated by a comma, a space or a tab).
 pub fn parse_points(s: &str) -> Result<Vec<[f64; 2]>, String> {
     s.lines()
@@ -1167,6 +1215,17 @@ mod tests {
         assert_eq!(surface(2.5e6, true), "2.5 km²");
         assert_eq!(parse_points("1.5, 2\n# a comment\n\n-3 4e1\n").unwrap(), [[1.5, 2.0], [-3.0, 40.0]]);
         assert!(parse_points("1, 2, 3").is_err());
+    }
+
+    #[test]
+    fn go_to_texts() {
+        let pt = |lat, lon, scale| Ok(GoTo::Point { lat, lon, scale });
+        assert_eq!(parse_goto("43.6, 1.44"), pt(43.6, 1.44, None));
+        assert_eq!(parse_goto("43°36'N 1°26'E"), pt(43.6, 1.0 + 26.0 / 60.0, None));
+        assert_eq!(parse_goto("W1°30' S43°"), pt(-43.0, -1.5, None));
+        assert_eq!(parse_goto("-10.5; 20 1:250000"), pt(-10.5, 20.0, Some(250000.0)));
+        assert_eq!(parse_goto("-5, 40, 10, 52"), Ok(GoTo::Box([-5.0, 40.0, 10.0, 52.0])));
+        assert!(parse_goto("1, 2, 3").is_err() && parse_goto("a, b").is_err() && parse_goto("1, 2, 1:0").is_err());
     }
 
     /// A click selects the point of a shape, the inside of a region, a line, or no shape.

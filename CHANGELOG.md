@@ -12,6 +12,8 @@ The changes of each version of eoview, the newest first. The
 - Graph tab (F9): connect layers, filters, layer math, aggregates and Python code, then make a new layer.
 - Globe: tilt and turn the camera (right drag, Shift+arrows, Shift+N for north up). A layer can be the
   terrain of the globe, with a vertical exaggeration. The other layers go on the relief.
+- Go to (Ctrl+G): type a latitude and a longitude (and a scale 1:N), or a box west, south, east, north.
+- Export the visible area or the selected region of a layer (Layer > Export data).
 - Envisat N1 products: ASAR, MERIS and AATSR level 1 images, and all the headers as metadata.
 
 Security (an audit of the CI, the repository, the install and the application, 2026-10-15):

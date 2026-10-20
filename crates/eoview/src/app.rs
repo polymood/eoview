@@ -656,6 +656,8 @@ pub struct App {
     pub url: Option<(String, bool, u32)>,
     /// A workspace file with network paths, and the paths: the dialog asks the user to open them.
     pub net_ask: Option<(String, Vec<String>)>,
+    /// The "Go to" dialog: the view, the text, an error.
+    pub goto: Option<(u32, String, String)>,
     /// Recent products and workspaces, newest first, and their file. Without credentials (see `eo_core::redact_url`).
     pub recent: Vec<String>,
     pub recent_file: Option<std::path::PathBuf>,
@@ -826,6 +828,7 @@ impl App {
             bench,
             url: None,
             net_ask: None,
+            goto: None,
             recent: vec![],
             recent_file: None,
             quit: false,
@@ -1951,6 +1954,47 @@ impl App {
     }
 
     /// Ground meters for one physical pixel at the center of view `id`.
+    /// Show the place `g` in view `id` (the "Go to" dialog). The coordinates are in longitude and latitude, or in
+    /// columns and rows in a view without a CRS.
+    pub fn go_to(&mut self, id: u32, g: crate::tools::GoTo) -> Result<(), String> {
+        use crate::tools::GoTo;
+        let not = || t("The place is not in the projection of the view.").to_string();
+        match g {
+            GoTo::Point { lat, lon, scale } => {
+                let c = self.text_point(id, [lon, lat]).ok_or_else(not)?;
+                // The scale 1:N of the status bar is for an OGC pixel of 0.28 mm.
+                let now = self.meters_per_px(id).map(|m| m * self.ctx.pixels_per_point() as f64 / 0.00028);
+                let p = self.pane_mut(id).ok_or("no view")?;
+                p.v.center = c;
+                if let (Some(n), Some(now)) = (scale, now.filter(|n| n.is_finite() && *n > 0.0)) {
+                    p.v.scale *= now / n;
+                }
+            }
+            GoTo::Box([w, s, e, n]) => {
+                // ponytail: no box across the 180 degree meridian (west > east).
+                if !(e > w && n > s) {
+                    return Err(t("The box is empty: west < east and south < north.").into());
+                }
+                // The edges of the box in the display CRS: 16 points on each edge (a projected view).
+                let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+                for k in 0..=16 {
+                    let f = k as f64 / 16.0;
+                    for q in [[w + f * (e - w), s], [w + f * (e - w), n], [w, s + f * (n - s)], [e, s + f * (n - s)]] {
+                        let d = self.text_point(id, q).ok_or_else(not)?;
+                        b = [b[0].min(d[0]), b[1].min(d[1]), b[2].max(d[0]), b[3].max(d[1])];
+                    }
+                }
+                let p = self.pane_mut(id).ok_or("no view")?;
+                let (dx, dy) = (b[2] - b[0], b[3] - b[1]);
+                p.v.center = [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0];
+                p.v.scale = (p.v.px.width() as f64 / dx).min(p.v.px.height() as f64 / dy);
+            }
+        }
+        let p = self.pane_mut(id).ok_or("no view")?;
+        (p.v.fit, p.moved) = (false, true);
+        Ok(())
+    }
+
     pub fn meters_per_px(&mut self, id: u32) -> Option<f64> {
         let p = self.pane(id)?;
         let (e, c, s) = (p.v.space?, p.v.center, p.v.scale);
@@ -2901,6 +2945,27 @@ mod workspace_tests {
         wait(&mut app, |a| a.panes[0].layers.len() == 2 && !a.panes[0].layers[1].inputs.is_empty());
         std::fs::remove_file(&out).ok();
         assert_eq!(app.panes[0].layers[1].inputs[0].size(), (w, h));
+    }
+
+    /// "Go to" a box: the view shows the box (its long side fills the view). Then a point at a scale.
+    #[test]
+    fn go_to_a_box_and_a_point() {
+        use crate::tools::GoTo;
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/nc4_grid.nc");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, path.into(), false);
+        wait(&mut app, |a| a.panes[0].v.space.is_some() && !a.panes[0].layers.is_empty());
+        app.panes[0].v.px = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+        app.go_to(1, GoTo::Box([2.0, 40.0, 6.0, 44.0])).unwrap();
+        let r = app.panes[0].v.rect();
+        let ((w, s), (e, n)) = (app.lonlat(1, [r[0], r[1]]).unwrap(), app.lonlat(1, [r[2], r[3]]).unwrap());
+        assert!((s - 40.0).abs() < 0.01 && (n - 44.0).abs() < 0.01 && w < 2.0 && e > 6.0, "{r:?}");
+        app.go_to(1, GoTo::Point { lat: 43.6, lon: 1.44, scale: None }).unwrap();
+        let c = app.panes[0].v.center;
+        let (lon, lat) = app.lonlat(1, c).unwrap();
+        assert!((lon - 1.44).abs() < 1e-6 && (lat - 43.6).abs() < 1e-6);
+        assert!(app.go_to(1, GoTo::Box([6.0, 40.0, 2.0, 44.0])).is_err());
     }
 
     fn poly_of(app: &App) -> Vec<[f64; 2]> {

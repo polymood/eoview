@@ -769,5 +769,15 @@
  "The selected region...": "La région sélectionnée...",
  "Select a region of the view (tool R), then export.": "Sélectionnez une région de la vue (outil R), puis exportez.",
  "The layer does not show in the view.": "La couche n'est pas affichée dans la vue.",
- "The area is not on the layer.": "La zone n'est pas sur la couche."
+ "The area is not on the layer.": "La zone n'est pas sur la couche.",
+ "Go to a place (latitude and longitude, or a box)...": "Aller à un lieu (latitude et longitude, ou une boîte)...",
+ "Go to...": "Aller à...",
+ "Go to": "Aller à",
+ "Go": "Aller",
+ "Latitude, longitude (and a scale 1:N), or west, south, east, north. Decimal degrees or 43°36'N 1°26'E.": "Latitude, longitude (et une échelle 1:N), ou ouest, sud, est, nord. Degrés décimaux ou 43°36'N 1°26'E.",
+ "The place is not in the projection of the view.": "Le lieu n'est pas dans la projection de la vue.",
+ "The box is empty: west < east and south < north.": "La boîte est vide : ouest < est et sud < nord.",
+ "Not a scale: {}": "Pas une échelle : {}",
+ "Not a coordinate: {}": "Pas une coordonnée : {}",
+ "Type a latitude and a longitude (and a scale 1:N), or west, south, east, north.": "Tapez une latitude et une longitude (et une échelle 1:N), ou ouest, sud, est, nord."
 }
