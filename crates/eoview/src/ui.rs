@@ -640,7 +640,7 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
     } else if p.v.globe && (resp.dragged_by(egui::PointerButton::Secondary) || resp.dragged_by(egui::PointerButton::Middle)) {
         // Globe: a drag with the right or the middle button turns the camera (heading) and tilts it.
         let d = resp.drag_delta();
-        p.v.orbit(-d.x as f64 * 0.3, -d.y as f64 * 0.3);
+        p.v.orbit(d.x as f64 * 0.3, -d.y as f64 * 0.3);
         p.moved = true;
     } else if resp.dragged() {
         let d = resp.drag_delta() * ppp;
