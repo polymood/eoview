@@ -14,6 +14,8 @@ The changes of each version of eoview, the newest first. The
   terrain of the globe, with a vertical exaggeration. The other layers go on the relief.
 - Go to (Ctrl+G): type a latitude and a longitude (and a scale 1:N), or a box west, south, east, north.
 - Export the visible area or the selected region of a layer (Layer > Export data).
+- Products of points (1D latitude and longitude, for example altimetry tracks) open as images on a grid of
+  longitude and latitude.
 - CEOS SAR products (Radarsat-1, ALOS PALSAR, ERS): all polarizations, the metadata, and the position of
   geocoded products.
 - Envisat N1 products: ASAR, MERIS and AATSR level 1 images, and all the headers as metadata.

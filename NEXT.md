@@ -121,9 +121,12 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
    east, north. Export of the visible area or of the selected region (the pixels outside the polygon are
    no data). To do: a box across the 180 degree meridian, a region as the area of a STAC search (no STAC
    dialog yet).
-7. **1D data.** Done (2026-10-14, item 13): the 1D variables of a product as line charts. To do: a 1D
-   variable with latitude and longitude as a track on the map and on the globe (along-track altimetry:
-   Sentinel-6, CryoSat-2).
+7. **1D data.** Done (2026-10-14, item 13): the 1D variables of a product as line charts. Done
+   (2026-10-20): a product of points (1D latitude and longitude of the same length: altimetry along a track,
+   SMOS grid points) opens as images. Each 1D variable is the mean of its points on a grid of longitude and
+   latitude (the cell is the median distance between the points), with levels of 2, 4, 8, ... cells so that a
+   track stays visible. The chunks are made from the points when the view needs them. To do: a point or line
+   layer that draws each point (now: the pixels of the grid), a time or distance axis along the track.
 8. **Plots for publications.** Most of it is done (DESIGN step 4, item 14a). To do: the time profile of a
    point or a region, the spectral profile, figures with several panels, a north arrow, a choice of fonts.
 9. **Pipeline graph editor (Python).** Done (2026-10-19), first version: the Graph tab (F9, Tools menu),

@@ -7,6 +7,7 @@ pub mod envisat;
 pub mod hdf4;
 pub mod hdf5;
 pub mod netcdf;
+pub mod points;
 pub mod netcdf3;
 pub mod nitf;
 pub mod codec;
@@ -88,10 +89,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         for v in &mut vars {
             v.georef = netcdf::georef(&src, v, &one_d, &all);
         }
-        if vars.is_empty() {
-            return Err(format!("{url}: no dataset with 2 or more dimensions").into());
-        }
-        let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len());
+        let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len() + small.len());
         Product { name, desc, vars, small, valid: None, info }
     } else if envisat::is_envisat(&head) {
         envisat::open(&src, 0, name)?
@@ -104,7 +102,15 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     } else {
         return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-3, NetCDF-4, HDF4, HDF5, GRIB, Envisat N1, CEOS, Zarr, SAFE or OPeNDAP expected)").into());
     };
-    Ok(Dataset { product, sources: vec![Arc::new(src)] })
+    let mut ds = Dataset { product, sources: vec![Arc::new(src)] };
+    // Points (1D latitude and longitude): images on a grid of longitude and latitude.
+    if ds.product.vars.is_empty() {
+        points::add_images(&mut ds, rt)?;
+    }
+    if ds.product.vars.is_empty() {
+        return Err(format!("{url}: no dataset with 2 or more dimensions, and no 1D latitude and longitude").into());
+    }
+    Ok(ds)
 }
 
 /// All physical values of variable `v` of `ds` at level 0, in C order, with NaN for the fill value. For the
