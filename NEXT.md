@@ -125,7 +125,8 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
    (2026-10-20): a product of points (1D latitude and longitude of the same length: altimetry along a track,
    SMOS grid points) opens as images. Each 1D variable is the mean of its points on a grid of longitude and
    latitude (the cell is the median distance between the points), with levels of 2, 4, 8, ... cells so that a
-   track stays visible. The chunks are made from the points when the view needs them. To do: a point or line
+   track stays visible. The chunks are made from the points when the view needs them. The cell size is the
+   median distance from a point to its nearest neighbor (any order of the points). To do: a point or line
    layer that draws each point (now: the pixels of the grid), a time or distance axis along the track.
 8. **Plots for publications.** Most of it is done (DESIGN step 4, item 14a). To do: the time profile of a
    point or a region, the spectral profile, figures with several panels, a north arrow, a choice of fonts.
@@ -223,7 +224,12 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 - Phase 3 acceptance with the GPU: remote product open to first pixels in less than 1.5 s (engine only:
   0.6 to 1.0 s), a 30-step series that plays without gaps after the first pass.
 - Phase 4: swath meshes. Done: globe (item 4), DEM terrain (item 14).
-- Phase 5: Earth Explorer (SMOS, CryoSat-2), HDF5 (EarthCARE, Proba-V), Sentinel-6, BIOMASS.
+- Phase 5: Earth Explorer (CryoSat-2), HDF5 (EarthCARE, Proba-V), Sentinel-6, BIOMASS.
+  Done (2026-10-20): SMOS (Earth Explorer .HDR and .DBL): L2 soil moisture (MIR_SMUDP2) and ocean salinity
+  (MIR_OSUDP2), and the grid points of the L1C products (browse and science). The header as metadata, each
+  field as a 1D variable and as an image (points). Checked with 4 sample products. Not done in SMOS: the
+  brightness temperatures of L1C (a list of variable length for each grid point), other products and
+  versions of the data block, zipped products (open the unzipped .HDR or .DBL).
   Done (2026-10-20): CEOS SAR (Radarsat-1, ALOS and ALOS-2 PALSAR, ERS file names): open any file of the
   set, one variable for each polarization, the data set summary as metadata, the corners of the map
   projection record as georeferencing (level 1.5). Checked with 6 sample products. Not done in CEOS: the

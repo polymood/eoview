@@ -80,6 +80,10 @@ fn step<'a>(a: &Array, c: &Codec, cur: Cow<'a, [u8]>, need: usize) -> Result<Cow
             crate::blosc::unshuffle(s, &mut o, (*size as usize).max(1));
             owned(o)
         }
+        Codec::Field { off, stride } => {
+            let (o, n) = (*off as usize, a.dtype.size());
+            owned(s.chunks(*stride as usize).filter(|r| r.len() >= o + n).flat_map(|r| &r[o..o + n]).copied().collect())
+        }
         Codec::Checksum => Ok(match cur {
             Cow::Borrowed(b) => Cow::Borrowed(&b[..b.len().saturating_sub(4)]),
             Cow::Owned(mut v) => {

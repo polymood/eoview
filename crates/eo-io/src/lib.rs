@@ -8,6 +8,7 @@ pub mod hdf4;
 pub mod hdf5;
 pub mod netcdf;
 pub mod points;
+pub mod smos;
 pub mod netcdf3;
 pub mod nitf;
 pub mod codec;
@@ -56,6 +57,9 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         if let Some(dir) = path.parent().filter(|d| safe::kind(d).is_some()) {
             return safe::open(dir, rt);
         }
+    }
+    if let Some((hdr, dbl)) = smos::files(path) {
+        return smos::open(&hdr, &dbl, rt);
     }
     let src = match Source::open(url, rt) {
         Ok(s) => s,
@@ -116,6 +120,11 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
 /// All physical values of variable `v` of `ds` at level 0, in C order, with NaN for the fill value. For the
 /// small variables (`Product::small`): this reads the full array. This function blocks.
 pub fn read_all(ds: &Dataset, v: &Variable) -> Result<Vec<f64>> {
+    read_values(&ds.sources, v)
+}
+
+/// `read_all` with the sources of the dataset.
+pub fn read_values(sources: &[Arc<Source>], v: &Variable) -> Result<Vec<f64>> {
     let a = &v.levels[0];
     // The chunk sizes divide below: no size of 0.
     eo_core::chunk_count(&a.shape, &a.chunk, usize::MAX)?;
@@ -128,7 +137,7 @@ pub fn read_all(ds: &Dataset, v: &Variable) -> Result<Vec<f64>> {
     let mut out = vec![f64::NAN; n];
     for i in 0..a.chunks.len() {
         let c = a.chunks.at(i);
-        let src = ds.sources.get(c.src as usize).ok_or("no such source")?;
+        let src = sources.get(c.src as usize).ok_or("no such source")?;
         let raw = if c.len == 0 { bytes::Bytes::new() } else { src.read_chunk(c)? };
         if raw.is_empty() {
             continue;

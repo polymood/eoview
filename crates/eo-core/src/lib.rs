@@ -130,6 +130,8 @@ pub enum Codec {
     Delta,
     /// A 4-byte checksum at the end (Zarr crc32c, HDF5 Fletcher-32). The decoder removes it.
     Checksum,
+    /// Records of `stride` bytes: the value is at `off` in each record (SMOS grid point lists).
+    Field { off: u32, stride: u32 },
     /// TIFF predictor: 2 (horizontal differencing) or 3 (floating point).
     /// `stride` is the number of values in one pixel. `row` is the number of values in one row.
     Predictor { kind: u16, stride: u32, row: u32 },

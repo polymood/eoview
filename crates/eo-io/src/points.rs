@@ -31,10 +31,24 @@ struct Level {
     chunks: Vec<Vec<u32>>,
 }
 
-/// The cell size (degrees) for the points: the median distance between two successive points, at least 0.01
-/// degree, and more if level 0 has more than `MAX_CELLS` cells.
+/// The cell size (degrees) for the points: the median distance from a point to its nearest neighbor, for a
+/// sample of 1000 points, from 0.01 to 1 degree. The order of the points does not matter (SMOS L2 points come
+/// by grid point number, and most successive points are far apart).
 fn cell(lat: &[f64], lon: &[f64], ok: &[usize]) -> f64 {
-    let mut d: Vec<f64> = ok.windows(2).map(|p| ((lat[p[1]] - lat[p[0]]).powi(2) + ((lon[p[1]] - lon[p[0]]) * lat[p[0]].to_radians().cos()).powi(2)).sqrt()).filter(|d| *d > 0.0 && *d < 5.0).collect();
+    // The points in cells of 1 degree.
+    let key = |i: usize| (lat[i].floor() as i32, lon[i].floor() as i32);
+    let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
+    ok.iter().for_each(|&i| cells.entry(key(i)).or_default().push(i));
+    let dist = |i: usize, j: usize| ((lat[j] - lat[i]).powi(2) + ((lon[j] - lon[i]) * lat[i].to_radians().cos()).powi(2)).sqrt();
+    let mut d: Vec<f64> = ok
+        .iter()
+        .step_by((ok.len() / 1000).max(1))
+        .filter_map(|&i| {
+            let (y, x) = key(i);
+            let near = (-1..=1).flat_map(|a| (-1..=1).map(move |b| (y + a, x + b))).filter_map(|k| cells.get(&k)).flatten();
+            near.filter(|&&j| j != i).map(|&j| dist(i, j)).filter(|d| *d > 0.0).min_by(f64::total_cmp)
+        })
+        .collect();
     d.sort_by(f64::total_cmp);
     d.get(d.len() / 2).copied().unwrap_or(0.1).clamp(0.01, 1.0)
 }
@@ -80,14 +94,22 @@ pub fn add_images(ds: &mut Dataset, rt: &Handle) -> Result<()> {
     let (pos, ok) = (Arc::new(pos), Arc::new(ok));
     let gt = [b[0] - c / 2.0, c, 0.0, b[3] + c / 2.0, 0.0, -c];
     let ones: Vec<Variable> = small.iter().filter(|v| len1(v) == Some(n) && !is_lat(&v.name) && !is_lon(&v.name)).cloned().collect();
+    let sources = Arc::new(ds.sources.clone());
     for v in ones {
-        let vals = Arc::new(crate::read_all(ds, &v)?);
+        // The values are read at the first chunk that the view needs: the open reads only the positions.
+        let (cell, var) = (Arc::new(tokio::sync::OnceCell::<Arc<Vec<f64>>>::new()), Arc::new(v.clone()));
         let mut arrays = vec![];
         for (k, l) in levels.iter().enumerate() {
-            let (lv, vals, pos, ok) = (l.clone(), vals.clone(), pos.clone(), ok.clone());
+            let (lv, pos, ok, cell, var, sources) = (l.clone(), pos.clone(), ok.clone(), cell.clone(), var.clone(), sources.clone());
             let src = Source::fetched(&format!("{}#points/{}/{k}", ds.product.name, v.name), rt, move |i| {
-                let (l, vals, pos, ok) = (lv.clone(), vals.clone(), pos.clone(), ok.clone());
+                let (l, pos, ok, cell, var, sources) = (lv.clone(), pos.clone(), ok.clone(), cell.clone(), var.clone(), sources.clone());
                 Box::pin(async move {
+                    let vals = cell
+                        .get_or_try_init(|| async move {
+                            let r = tokio::task::spawn_blocking(move || crate::read_values(&sources, &var)).await;
+                            r.map_err(|e| Error(e.to_string()))?.map(Arc::new)
+                        })
+                        .await?;
                     let gx = l.w.div_ceil(CH);
                     let (x0, y0) = (i % gx * CH, i / gx * CH);
                     let (mut sum, mut cnt) = (vec![0.0f64; (CH * CH) as usize], vec![0u32; (CH * CH) as usize]);
