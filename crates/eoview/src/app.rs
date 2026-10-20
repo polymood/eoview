@@ -515,7 +515,7 @@ pub enum Dialog {
     /// The output file of a render.
     RenderOut,
     /// The GeoTIFF file of an export of the selected layer of a view.
-    Export(u32),
+    Export(u32, ExportArea),
     /// The file of the figure of a view: PDF, SVG, PNG or CSV.
     Figure(u32, &'static str),
     /// Python scripts or notebooks to open in the editor, and the file of tab k of the editor.
@@ -752,6 +752,38 @@ pub struct App {
     pub py: Option<crate::py::Py>,
     /// `eoview --python FILE`: the script to run when the products are open.
     pub cli_python: Option<String>,
+}
+
+/// The part of a layer that an export writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ExportArea {
+    All,
+    /// The visible part of the view.
+    View,
+    /// The selected region (or closed measure) of the view.
+    Region,
+}
+
+/// The pixels of input `inp` of view `p` in the display polygon `poly`: the smallest window of level 0 that
+/// has them, and a mask that is false for a pixel center outside the polygon.
+// ponytail: a grid of 512 x 512 positions finds the window (with one step of margin, the mask clears it); no repeat in longitude.
+fn export_area(p: &Pane, inp: &Arc<Layer>, poly: Vec<[f64; 2]>) -> Result<eo_cache::Area, String> {
+    use crate::tools::inside;
+    let warp = p.v.inputs.iter().find(|i| i.layer.id == inp.id).and_then(|i| i.warp.as_ref()).map(|w| w.0.clone()).ok_or_else(|| t("The layer does not show in the view.").to_string())?;
+    let (w, h) = inp.size();
+    let n = 512;
+    let (sx, sy) = (w as f64 / n as f64, h as f64 / n as f64);
+    let mut pts: Vec<[f64; 2]> = poly.iter().filter_map(|d| warp.inverse(d[0], d[1])).map(|(c, r)| [c, r]).collect();
+    for j in 0..=n {
+        for i in 0..=n {
+            let (c, r) = (i as f64 * sx, j as f64 * sy);
+            if inside(&poly, warp.at(c, r)) {
+                pts.extend([[c - sx, r - sy], [c + sx, r + sy]]);
+            }
+        }
+    }
+    let win = eo_cache::window_of(&pts, w, h).ok_or_else(|| t("The area is not on the layer.").to_string())?;
+    Ok(eo_cache::Area { win, mask: Some(Arc::new(move |c, r| inside(&poly, warp.at(c, r)))) })
 }
 
 impl App {
@@ -2227,17 +2259,34 @@ impl App {
         self.compile(target, k);
     }
 
-    /// Export the values of the selected layer of view `id` at the full resolution to the GeoTIFF file `path`.
-    pub fn export(&mut self, id: u32, path: String) {
-        let Some(l) = self.pane(id).and_then(|p| p.layers.get(p.sel)) else { return };
+    /// Export the values of the selected layer of view `id` at the full resolution to the GeoTIFF file `path`:
+    /// all the layer, the visible part, or the selected region of the view.
+    pub fn export(&mut self, id: u32, path: String, area: ExportArea) {
+        let Some(p) = self.pane(id) else { return };
+        let Some(l) = p.layers.get(p.sel) else { return };
         if l.kind != Kind::Band || l.inputs.len() != 1 {
             return self.error = Some(t("An export is one band: show one band of the layer.").into());
         }
         if self.export.as_ref().is_some_and(|x| x.end.is_none()) {
             return self.error = Some(t("An export runs: wait for its end, or stop it.").into());
         }
+        let poly = match area {
+            ExportArea::All => None,
+            ExportArea::View => {
+                let r = p.v.rect();
+                Some(vec![[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]])
+            }
+            ExportArea::Region => match p.sel_shape.and_then(|k| p.shapes.get(k)).filter(|s| s.closed()) {
+                Some(s) => Some(s.pts.clone()),
+                None => return self.error = Some(t("Select a region of the view (tool R), then export.").into()),
+            },
+        };
+        let area = match poly.map(|poly| export_area(p, &l.inputs[0], poly)).transpose() {
+            Ok(a) => a,
+            Err(e) => return self.error = Some(e),
+        };
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let req = self.engine.export(l.inputs[0].clone(), path, stop.clone());
+        let req = self.engine.export(l.inputs[0].clone(), path, stop.clone(), area);
         self.export = Some(Export { req, done: 0, total: 0, stop, end: None });
     }
 
@@ -2823,6 +2872,40 @@ mod workspace_tests {
         wait(&mut b, ready(3));
         std::fs::remove_file(&ws).ok();
         assert_eq!(b.panes[0].layers[2].save(), saved);
+    }
+
+    /// The export area of a box of pixels 10 to 30, 5 to 20 (in display coordinates): its window and its mask.
+    #[test]
+    fn export_area_of_a_box() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/nc4_grid.nc");
+        let (e, rx) = Engine::new(64 << 20, || {});
+        let mut app = App::new(e, rx, 1 << 20, None);
+        app.open(1, path.into(), false);
+        wait(&mut app, |a| a.panes[0].v.inputs.first().is_some_and(|i| i.warp.is_some()));
+        let p = &app.panes[0];
+        let (inp, warp) = (&p.v.inputs[0].layer, &p.v.inputs[0].warp.as_ref().unwrap().0);
+        let poly = [(10.0, 5.0), (30.0, 5.0), (30.0, 20.0), (10.0, 20.0)].map(|(c, r)| warp.at(c, r)).to_vec();
+        let a = super::export_area(p, inp, poly).unwrap();
+        let (x0, y0, w, h) = a.win;
+        assert!(x0 <= 10 && y0 <= 5 && x0 + w >= 30 && y0 + h >= 20 && w <= 22 && h <= 17, "{:?}", a.win);
+        let m = a.mask.unwrap();
+        assert!(m(15.5, 10.5) && !m(5.5, 10.5) && !m(15.5, 22.5));
+        // The export of the box as the selected region: a file of the size of the window.
+        let mut s = crate::tools::Shape::default();
+        (s.tool, s.pts, s.done) = (crate::tools::Tool::Region, poly_of(&app), true);
+        (app.panes[0].shapes, app.panes[0].sel_shape) = (vec![s], Some(0));
+        let out = std::env::temp_dir().join(format!("eoview-area-{}.tif", std::process::id())).to_string_lossy().into_owned();
+        app.export(1, out.clone(), ExportArea::Region);
+        wait(&mut app, |a| a.export.as_ref().is_some_and(|x| x.end.is_some()));
+        app.open(1, out.clone(), true);
+        wait(&mut app, |a| a.panes[0].layers.len() == 2 && !a.panes[0].layers[1].inputs.is_empty());
+        std::fs::remove_file(&out).ok();
+        assert_eq!(app.panes[0].layers[1].inputs[0].size(), (w, h));
+    }
+
+    fn poly_of(app: &App) -> Vec<[f64; 2]> {
+        let warp = &app.panes[0].v.inputs[0].warp.as_ref().unwrap().0;
+        [(10.0, 5.0), (30.0, 5.0), (30.0, 20.0), (10.0, 20.0)].map(|(c, r)| warp.at(c, r)).to_vec()
     }
 
     /// Save a workspace with two views, then open it: the layout, the cameras, the layers and their

@@ -23,7 +23,7 @@ use tokio::task::AbortHandle;
 mod filters;
 mod ops;
 pub use filters::Filter;
-pub use ops::{Agg, Op, OpKind, PixelFn, StepIn};
+pub use ops::{Agg, Area, Op, OpKind, PixelFn, StepIn, window_of};
 
 /// Width and height of a display tile.
 pub const TILE: u64 = 512;

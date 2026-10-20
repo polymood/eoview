@@ -755,10 +755,18 @@ impl Inner {
     }
 
     /// See `Engine::export`.
-    fn export(self: &Arc<Self>, l: &Arc<Layer>, path: &str, stop: &AtomicBool, req: u64) -> Result<String> {
+    fn export(self: &Arc<Self>, l: &Arc<Layer>, path: &str, stop: &AtomicBool, req: u64, area: Option<Area>) -> Result<String> {
         let g = self.georef(l)?;
-        let lv = l.levels[0];
+        let mut lv = l.levels[0];
         let affine = matches!(g, Georef::Affine { .. });
+        let (x0, y0) = area.as_ref().map_or((0, 0), |a| (a.win.0, a.win.1));
+        let g = if area.is_some() { g.window(x0 as f64, y0 as f64, 1.0, 1.0) } else { g };
+        if let Some(a) = &area {
+            if a.win.2 == 0 || a.win.3 == 0 || x0 + a.win.2 > lv.w || y0 + a.win.3 > lv.h {
+                return Err("the area is not in the layer".into());
+            }
+            (lv.w, lv.h) = (a.win.2, a.win.3);
+        }
         let mut w = eo_io::tiff::Writer::create(path, lv.w, lv.h, TILE, if affine { g } else { Georef::None })?;
         let (nx, ny) = w.tiles();
         let total = nx * ny;
@@ -768,7 +776,22 @@ impl Inner {
             let mut jobs = stream::iter(tiles)
                 .map(|(tx, ty)| {
                     let i = self.clone();
-                    async move { i.values(l, 0, tx, ty, 0).await.map(|v| (tx, ty, v)) }
+                    let (tw, th) = (TILE.min(lv.w - tx as u64 * TILE), TILE.min(lv.h - ty as u64 * TILE));
+                    let mask = area.as_ref().and_then(|a| a.mask.clone());
+                    let on = area.is_some();
+                    async move {
+                        let (ox, oy) = (x0 + tx as u64 * TILE, y0 + ty as u64 * TILE);
+                        // ponytail: an area reads each tile as a window: the source tiles at the edges of the window are read again (the cache keeps them).
+                        let mut v = if on { i.read(l, 0, (ox, oy, tw, th)).await?.0 } else { i.values(l, 0, tx, ty, 0).await? };
+                        if let Some(m) = mask {
+                            for (k, p) in v.iter_mut().enumerate() {
+                                if !m((ox + k as u64 % tw) as f64 + 0.5, (oy + k as u64 / tw) as f64 + 0.5) {
+                                    *p = f32::NAN;
+                                }
+                            }
+                        }
+                        Ok::<_, Error>((tx, ty, v))
+                    }
                 })
                 .buffered(4);
             let (mut done, mut last) = (0, Instant::now());
@@ -790,6 +813,9 @@ impl Inner {
         })?;
         w.finish()?;
         let mut note = format!("{path}: {} x {} pixels", lv.w, lv.h);
+        if area.is_some() {
+            note += &format!(" (window at column {x0}, row {y0})");
+        }
         if !affine {
             note += ", without georeferencing (a GeoTIFF file has no grid of longitudes and latitudes)";
         }
@@ -819,6 +845,22 @@ impl Inner {
         let v = Arc::new(ds.product.vars[0].clone());
         Ok(Arc::new(Layer { id, ds, ds_id: self.next.fetch_add(1, Relaxed), v, var: 0, choice: 0, band: 0, time: 0, at: vec![], part: Part::Real, levels, enc, sample, sample_at, op: Some(Arc::new(op)) }))
     }
+}
+
+/// The part of a layer to export: the window (x0, y0, width, height) of level 0, and a test of the position of
+/// a pixel center (column, row): false is no data. None: all the pixels of the window.
+#[derive(Clone)]
+pub struct Area {
+    pub win: (u64, u64, u64, u64),
+    pub mask: Option<Arc<dyn Fn(f64, f64) -> bool + Send + Sync>>,
+}
+
+/// The smallest window (x0, y0, width, height) of an image of `w` x `h` pixels that has the points `poly`
+/// (positions in pixels). None: the points are not in the image.
+pub fn window_of(poly: &[[f64; 2]], w: u64, h: u64) -> Option<(u64, u64, u64, u64)> {
+    let f = |k: usize, max: u64, up: bool| poly.iter().map(|p| p[k]).fold(if up { f64::NEG_INFINITY } else { f64::INFINITY }, |a, v| if up { a.max(v) } else { a.min(v) }).clamp(0.0, max as f64);
+    let (x0, x1, y0, y1) = (f(0, w, false).floor() as u64, f(0, w, true).ceil() as u64, f(1, h, false).floor() as u64, f(1, h, true).ceil() as u64);
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
 }
 
 /// The size on the ground (meters) of a level-0 pixel at the center of an image of `w` x `h` pixels with the
@@ -852,11 +894,12 @@ impl Engine {
     /// Write the values of layer `l` (a file or computed) at the full resolution (level 0) to the GeoTIFF
     /// file `path`, one tile after the other. `stop` stops the export (the file goes). The progress and the
     /// end come as `Event::Export`.
-    pub fn export(&self, l: Arc<Layer>, path: String, stop: Arc<AtomicBool>) -> u64 {
+    /// `area`: only a part of the layer (None: all of it).
+    pub fn export(&self, l: Arc<Layer>, path: String, stop: Arc<AtomicBool>, area: Option<Area>) -> u64 {
         let i = self.inner.clone();
         let req = i.next.fetch_add(1, Relaxed);
         self.rt.spawn_blocking(move || {
-            let res = i.export(&l, &path, &stop, req);
+            let res = i.export(&l, &path, &stop, req, area);
             if res.is_err() {
                 let _ = std::fs::remove_file(&path);
             }
@@ -1000,7 +1043,7 @@ mod tests {
         };
         e.open(format!("{dir}nc4_grid.nc"));
         let a = opened();
-        e.export(a.clone(), out.clone(), Default::default());
+        e.export(a.clone(), out.clone(), Default::default(), None);
         let Event::Export { res: Some(res), .. } = next(&|e| matches!(e, Event::Export { res: Some(_), .. })) else { unreachable!() };
         res.unwrap();
         e.open(out.clone());
@@ -1013,6 +1056,15 @@ mod tests {
         for (x, y) in [(0, 0), (11, 7), (89, 59), (45, 30)] {
             assert_eq!(probe(&a, x, y), probe(&b, x, y), "{x} {y}");
         }
+    }
+
+    #[test]
+    fn window_of_a_box() {
+        let b = [[10.2, 5.5], [20.7, 5.5], [20.7, 9.1], [10.2, 9.1]];
+        assert_eq!(window_of(&b, 100, 50), Some((10, 5, 11, 5)));
+        assert_eq!(window_of(&b, 15, 50), Some((10, 5, 5, 5)));
+        assert_eq!(window_of(&b, 8, 50), None);
+        assert_eq!(window_of(&[[-5.0, -5.0], [3.0, 2.0]], 100, 50), Some((0, 0, 3, 2)));
     }
 
     /// A median filter of an array of 600 x 20 pixels (two tiles): the values across the edge of the tiles are

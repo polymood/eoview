@@ -691,7 +691,7 @@
  "Radiometry": "Radiométrie",
  "Indices": "Indices",
  "Space": "Espace",
- "Terrain": "Terrain",
+ "Terrain": "Relief",
  "Mask": "Masque",
  "Decibels": "Décibels",
  "Normalized difference": "Différence normalisée",
@@ -759,8 +759,15 @@
  "Globe: turn the camera to the left": "Globe : tourner la caméra vers la gauche",
  "Globe: turn the camera to the right": "Globe : tourner la caméra vers la droite",
  "Globe: north up, camera above": "Globe : nord en haut, caméra au-dessus",
- "Terrain": "Relief",
  "The globe view takes its heights from this layer, in meters. The other layers go on the relief. Set the opacity to 0 to hide the colors of this layer": "Le globe prend ses hauteurs de cette couche, en mètres. Les autres couches se posent sur le relief. Mettez l'opacité à 0 pour cacher les couleurs de cette couche",
  "Exaggeration": "Exagération",
- "Vertical exaggeration of the relief": "Exagération verticale du relief"
+ "Vertical exaggeration of the relief": "Exagération verticale du relief",
+ "Export the visible area (GeoTIFF)...": "Exporter la zone visible (GeoTIFF)...",
+ "Export the selected region (GeoTIFF)...": "Exporter la région sélectionnée (GeoTIFF)...",
+ "All the layer...": "Toute la couche...",
+ "The visible area...": "La zone visible...",
+ "The selected region...": "La région sélectionnée...",
+ "Select a region of the view (tool R), then export.": "Sélectionnez une région de la vue (outil R), puis exportez.",
+ "The layer does not show in the view.": "La couche n'est pas affichée dans la vue.",
+ "The area is not on the layer.": "La zone n'est pas sur la couche."
 }

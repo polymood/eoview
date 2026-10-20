@@ -4,7 +4,7 @@
 //! Rules: each frequent action is one click or one key, on the view under the mouse. The menu bar has all
 //! commands, with their keys. Each toolbar button shows its key in its tooltip. The command palette
 //! (Ctrl+K) finds all commands by name.
-use crate::app::{App, Cmp, Dialog, Pane, WORKSPACE_EXT, What};
+use crate::app::{App, Cmp, Dialog, ExportArea, Pane, WORKSPACE_EXT, What};
 use crate::icons::{self, Icon};
 use crate::lang::{t, tf};
 use crate::tools::Tool;
@@ -33,7 +33,7 @@ pub enum Cmd {
     Save,
     Load,
     /// Export the values of the selected layer to a GeoTIFF file.
-    Export,
+    Export(crate::app::ExportArea),
     /// The Figure tab: open or close it. Export the figure to a file of this type (pdf, svg, png, csv).
     Figure,
     /// The Graph tab: open or close it.
@@ -192,7 +192,9 @@ fn commands(app: &App, id: u32) -> Vec<(String, &'static str, Cmd)> {
         (t("Add layer: folder (SAFE, SEN3, Zarr)..."), "", Cmd::Open(true, What::Dirs)),
         (t("Add layer: URL..."), "", Cmd::Open(true, What::Url)),
         (t("Save workspace..."), "Ctrl+S", Cmd::Save),
-        (t("Export data (GeoTIFF)..."), "", Cmd::Export),
+        (t("Export data (GeoTIFF)..."), "", Cmd::Export(ExportArea::All)),
+        (t("Export the visible area (GeoTIFF)..."), "", Cmd::Export(ExportArea::View)),
+        (t("Export the selected region (GeoTIFF)..."), "", Cmd::Export(ExportArea::Region)),
         (t("Figure"), "F8", Cmd::Figure),
         (t("Graph"), "F9", Cmd::Graph),
         (t("Open workspace..."), "", Cmd::Load),
@@ -1332,7 +1334,7 @@ impl App {
             match c {
                 Cmd::Panel => self.wins[k].panel ^= true,
                 // The dialogs of these commands are in the main window.
-                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Info | Cmd::Values | Cmd::Render | Cmd::Open(..) | Cmd::Save | Cmd::Load | Cmd::Export => {
+                Cmd::Palette | Cmd::Help | Cmd::Prefs | Cmd::Info | Cmd::Values | Cmd::Render | Cmd::Open(..) | Cmd::Save | Cmd::Load | Cmd::Export(_) => {
                     self.run(c, i);
                     if let Some(w) = &self.win {
                         w.window.focus_window();
@@ -1462,7 +1464,7 @@ impl App {
             Cmd::Open(add, What::Path(p)) => self.open(id, p, add),
             Cmd::Open(add, what) => self.dialog = Some(Dialog::Open { pane: id, add, what }),
             Cmd::Save => self.dialog = Some(Dialog::Save),
-            Cmd::Export => self.dialog = Some(Dialog::Export(id)),
+            Cmd::Export(a) => self.dialog = Some(Dialog::Export(id, a)),
             Cmd::Figure => self.figure_open ^= true,
             Cmd::Graph => {
                 self.graph_open ^= true;
@@ -1969,7 +1971,11 @@ impl App {
                     });
                     entry(ui, cmds, id, t("Information..."), "Ctrl+I", Cmd::Info);
                     entry(ui, cmds, id, t("Values..."), "Ctrl+Shift+I", Cmd::Values);
-                    entry(ui, cmds, id, t("Export data (GeoTIFF)..."), "", Cmd::Export);
+                    ui.menu_button(t("Export data (GeoTIFF)"), |ui| {
+                        entry(ui, cmds, id, t("All the layer..."), "", Cmd::Export(ExportArea::All));
+                        entry(ui, cmds, id, t("The visible area..."), "", Cmd::Export(ExportArea::View));
+                        entry(ui, cmds, id, t("The selected region..."), "", Cmd::Export(ExportArea::Region));
+                    });
                     ui.separator();
                     entry(ui, cmds, id, t("Automatic stretch"), "A", Cmd::Auto);
                     entry(ui, cmds, id, t("Same display for all layers"), "", Cmd::SameDisplay);
@@ -2348,7 +2354,7 @@ impl App {
                             (t("Information"), "Ctrl+I", Cmd::Info),
                             (t("Values"), "Ctrl+Shift+I", Cmd::Values),
                             (t("Plot"), "", Cmd::Plot(crate::figure::FigKind::Plane)),
-                            (t("Export data (GeoTIFF)..."), "", Cmd::Export),
+                            (t("Export data (GeoTIFF)..."), "", Cmd::Export(ExportArea::All)),
                         ] {
                             if ui.add(egui::Button::new(name).shortcut_text(key)).clicked() {
                                 cmds.push((c, id));
@@ -3294,10 +3300,10 @@ pub fn dialogs(app: &mut App) {
                 }
             }
         }
-        Dialog::Export(pane) => {
+        Dialog::Export(pane, area) => {
             let name = app.pane(pane).and_then(|p| p.layers.get(p.sel)).map_or("layer".into(), |l| l.comp_name().replace(['/', '\\', ':', ' '], "_"));
             if let Some(p) = rfd::FileDialog::new().set_title(t("Export data (GeoTIFF)")).add_filter("GeoTIFF", &["tif", "tiff"]).set_file_name(format!("{name}.tif")).save_file() {
-                app.export(pane, p.to_string_lossy().into_owned());
+                app.export(pane, p.to_string_lossy().into_owned(), area);
             }
         }
         Dialog::Figure(pane, ext) => {
