@@ -220,7 +220,11 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
 - Phase 3 acceptance with the GPU: remote product open to first pixels in less than 1.5 s (engine only:
   0.6 to 1.0 s), a 30-step series that plays without gaps after the first pass.
 - Phase 4: swath meshes. Done: globe (item 4), DEM terrain (item 14).
-- Phase 5: Earth Explorer (SMOS, CryoSat-2), HDF5 (EarthCARE, Proba-V), CEOS, Sentinel-6, BIOMASS.
+- Phase 5: Earth Explorer (SMOS, CryoSat-2), HDF5 (EarthCARE, Proba-V), Sentinel-6, BIOMASS.
+  Done (2026-10-20): CEOS SAR (Radarsat-1, ALOS and ALOS-2 PALSAR, ERS file names): open any file of the
+  set, one variable for each polarization, the data set summary as metadata, the corners of the map
+  projection record as georeferencing (level 1.5). Checked with 6 sample products. Not done in CEOS: the
+  georeferencing of slant range products (level 1.1, Radarsat SLC), level 1.0 signal data, calibration.
   Done (2026-10-19): Envisat N1 (headers, ASAR, MERIS and AATSR level 1 images, the ASAR geolocation grid
   and the MERIS tie points), checked with 5 sample products. Not done in Envisat: wave mode, level 2,
   the AATSR geolocation and scaling. Samples of CEOS and SMOS products are in `target/scratch/heritage/`.

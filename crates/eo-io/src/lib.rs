@@ -1,6 +1,7 @@
 //! Format readers, byte sources and codecs. A reader only describes the chunks of a product.
 //! The chunk engine in `eo-cache` reads and decodes them.
 mod blosc;
+pub mod ceos;
 pub mod dap;
 pub mod envisat;
 pub mod hdf4;
@@ -65,6 +66,10 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     src.sparse(true);
     let head = src.read(0..16.min(src.len()?))?;
     let name = url.rsplit(['/', '\\']).next().unwrap_or("").to_string();
+    // A CEOS product has several files: the reader opens the others.
+    if ceos::is_ceos(&head) {
+        return ceos::open(url, src, rt, name);
+    }
     let product = if tiff::is_tiff(&head) {
         tiff::open(&src, 0)?
     } else if jp2::is_jp2(&head) {
@@ -97,7 +102,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     } else if grib::is_grib(&src) {
         grib::open(&src, 0, name)?
     } else {
-        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-3, NetCDF-4, HDF4, HDF5, GRIB, Envisat N1, Zarr, SAFE or OPeNDAP expected)").into());
+        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-3, NetCDF-4, HDF4, HDF5, GRIB, Envisat N1, CEOS, Zarr, SAFE or OPeNDAP expected)").into());
     };
     Ok(Dataset { product, sources: vec![Arc::new(src)] })
 }
