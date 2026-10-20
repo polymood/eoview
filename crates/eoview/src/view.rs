@@ -258,6 +258,33 @@ impl View {
         }
     }
 
+    /// Move the view with a drag of the pointer from `from` to `to` (pixels of the view): the point of the
+    /// ground under the pointer stays under it. Globe: with the camera (any tilt and heading), the sky under
+    /// the pointer: as `pan`.
+    pub fn grab(&mut self, from: [f64; 2], to: [f64; 2]) {
+        let Some(a) = self.globe.then(|| self.globe_cam().unproject(from)).flatten() else { return self.pan(to[0] - from[0], to[1] - from[1]) };
+        // Two steps: the camera moves with the center, the second step corrects the first.
+        for _ in 0..2 {
+            let Some(b) = self.globe_cam().unproject(to) else { return self.pan(to[0] - from[0], to[1] - from[1]) };
+            self.center[0] += (a[0] - b[0] + 540.0).rem_euclid(360.0) - 180.0;
+            self.center[1] += a[1] - b[1];
+            self.clamp_globe();
+        }
+    }
+
+    /// Move the view with a drag of (`dx`, `dy`) pixels: the ground follows the pointer (exact in 2D and for a
+    /// globe that looks down, near for a tilted globe: see `grab`).
+    pub fn pan(&mut self, dx: f64, dy: f64) {
+        // Globe: a degree of longitude is shorter away from the equator. The view turns with the heading,
+        // and a tilted view shows the vertical distances shorter (the ground follows the pointer).
+        let kx = if self.globe { self.center[1].to_radians().cos().max(0.05) } else { 1.0 };
+        let dy = dy / if self.globe { self.tilt.to_radians().cos().max(0.2) } else { 1.0 };
+        let (sh, ch) = if self.globe { self.heading.to_radians().sin_cos() } else { (0.0, 1.0) };
+        self.center[0] -= (dx * ch - dy * sh) / (self.scale * kx);
+        self.center[1] += (dx * sh + dy * ch) / self.scale;
+        self.clamp_globe();
+    }
+
     /// Turn the camera of a globe view by `dh` degrees of heading and tilt it by `dt` degrees.
     pub fn orbit(&mut self, dh: f64, dt: f64) {
         (self.heading, self.tilt) = (self.heading + dh, self.tilt + dt);
@@ -670,6 +697,22 @@ mod tests {
         assert!(g.unproject([0.0, 0.0]).is_none() || g.cap() < 90.0);
         let r = v.rect();
         assert!(r[0] < 12.0 && r[2] > 12.0 && r[1] < 45.0 && r[3] > 45.0);
+    }
+
+    /// A drag moves the ground with the pointer, for any tilt and heading.
+    #[test]
+    fn globe_pan_follows_the_pointer() {
+        let mut v = View::new(1);
+        v.globe = true;
+        v.px = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        for (tilt, heading) in [(0.0, 0.0), (0.0, 90.0), (60.0, 0.0), (60.0, 30.0), (45.0, -120.0)] {
+            (v.center, v.scale, v.tilt, v.heading) = ([12.0, 45.0], 40.0, tilt, heading);
+            let q = [640.0, 420.0];
+            let ground = v.globe_cam().unproject(q).unwrap();
+            v.grab(q, [q[0] + 30.0, q[1] + 20.0]);
+            let p = v.globe_cam().project(ground[0], ground[1]).unwrap();
+            assert!((p[0] - 670.0).abs() < 0.5 && (p[1] - 440.0).abs() < 0.5, "tilt {tilt} heading {heading}: {p:?}");
+        }
     }
 
     /// The camera frame is orthonormal, the view center is at the center of the view for any tilt and

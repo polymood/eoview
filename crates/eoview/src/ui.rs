@@ -644,14 +644,13 @@ fn pane_ui(app: &mut App, ui: &mut egui::Ui, id: u32, screen: [u32; 2], cmds: &m
         p.moved = true;
     } else if resp.dragged() {
         let d = resp.drag_delta() * ppp;
-        // Globe: a degree of longitude is shorter away from the equator. The view turns with the heading,
-        // and a tilted view shows the vertical distances shorter (the ground follows the pointer).
-        let kx = if p.v.globe { p.v.center[1].to_radians().cos().max(0.05) } else { 1.0 };
-        let (dx, dy) = (d.x as f64, d.y as f64 / if p.v.globe { p.v.tilt.to_radians().cos().max(0.2) } else { 1.0 });
-        let (sh, ch) = if p.v.globe { p.v.heading.to_radians().sin_cos() } else { (0.0, 1.0) };
-        p.v.center[0] -= (dx * ch - dy * sh) / (p.v.scale * kx);
-        p.v.center[1] += (dx * sh + dy * ch) / p.v.scale;
-        p.v.clamp_globe();
+        match resp.interact_pointer_pos() {
+            Some(q) => {
+                let to = [(q.x * ppp - p.v.px.min.x) as f64, (q.y * ppp - p.v.px.min.y) as f64];
+                p.v.grab([to[0] - d.x as f64, to[1] - d.y as f64], to);
+            }
+            None => p.v.pan(d.x as f64, d.y as f64),
+        }
         p.moved = true;
     }
     if tool != Tool::None {
