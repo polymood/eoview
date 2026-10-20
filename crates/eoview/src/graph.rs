@@ -1,16 +1,28 @@
-//! The Graph tab: a node graph of layers (DESIGN section 18). Sources are layers of the view, operations
-//! are the filters, the layer math and the aggregates of the engine, and a Python node runs a function of
-//! the user. "Make layer" on an output node builds the computed layer with the engine calls that the Layer
-//! menu uses. The graph is a tree of `OpSave` with node positions: the workspace file keeps it.
+//! The Graph tab: a node editor in the style of Blender (DESIGN section 18). Sources are layers of a view,
+//! operations are the filters, the layer math and the aggregates of the engine (Rust), a Python node runs a
+//! function of the user, and an output node shows its input as a layer of a view.
+//!
+//! The graph is live: a change in a node makes the layer of each output again (after a short pause, as a
+//! slider moves), in place of the old layer. The view keeps the old tiles until the new tiles come. Only a
+//! Python node waits for its Run button. The graph is a tree of `OpSave` with node positions: the workspace
+//! file keeps it.
+//!
+//! Keys (the pointer on the graph): Shift+A add a node (with a search field), X or Delete remove the selected
+//! nodes, Shift+D duplicate them, M mute them (a muted node gives its first input), H collapse them, A select
+//! all, Home show all the nodes. Wheel: zoom. Middle button: pan. Drag from an output to an input: a link.
+//! Drag from an input: move or remove its link. Drag on the background: select with a rectangle.
 
 use crate::app::App;
 use crate::lang::{t, tf};
 use crate::layer::{Kind, LayerSave, OpSave};
-use egui::{Pos2, RichText, Sense, Vec2, vec2};
+use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2, vec2};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
-const NODE_W: f32 = 190.0;
+const NODE_W: f32 = 210.0;
+/// The pause after the last change before the layers are made again.
+const SETTLE: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "node")]
@@ -25,7 +37,8 @@ pub enum NodeKind {
     Agg { how: String, first: usize, last: usize, #[serde(default)] dim: String },
     /// The code of `def f(a, b, ...)`: it gets one array for each input.
     Python { code: String },
-    Output { name: String },
+    /// The layer `name` in view `view` (0: the active view at the first change).
+    Output { name: String, #[serde(default)] view: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -35,6 +48,11 @@ pub struct Node {
     pub kind: NodeKind,
     /// The node of each input (None: no link).
     pub inputs: Vec<Option<u32>>,
+    #[serde(default)]
+    pub collapsed: bool,
+    /// A muted node gives its first input.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -42,7 +60,7 @@ pub struct Graph {
     pub nodes: Vec<Node>,
 }
 
-/// What "Make layer" does.
+/// What an output node makes.
 #[derive(Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Made {
@@ -53,11 +71,28 @@ pub enum Made {
 }
 
 /// The state of the tab that the workspace file does not keep.
-#[derive(Default)]
 pub struct GraphUi {
-    pub pan: Vec2,
-    /// The node whose output waits for a click on an input.
-    pub pending: Option<u32>,
+    /// The part of the graph in the tab (zoom and pan). ZERO: all the nodes.
+    pub scene: Rect,
+    sel: HashSet<u32>,
+    /// A link that the user drags from the output of this node.
+    link: Option<u32>,
+    /// The start of a rectangle selection (graph coordinates).
+    boxsel: Option<Pos2>,
+    /// The add menu: its place in the graph, the search text, and the output to link to the new node.
+    add: Option<(Pos2, String, Option<u32>)>,
+    /// The time of the last change of a node.
+    edit: Option<Instant>,
+    /// The operation that each output node asked for, until its layer has it.
+    asked: HashMap<u32, Option<OpSave>>,
+    /// The message of each output node that cannot make its layer.
+    errors: HashMap<u32, String>,
+}
+
+impl Default for GraphUi {
+    fn default() -> Self {
+        GraphUi { scene: Rect::ZERO, sel: HashSet::new(), link: None, boxsel: None, add: None, edit: None, asked: HashMap::new(), errors: HashMap::new() }
+    }
 }
 
 impl NodeKind {
@@ -77,7 +112,19 @@ impl NodeKind {
             NodeKind::Math { .. } => t("Layer math").into(),
             NodeKind::Agg { .. } => t("Aggregate").into(),
             NodeKind::Python { .. } => "Python".into(),
-            NodeKind::Output { .. } => t("Output").into(),
+            NodeKind::Output { name, .. } => name.clone(),
+        }
+    }
+
+    /// The color of the header, by category (as the node categories of Blender).
+    fn color(&self) -> Color32 {
+        match self {
+            NodeKind::Source { .. } => Color32::from_rgb(131, 50, 50),
+            NodeKind::Filter(_) => Color32::from_rgb(52, 84, 140),
+            NodeKind::Math { .. } => Color32::from_rgb(40, 110, 100),
+            NodeKind::Agg { .. } => Color32::from_rgb(100, 62, 140),
+            NodeKind::Python { .. } => Color32::from_rgb(140, 118, 36),
+            NodeKind::Output { .. } => Color32::from_rgb(70, 70, 76),
         }
     }
 }
@@ -100,7 +147,7 @@ impl Graph {
     pub fn add(&mut self, kind: NodeKind, pos: [f32; 2], inputs: Vec<Option<u32>>) -> u32 {
         let id = self.nodes.iter().map(|n| n.id + 1).max().unwrap_or(1);
         let inputs = if inputs.is_empty() { vec![None; kind.n_inputs()] } else { inputs };
-        self.nodes.push(Node { id, pos, kind, inputs });
+        self.nodes.push(Node { id, pos, kind, inputs, collapsed: false, muted: false });
         id
     }
 
@@ -128,11 +175,11 @@ impl Graph {
         self.add(kind, [0.0; 2], ids)
     }
 
-    /// The graph of the saved layer `s`: its tree, and an output node.
-    pub fn of_save(s: &LayerSave, name: String) -> Graph {
+    /// The graph of the saved layer `s` of view `view`: its tree, and an output node.
+    pub fn of_save(s: &LayerSave, name: String, view: u32) -> Graph {
         let mut g = Graph::default();
         let root = g.add_save(s, Some(name.clone()));
-        g.add(NodeKind::Output { name }, [0.0; 2], vec![Some(root)]);
+        g.add(NodeKind::Output { name, view }, [0.0; 2], vec![Some(root)]);
         g.layout();
         g
     }
@@ -146,15 +193,18 @@ impl Graph {
         let mut rows: HashMap<usize, f32> = HashMap::new();
         for (n, h) in self.nodes.iter_mut().zip(h) {
             let r = rows.entry(h).or_default();
-            n.pos = [20.0 + h as f32 * (NODE_W + 50.0), 20.0 + *r * 150.0];
+            n.pos = [20.0 + h as f32 * (NODE_W + 60.0), 20.0 + *r * 170.0];
             *r += 1.0;
         }
     }
 
     /// The saved layer of node `id`: a source, or a layer with the operation of the node and the saved
-    /// layers of its inputs.
+    /// layers of its inputs. A muted node gives its first input.
     pub fn save_of(&self, id: u32) -> Result<LayerSave, String> {
         let n = self.node(id).ok_or("no node")?;
+        if n.muted && let Some(&Some(i)) = n.inputs.first() {
+            return self.save_of(i);
+        }
         let mut ins = vec![];
         for i in &n.inputs {
             ins.push(self.save_of(i.ok_or_else(|| tf("The node {} has an input without link.", &[&n.kind.title()]))?)?);
@@ -177,9 +227,9 @@ impl Graph {
         Ok(s)
     }
 
-    /// What "Make layer" does for the output node `out`.
+    /// What the output node `out` makes.
     pub fn make(&self, out: u32) -> Result<Made, String> {
-        let Some(Node { kind: NodeKind::Output { name }, inputs, .. }) = self.node(out) else { return Err(t("Not an output node.").into()) };
+        let Some(Node { kind: NodeKind::Output { name, .. }, inputs, .. }) = self.node(out) else { return Err(t("Not an output node.").into()) };
         let src = inputs.first().copied().flatten().ok_or(t("Link the output to a node."))?;
         let n = self.node(src).ok_or("no node")?;
         if let NodeKind::Python { code } = &n.kind {
@@ -215,119 +265,225 @@ fn script(code: &str, names: &[String], out: &str) -> Result<String, String> {
     ))
 }
 
-/// The positions of the ports on the screen, for the links.
+/// The places of the sockets and of the nodes in the graph, for the links and the selection.
 #[derive(Default)]
 struct Ports {
     ins: HashMap<(u32, usize), Pos2>,
     outs: HashMap<u32, Pos2>,
+    rects: Vec<(u32, Rect)>,
 }
 
 /// What the user did in the nodes.
 #[derive(Default)]
 struct Act {
-    del: Option<u32>,
-    make: Option<u32>,
-    out: Option<u32>,
-    inp: Option<(u32, usize)>,
+    /// A node was clicked (with Shift: add it to the selection).
+    pick: Option<(u32, bool)>,
+    /// The selected nodes move by this.
+    moved: Option<(u32, Vec2)>,
+    /// A drag of a link from the output of this node starts.
+    from: Option<u32>,
+    /// A drag from input (node, k) starts: its link moves.
+    detach: Option<(u32, usize)>,
+    /// A value changed: the layers are made again after a pause.
+    changed: bool,
+    run: Option<u32>,
 }
 
-fn port(ui: &mut egui::Ui, on: bool) -> (egui::Response, Pos2) {
-    let r = ui.allocate_response(vec2(14.0, 14.0), Sense::click());
-    let c = r.rect.center();
-    let fill = if on || r.hovered() { ui.visuals().selection.bg_fill } else { ui.visuals().widgets.inactive.bg_fill };
-    ui.painter().circle(c, 5.0, fill, egui::Stroke::new(1.0, ui.visuals().text_color()));
-    (r, c)
+/// A socket at `c`: a circle, and the response of a drag on it.
+fn socket(ui: &mut egui::Ui, c: Pos2, id: egui::Id, linked: bool) -> egui::Response {
+    let r = ui.interact(Rect::from_center_size(c, vec2(16.0, 16.0)), id, Sense::drag());
+    let fill = if r.hovered() || r.dragged() { Color32::from_rgb(230, 200, 90) } else if linked { Color32::from_rgb(160, 160, 170) } else { Color32::from_rgb(110, 110, 120) };
+    ui.painter().circle(c, 5.5, fill, Stroke::new(1.0, Color32::from_black_alpha(200)));
+    r.on_hover_cursor(egui::CursorIcon::Crosshair)
 }
 
-fn node_ui(ui: &mut egui::Ui, n: &mut Node, origin: Pos2, pending: Option<u32>, ports: &mut Ports, act: &mut Act) {
-    let Node { id, pos, kind, inputs } = n;
-    let id = *id;
-    let title = kind.title();
-    let rect = egui::Rect::from_min_size(origin + vec2(pos[0], pos[1]), vec2(NODE_W + 24.0, 2000.0));
-    ui.scope_builder(egui::UiBuilder::new().id_salt(("graph node", id)).max_rect(rect), |ui| {
-        egui::Frame::window(ui.style()).show(ui, |ui| {
+/// A link from `a` to `b`: a curve, as in Blender.
+fn wire(a: Pos2, b: Pos2, color: Color32) -> egui::Shape {
+    let d = ((b.x - a.x).abs() * 0.5).max(40.0);
+    egui::Shape::CubicBezier(egui::epaint::CubicBezierShape::from_points_stroke([a, a + vec2(d, 0.0), b - vec2(d, 0.0), b], false, Color32::TRANSPARENT, Stroke::new(2.5, color)))
+}
+
+/// The output node: the layer of the output in its view, and its display settings.
+struct OutLook<'a> {
+    views: &'a [(u32, String)],
+    layer: Option<&'a mut crate::layer::MapLayer>,
+    error: Option<&'a String>,
+}
+
+fn node_ui(ui: &mut egui::Ui, n: &mut Node, sel: bool, ports: &mut Ports, act: &mut Act, mut out: Option<OutLook>) {
+    let id = n.id;
+    let top = Pos2::new(n.pos[0], n.pos[1]);
+    let linked: Vec<bool> = n.inputs.iter().map(|i| i.is_some()).collect();
+    let frame = egui::Frame::new()
+        .fill(Color32::from_rgb(48, 48, 52))
+        .stroke(Stroke::new(if sel { 2.0 } else { 1.0 }, if sel { Color32::from_rgb(240, 160, 60) } else { Color32::from_black_alpha(220) }))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::ZERO);
+    let mut rows: Vec<(usize, f32)> = vec![];
+    let mut out_y = None;
+    let r = ui.scope_builder(egui::UiBuilder::new().id_salt(("graph node", id)).max_rect(Rect::from_min_size(top, vec2(NODE_W, 4000.0))), |ui| {
+        frame.show(ui, |ui| {
             ui.set_width(NODE_W);
-            ui.horizontal(|ui| {
-                let h = ui.add_sized([NODE_W - 24.0, 18.0], egui::Label::new(RichText::new(title).strong()).truncate().sense(Sense::drag())).on_hover_cursor(egui::CursorIcon::Grab);
-                if h.dragged() {
-                    (pos[0], pos[1]) = (pos[0] + h.drag_delta().x, pos[1] + h.drag_delta().y);
-                }
-                if ui.small_button("x").on_hover_text(t("Remove the node")).clicked() {
-                    act.del = Some(id);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            // Header: the color of the category, collapse arrow, title, mute mark. Drag: move the node.
+            let hr = ui.allocate_exact_size(vec2(NODE_W, 24.0), Sense::hover()).0;
+            let alpha = if n.muted { 0.35 } else { 1.0 };
+            ui.painter().rect_filled(hr, egui::CornerRadius { nw: 6, ne: 6, sw: if n.collapsed { 6 } else { 0 }, se: if n.collapsed { 6 } else { 0 } }, n.kind.color().gamma_multiply(alpha));
+            let head = ui.interact(hr, ui.id().with("head"), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::Grab);
+            if head.drag_started() || head.clicked() {
+                act.pick = Some((id, ui.input(|i| i.modifiers.shift)));
+            }
+            if head.dragged() {
+                act.moved = Some((id, head.drag_delta()));
+            }
+            ui.new_child(egui::UiBuilder::new().max_rect(hr.shrink2(vec2(6.0, 3.0))).layout(egui::Layout::left_to_right(egui::Align::Center))).scope(|ui| {
+                {
+                    if ui.add(egui::Button::new(RichText::new(if n.collapsed { "+" } else { "-" }).color(Color32::WHITE).strong()).frame(false)).clicked() {
+                        n.collapsed ^= true;
+                    }
+                    let title = if n.muted { format!("{}  ({})", n.kind.title(), t("muted")) } else { n.kind.title() };
+                    ui.add(egui::Label::new(RichText::new(title).strong().color(Color32::WHITE)).truncate().selectable(false));
                 }
             });
-            for k in 0..inputs.len() {
-                ui.horizontal(|ui| {
-                    let (r, c) = port(ui, false);
-                    ports.ins.insert((id, k), c);
-                    let label = match kind {
-                        NodeKind::Math { names, .. } => names[k].clone(),
-                        _ => tf("input {}", &[&(k + 1).to_string()]),
-                    };
-                    ui.label(label);
-                    if r.on_hover_text(t("Click here after the output of a node to link, or alone to remove the link")).clicked() {
-                        act.inp = Some((id, k));
-                    }
-                });
+            if n.collapsed {
+                return;
             }
-            let mut grow = false;
-            match kind {
-                NodeKind::Source { .. } => {}
-                NodeKind::Filter(f) => {
-                    egui::Grid::new(("graph params", id)).num_columns(2).show(ui, |ui| {
-                        for (n, v) in f.params() {
-                            ui.label(t(n));
-                            ui.add(egui::DragValue::new(v).speed(0.1).max_decimals(4));
-                            ui.end_row();
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
+                ui.set_width(NODE_W - 20.0);
+                ui.spacing_mut().item_spacing.y = 4.0;
+                // The output first, as in Blender.
+                if !matches!(n.kind, NodeKind::Output { .. }) {
+                    let r = ui.allocate_ui_with_layout(vec2(NODE_W - 20.0, 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(t("Result"))).response;
+                    out_y = Some(r.rect.center().y);
+                }
+                let mut grow = false;
+                let ch = &mut act.changed;
+                match &mut n.kind {
+                    NodeKind::Source { .. } => {}
+                    NodeKind::Filter(f) => {
+                        for (name, v) in f.params() {
+                            let speed = (v.abs() * 0.01).max(0.01);
+                            *ch |= ui.add_sized([NODE_W - 20.0, 20.0], egui::DragValue::new(v).speed(speed).max_decimals(4).prefix(format!("{}: ", t(name)))).changed();
                         }
-                    });
-                }
-                NodeKind::Math { expr, .. } => {
-                    ui.add(egui::TextEdit::singleline(expr).desired_width(f32::INFINITY));
-                    grow = ui.small_button(t("+ input")).clicked();
-                }
-                NodeKind::Agg { how, first, last, dim } => {
-                    egui::ComboBox::from_id_salt(("graph agg", id)).selected_text(t(how)).show_ui(ui, |ui| {
-                        for (_, name) in eo_cache::Agg::ALL {
-                            ui.selectable_value(how, name.to_string(), t(name));
+                    }
+                    NodeKind::Math { expr, .. } => {
+                        *ch |= ui.add(egui::TextEdit::singleline(expr).desired_width(f32::INFINITY).code_editor()).changed();
+                        grow = ui.small_button(t("+ input")).clicked();
+                    }
+                    NodeKind::Agg { how, first, last, dim } => {
+                        egui::ComboBox::from_id_salt(("graph agg", id)).width(NODE_W - 20.0).selected_text(t(how)).show_ui(ui, |ui| {
+                            for (_, name) in eo_cache::Agg::ALL {
+                                *ch |= ui.selectable_value(how, name.to_string(), t(name)).changed();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            *ch |= ui.add(egui::DragValue::new(first).prefix(format!("{}: ", t("first")))).changed();
+                            *ch |= ui.add(egui::DragValue::new(last).prefix(format!("{}: ", t("last")))).changed();
+                        });
+                        *ch |= ui.add(egui::TextEdit::singleline(dim).hint_text(t("dimension (empty: time)")).desired_width(f32::INFINITY)).changed();
+                    }
+                    NodeKind::Python { code } => {
+                        ui.add(egui::TextEdit::multiline(code).code_editor().desired_rows(5).desired_width(f32::INFINITY));
+                        ui.horizontal(|ui| {
+                            grow = ui.small_button(t("+ input")).clicked();
+                            if ui.button(t("Run")).on_hover_text(t("Run the function and make the layer of the outputs of this node")).clicked() {
+                                act.run = Some(id);
+                            }
+                        });
+                    }
+                    NodeKind::Output { name, view } => {
+                        *ch |= ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY)).changed();
+                        if let Some(o) = out.as_mut() {
+                            let cur = o.views.iter().find(|v| v.0 == *view).map_or(t("active view").to_string(), |v| v.1.clone());
+                            egui::ComboBox::from_id_salt(("graph view", id)).width(NODE_W - 20.0).selected_text(cur).show_ui(ui, |ui| {
+                                for (v, title) in o.views {
+                                    *ch |= ui.selectable_value(view, *v, title).changed();
+                                }
+                            });
+                            if let Some(e) = o.error {
+                                ui.colored_label(Color32::from_rgb(255, 120, 120), e);
+                            }
+                            if let Some(l) = o.layer.as_deref_mut() {
+                                ui.separator();
+                                let maps = crate::colormaps::all();
+                                egui::ComboBox::from_id_salt(("graph cmap", id)).width(NODE_W - 20.0).selected_text(maps.get(l.cmap).map_or("", |c| c.name.as_str())).show_ui(ui, |ui| {
+                                    for (i, c) in maps.iter().enumerate() {
+                                        if ui.selectable_label(l.cmap == i, &c.name).clicked() {
+                                            l.set_cmap(i);
+                                        }
+                                    }
+                                });
+                                let st = &mut l.st[0];
+                                let speed = ((st.hi - st.lo).abs() as f64 * 0.005).max(1e-6);
+                                ui.add_sized([NODE_W - 20.0, 20.0], egui::DragValue::new(&mut st.lo).speed(speed).prefix(format!("{}: ", t("min"))));
+                                ui.add_sized([NODE_W - 20.0, 20.0], egui::DragValue::new(&mut st.hi).speed(speed).prefix(format!("{}: ", t("max"))));
+                                ui.horizontal(|ui| {
+                                    if ui.small_button(t("Auto")).on_hover_text(t("Automatic stretch (A)")).clicked() {
+                                        l.auto();
+                                    }
+                                    ui.checkbox(&mut l.invert, t("Invert"));
+                                    ui.checkbox(&mut l.visible, t("Visible"));
+                                });
+                                ui.add(egui::Slider::new(&mut l.opacity, 0.0..=1.0).text(t("Opacity")));
+                            } else if o.error.is_none() {
+                                ui.label(RichText::new(t("computing...")).weak());
+                            }
                         }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(t("Steps"));
-                        ui.add(egui::DragValue::new(first));
-                        ui.add(egui::DragValue::new(last));
-                    });
-                    ui.add(egui::TextEdit::singleline(dim).hint_text(t("dimension (empty: time)")).desired_width(f32::INFINITY));
-                }
-                NodeKind::Python { code } => {
-                    ui.add(egui::TextEdit::multiline(code).code_editor().desired_rows(5).desired_width(f32::INFINITY));
-                    grow = ui.small_button(t("+ input")).clicked();
-                }
-                NodeKind::Output { name } => {
-                    ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY));
-                    if ui.button(t("Make layer")).on_hover_text(t("Make a computed layer in the active view")).clicked() {
-                        act.make = Some(id);
                     }
                 }
-            }
-            if grow {
-                if let NodeKind::Math { names, .. } = kind {
-                    names.push(crate::app::math_name(names.len()));
+                // The inputs.
+                let names: Vec<String> = match &n.kind {
+                    NodeKind::Math { names, .. } => names.clone(),
+                    NodeKind::Python { .. } => (0..n.inputs.len()).map(crate::app::math_name).collect(),
+                    _ if n.inputs.len() == 1 => vec![t("Input").into()],
+                    _ => (0..n.inputs.len()).map(|k| tf("Input {}", &[&(k + 1).to_string()])).collect(),
+                };
+                for (k, name) in names.iter().enumerate() {
+                    let r = ui.label(name);
+                    rows.push((k, r.rect.center().y));
                 }
-                inputs.push(None);
-            }
-            if !matches!(kind, NodeKind::Output { .. }) {
-                ui.allocate_ui_with_layout(vec2(NODE_W, 16.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (r, c) = port(ui, pending == Some(id));
-                    ports.outs.insert(id, c);
-                    if r.on_hover_text(t("Click here, then on an input of an other node")).clicked() {
-                        act.out = Some(id);
+                if grow {
+                    if let NodeKind::Math { names, .. } = &mut n.kind {
+                        names.push(crate::app::math_name(names.len()));
                     }
-                    ui.label(t("output"));
-                });
-            }
+                    n.inputs.push(None);
+                    *ch = true;
+                }
+            });
+            ui.add_space(4.0);
         });
     });
+    let rect = r.response.rect;
+    ports.rects.push((id, rect));
+    // The sockets on the edges: inputs at the left, the output at the right.
+    let mid = rect.top() + 12.0;
+    for (k, y) in rows.iter().copied().chain(if n.collapsed { (0..n.inputs.len()).map(|k| (k, mid)).collect::<Vec<_>>() } else { vec![] }) {
+        let c = Pos2::new(rect.left(), y);
+        ports.ins.insert((id, k), c);
+        if socket(ui, c, egui::Id::new(("graph in", id, k)), linked.get(k).copied().unwrap_or(false)).drag_started() {
+            act.detach = Some((id, k));
+        }
+    }
+    if !matches!(n.kind, NodeKind::Output { .. }) {
+        let c = Pos2::new(rect.right(), if n.collapsed { mid } else { out_y.unwrap_or(mid) });
+        ports.outs.insert(id, c);
+        if socket(ui, c, egui::Id::new(("graph out", id)), true).drag_started() {
+            act.from = Some(id);
+        }
+    }
+}
+
+/// The nodes that the add menu gives: name, category, and the node.
+fn catalog(layers: &[(String, Option<LayerSave>)]) -> Vec<(String, String, NodeKind)> {
+    let mut v: Vec<(String, String, NodeKind)> = layers.iter().filter_map(|(n, s)| Some((n.clone(), t("Source").to_string(), NodeKind::Source { name: n.clone(), layer: s.clone()? }))).collect();
+    for (gr, name, f, _) in crate::layer::FILTERS {
+        v.push((t(name).to_string(), t(gr).to_string(), NodeKind::Filter(f.clone())));
+    }
+    v.push((t("Layer math").into(), t("Math").into(), NodeKind::Math { expr: "a + b".into(), names: vec!["a".into(), "b".into()] }));
+    v.push((t("Aggregate").into(), t("Time").into(), NodeKind::Agg { how: eo_cache::Agg::ALL[0].1.into(), first: 0, last: 0, dim: String::new() }));
+    v.push(("Python".into(), "Python".into(), NodeKind::Python { code: "def f(a):\n    return a\n".into() }));
+    v.push((t("Output").into(), t("Output").into(), NodeKind::Output { name: t("Graph").into(), view: 0 }));
+    v
 }
 
 impl App {
@@ -339,113 +495,293 @@ impl App {
         let layers: Vec<(String, Option<LayerSave>)> = self.pane(self.active).map_or(vec![], |p| {
             p.layers.iter().rev().map(|l| (l.label(200), (l.kind == Kind::Band && l.inputs.len() == 1 && l.saveable()).then(|| l.save()))).collect()
         });
-        let mut add: Option<(NodeKind, Vec<Option<u32>>)> = None;
+        let views: Vec<(u32, String)> = self.panes.iter().map(|p| (p.id, p.title())).collect();
         let mut show = false;
         ui.horizontal(|ui| {
-            ui.menu_button(t("Add node"), |ui| {
-                ui.menu_button(t("Source"), |ui| {
-                    for (name, s) in &layers {
-                        if ui.add_enabled(s.is_some(), egui::Button::new(name)).clicked()
-                            && let Some(s) = s
-                        {
-                            add = Some((NodeKind::Source { name: name.clone(), layer: s.clone() }, vec![]));
-                            ui.close();
-                        }
-                    }
-                });
-                let mut groups: Vec<&str> = crate::layer::FILTERS.iter().map(|f| f.0).collect();
-                groups.dedup();
-                for gr in groups {
-                    ui.menu_button(t(gr), |ui| {
-                        for (_, name, f, _) in crate::layer::FILTERS.iter().filter(|f| f.0 == gr) {
-                            if ui.button(t(name)).clicked() {
-                                add = Some((NodeKind::Filter(f.clone()), vec![]));
-                                ui.close();
-                            }
-                        }
-                    });
-                }
-                let mut item = |ui: &mut egui::Ui, name: &str, k: NodeKind| {
-                    if ui.button(name).clicked() {
-                        add = Some((k, vec![]));
-                        ui.close();
-                    }
-                };
-                item(ui, t("Layer math"), NodeKind::Math { expr: "a + b".into(), names: vec!["a".into(), "b".into()] });
-                item(ui, t("Aggregate"), NodeKind::Agg { how: eo_cache::Agg::ALL[0].1.into(), first: 0, last: 0, dim: String::new() });
-                item(ui, "Python", NodeKind::Python { code: "def f(a):\n    return a\n".into() });
-                item(ui, t("Output"), NodeKind::Output { name: t("Graph").into() });
-            });
+            if ui.button(t("Add node (Shift+A)")).clicked() {
+                let c = st.scene.center();
+                st.add = Some((if st.scene == Rect::ZERO { Pos2::new(20.0, 20.0) } else { c }, String::new(), None));
+            }
             show = ui.button(t("Show the selected layer")).on_hover_text(t("The operations of the selected layer as a graph")).clicked();
             if ui.button(t("Clear")).clicked() {
                 g = Graph::default();
+                st = GraphUi::default();
             }
-            if let Some(k) = st.pending {
-                ui.label(tf("Click an input to link the output of {}.", &[&g.node(k).map_or(String::new(), |n| n.kind.title())]));
-            }
+            ui.label(RichText::new(t("Wheel: zoom. Middle button: pan. Drag from a socket: link. X: remove, M: mute, H: collapse, Shift+D: duplicate.")).small().weak());
         });
-        if let Some((k, ins)) = add {
-            let o = st.pan * -1.0 + vec2(20.0, 20.0) + Vec2::splat(24.0 * (g.nodes.len() % 8) as f32);
-            g.add(k, [o.x, o.y], ins);
+        let outer = ui.available_rect_before_wrap();
+        let hover = ui.input(|i| i.pointer.hover_pos()).filter(|p| outer.contains(*p));
+        // The wheel zooms at the pointer (Blender). The Scene pans with the wheel: the scroll is used here.
+        if let Some(p) = hover {
+            let dy = ui.input(|i| i.smooth_scroll_delta.y);
+            if dy != 0.0 && st.scene != Rect::ZERO {
+                let k = (-dy / 400.0).exp();
+                let r = st.scene;
+                let c = r.min + (p - outer.min) / outer.size() * r.size();
+                st.scene = Rect::from_min_max(c - (c - r.min) * k, c + (r.max - c) * k);
+                ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+            }
         }
-        let canvas = ui.available_rect_before_wrap();
-        let bg = ui.allocate_rect(canvas, Sense::click_and_drag());
-        st.pan += bg.drag_delta();
-        if bg.clicked() {
-            st.pending = None;
-        }
-        let wires = ui.painter().add(egui::Shape::Noop);
+        // Graph coordinates of a screen position.
+        let to_graph = |p: Pos2, s: Rect| s.min + (p - outer.min) / outer.size() * s.size();
+        let keys = hover.is_some() && !ui.ctx().egui_wants_keyboard_input();
         let (mut ports, mut act) = (Ports::default(), Act::default());
-        let origin = canvas.min + st.pan;
         let mut nodes = std::mem::take(&mut g.nodes);
-        for n in &mut nodes {
-            node_ui(ui, n, origin, st.pending, &mut ports, &mut act);
-        }
-        g.nodes = nodes;
-        // The links, below the nodes.
-        let mut lines = vec![];
-        for n in &g.nodes {
-            for (k, i) in n.inputs.iter().enumerate() {
-                if let (Some(a), Some(b)) = (i.and_then(|i| ports.outs.get(&i)), ports.ins.get(&(n.id, k))) {
-                    let d = (b.x - a.x).abs().max(40.0) * 0.5;
-                    let stroke = egui::Stroke::new(2.0, ui.visuals().selection.bg_fill);
-                    lines.push(egui::Shape::CubicBezier(egui::epaint::CubicBezierShape::from_points_stroke([*a, *a + vec2(d, 0.0), *b - vec2(d, 0.0), *b], false, egui::Color32::TRANSPARENT, stroke)));
+        let scene = st.scene;
+        let resp = egui::Scene::new().zoom_range(0.15..=2.5).drag_pan_buttons(egui::DragPanButtons::MIDDLE).sense(Sense::click_and_drag()).show(ui, &mut st.scene, |ui| {
+            let wires = ui.painter().add(egui::Shape::Noop);
+            for n in &mut nodes {
+                let out = match &n.kind {
+                    NodeKind::Output { name, view } => {
+                        let view = if *view == 0 { self.active } else { *view };
+                        let layer = self.panes.iter_mut().find(|p| p.id == view).and_then(|p| p.layers.iter_mut().find(|l| l.path == *name && l.op.is_some()));
+                        Some(OutLook { views: &views, layer, error: st.errors.get(&n.id) })
+                    }
+                    _ => None,
+                };
+                node_ui(ui, n, st.sel.contains(&n.id), &mut ports, &mut act, out);
+            }
+            // The links, below the nodes.
+            let mut lines = vec![];
+            for n in &nodes {
+                for (k, i) in n.inputs.iter().enumerate() {
+                    if let (Some(a), Some(b)) = (i.and_then(|i| ports.outs.get(&i)), ports.ins.get(&(n.id, k))) {
+                        let muted = nodes.iter().any(|m| Some(m.id) == *i && m.muted);
+                        lines.push(wire(*a, *b, if muted { Color32::from_gray(90) } else { Color32::from_rgb(170, 170, 185) }));
+                    }
                 }
             }
+            // The link that the user drags, and the selection rectangle.
+            if let (Some(from), Some(p)) = (st.link.and_then(|f| ports.outs.get(&f)), ui.ctx().pointer_latest_pos()) {
+                lines.push(wire(*from, to_graph(p, scene), Color32::from_rgb(230, 200, 90)));
+            }
+            if let (Some(a), Some(p)) = (st.boxsel, ui.ctx().pointer_latest_pos()) {
+                let r = Rect::from_two_pos(a, to_graph(p, scene));
+                lines.push(egui::Shape::rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(240, 160, 60, 25)));
+                lines.push(egui::Shape::rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_rgb(240, 160, 60)), egui::StrokeKind::Inside));
+            }
+            ui.painter().set(wires, egui::Shape::Vec(lines));
+        });
+        g.nodes = nodes;
+        let bg = resp.response;
+        // Selection: a click on a node, Shift adds it; a click on the background clears; a drag on the
+        // background selects with a rectangle.
+        if let Some((id, add)) = act.pick {
+            if !add && !st.sel.contains(&id) {
+                st.sel.clear();
+            }
+            st.sel.insert(id);
         }
-        ui.painter().set(wires, egui::Shape::Vec(lines));
-        if let Some(id) = act.del {
-            g.remove(id);
-            st.pending = st.pending.filter(|&p| p != id);
-        }
-        if let Some(id) = act.out {
-            st.pending = if st.pending == Some(id) { None } else { Some(id) };
-        }
-        if let Some((id, k)) = act.inp {
-            let new = match st.pending {
-                // A link that makes a cycle is refused.
-                Some(p) if g.depends(p, id) => g.node(id).and_then(|n| n.inputs[k]),
-                p => p,
-            };
-            st.pending = None;
-            if let Some(n) = g.nodes.iter_mut().find(|n| n.id == id) {
-                n.inputs[k] = new;
+        if let Some((id, d)) = act.moved {
+            let ids: Vec<u32> = if st.sel.contains(&id) { st.sel.iter().copied().collect() } else { vec![id] };
+            for n in g.nodes.iter_mut().filter(|n| ids.contains(&n.id)) {
+                (n.pos[0], n.pos[1]) = (n.pos[0] + d.x, n.pos[1] + d.y);
             }
         }
+        if bg.clicked() {
+            st.sel.clear();
+        }
+        if bg.drag_started_by(egui::PointerButton::Primary) {
+            st.boxsel = bg.interact_pointer_pos().map(|p| to_graph(p, scene));
+        }
+        if bg.drag_stopped()
+            && let (Some(a), Some(p)) = (st.boxsel.take(), bg.interact_pointer_pos())
+        {
+            let r = Rect::from_two_pos(a, to_graph(p, scene));
+            if !ui.input(|i| i.modifiers.shift) {
+                st.sel.clear();
+            }
+            st.sel.extend(ports.rects.iter().filter(|(_, n)| n.intersects(r)).map(|(id, _)| *id));
+        }
+        if bg.secondary_clicked() {
+            st.add = bg.interact_pointer_pos().map(|p| (to_graph(p, scene), String::new(), None));
+        }
+        // Links: from an output, or the link of an input that the user takes. The end on an input links,
+        // on the background opens the add menu (the new node gets the link).
+        if let Some(f) = act.from {
+            st.link = Some(f);
+        }
+        if let Some((id, k)) = act.detach
+            && let Some(n) = g.nodes.iter_mut().find(|n| n.id == id)
+        {
+            st.link = n.inputs[k].take();
+            act.changed = true;
+        }
+        if st.link.is_some() && ui.input(|i| i.pointer.any_released()) {
+            let from = st.link.take().unwrap_or_default();
+            let p = ui.ctx().pointer_latest_pos().map(|p| to_graph(p, scene));
+            let hit = p.and_then(|p| ports.ins.iter().filter(|(_, c)| c.distance(p) < 16.0).min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p))).map(|(k, _)| *k));
+            match hit {
+                // A link that makes a cycle is refused.
+                Some((id, k)) if !g.depends(from, id) => {
+                    if let Some(n) = g.nodes.iter_mut().find(|n| n.id == id) {
+                        n.inputs[k] = Some(from);
+                        act.changed = true;
+                    }
+                }
+                Some(_) => {}
+                None if p.is_some_and(|p| outer.contains(p) || st.scene.contains(p)) => st.add = p.map(|p| (p, String::new(), Some(from))),
+                None => {}
+            }
+        }
+        // Keys of Blender.
+        if keys {
+            let (shift, a, x, del, d, m, h, home) = ui.input(|i| (i.modifiers.shift, i.key_pressed(egui::Key::A), i.key_pressed(egui::Key::X), i.key_pressed(egui::Key::Delete), i.key_pressed(egui::Key::D), i.key_pressed(egui::Key::M), i.key_pressed(egui::Key::H), i.key_pressed(egui::Key::Home)));
+            if shift && a {
+                st.add = hover.map(|p| (to_graph(p, scene), String::new(), None));
+            } else if a {
+                st.sel = g.nodes.iter().map(|n| n.id).collect();
+            }
+            if x || del {
+                for id in std::mem::take(&mut st.sel) {
+                    g.remove(id);
+                }
+                act.changed = true;
+            }
+            if shift && d {
+                let copies: Vec<Node> = g.nodes.iter().filter(|n| st.sel.contains(&n.id)).cloned().collect();
+                st.sel.clear();
+                for c in copies {
+                    let id = g.add(c.kind, [c.pos[0] + 30.0, c.pos[1] + 30.0], c.inputs);
+                    st.sel.insert(id);
+                }
+            }
+            if m || h {
+                for n in g.nodes.iter_mut().filter(|n| st.sel.contains(&n.id)) {
+                    n.muted ^= m;
+                    n.collapsed ^= h;
+                }
+                act.changed |= m;
+            }
+            if home && let Some(r) = ports.rects.iter().map(|r| r.1).reduce(|a, b| a.union(b)) {
+                st.scene = r.expand(40.0);
+            }
+        }
+        self.add_menu(ui, &mut g, &mut st, &layers, outer, scene);
+        if act.changed {
+            st.edit = Some(Instant::now());
+        }
+        let run = act.run;
         self.graph = g;
         self.graph_ui = st;
         if show {
             self.graph_show(self.active);
         }
-        if let Some(o) = act.make {
-            self.graph_make(o);
+        if let Some(p) = run {
+            let outs: Vec<u32> = self.graph.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Output { .. }) && n.inputs.first() == Some(&Some(p))).map(|n| n.id).collect();
+            for o in outs {
+                self.graph_make(o);
+            }
+        }
+        self.graph_live(ui.ctx());
+    }
+
+    /// The add menu (Shift+A, a right click, or the end of a link on the background): a search field and
+    /// the nodes by category.
+    fn add_menu(&mut self, ui: &mut egui::Ui, g: &mut Graph, st: &mut GraphUi, layers: &[(String, Option<LayerSave>)], outer: Rect, scene: Rect) {
+        let Some((at, q, link)) = st.add.as_mut() else { return };
+        let screen = if scene == Rect::ZERO { outer.min + vec2(40.0, 40.0) } else { outer.min + (*at - scene.min) / scene.size() * outer.size() };
+        let mut pick: Option<NodeKind> = None;
+        let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let area = egui::Area::new(egui::Id::new("graph add")).fixed_pos(screen).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(240.0);
+                let r = ui.add(egui::TextEdit::singleline(q).hint_text(t("Search")));
+                r.request_focus();
+                let ql = q.to_lowercase();
+                let items: Vec<_> = catalog(layers).into_iter().filter(|(n, c, _)| ql.is_empty() || n.to_lowercase().contains(&ql) || c.to_lowercase().contains(&ql)).collect();
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    pick = items.first().map(|x| x.2.clone());
+                }
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    let mut last = String::new();
+                    for (name, cat, k) in items {
+                        if cat != last {
+                            ui.label(RichText::new(&cat).small().strong().color(k.color().gamma_multiply(1.6)));
+                            last = cat.clone();
+                        }
+                        if ui.selectable_label(false, format!("   {name}")).clicked() {
+                            pick = Some(k);
+                        }
+                    }
+                });
+            });
+        });
+        if area.response.clicked_elsewhere() && !ui.input(|i| i.pointer.any_released() && st.link.is_some()) {
+            close = true;
+        }
+        if let Some(k) = pick {
+            let (pos, from) = ([at.x, at.y], *link);
+            let n = k.n_inputs();
+            let id = g.add(k, pos, vec![]);
+            if let Some(f) = from.filter(|_| n > 0)
+                && let Some(node) = g.nodes.iter_mut().find(|x| x.id == id)
+            {
+                node.inputs[0] = Some(f);
+            }
+            st.sel = HashSet::from([id]);
+            st.edit = Some(Instant::now());
+            close = true;
+        }
+        if close {
+            st.add = None;
+        }
+    }
+
+    /// Make the layer of each output node again when its operation changed, after a pause in the changes.
+    /// The new layer takes the place of the old one (same colors, the view keeps the old tiles until the new
+    /// ones come). A Python node waits for its Run button.
+    pub(crate) fn graph_live(&mut self, ctx: &egui::Context) {
+        if let Some(e) = self.graph_ui.edit.filter(|e| e.elapsed() < SETTLE) {
+            ctx.request_repaint_after(SETTLE.saturating_sub(e.elapsed()));
+            return;
+        }
+        self.graph_ui.edit = None;
+        let outs: Vec<(u32, String, u32)> = self.graph.nodes.iter().filter_map(|n| match &n.kind {
+            NodeKind::Output { name, view } => Some((n.id, name.clone(), *view)),
+            _ => None,
+        }).collect();
+        for (id, name, view) in outs {
+            let made = self.graph.make(id);
+            let s = match made {
+                Ok(Made::Layer(_, s)) => s,
+                Ok(Made::Python(_)) => continue,
+                Err(e) => {
+                    self.graph_ui.errors.insert(id, e);
+                    continue;
+                }
+            };
+            self.graph_ui.errors.remove(&id);
+            // The view of the output: the active view the first time.
+            let view = if self.pane(view).is_some() { view } else { self.active };
+            if let Some(NodeKind::Output { view: v, .. }) = self.graph.nodes.iter_mut().find(|n| n.id == id).map(|n| &mut n.kind) {
+                *v = view;
+            }
+            let Some(p) = self.pane(view) else { continue };
+            let old = p.layers.iter().find(|l| l.path == name && l.op.is_some()).map(|l| (l.uid, l.order, l.save(), l.op == s.op));
+            if old.as_ref().is_some_and(|o| o.3) {
+                self.graph_ui.asked.remove(&id);
+                continue;
+            }
+            if self.graph_ui.asked.get(&id) == Some(&s.op) {
+                continue;
+            }
+            self.graph_ui.asked.insert(id, s.op.clone());
+            match old {
+                // The same colors and stretch as the old layer.
+                Some((uid, order, mut keep, _)) => {
+                    (keep.path, keep.op) = (name, s.op);
+                    self.load_layer_as(view, order, keep, None, Some(uid));
+                }
+                None => self.load_layer_as(view, usize::MAX, LayerSave { path: name, ..s }, None, None),
+            }
         }
     }
 
     /// The graph of the selected layer of view `id` (a source, or the tree of its operation).
     pub fn graph_show(&mut self, id: u32) {
-        let Some((s, name)) = self.pane(id).and_then(|p| p.layers.get(p.sel)).map(|l| (l.save(), l.label(200))) else { return };
-        self.graph = Graph::of_save(&s, name);
+        let Some((s, name)) = self.pane(id).and_then(|p| p.layers.get(p.sel)).map(|l| (l.save(), l.path.clone())) else { return };
+        self.graph = Graph::of_save(&s, name, id);
         self.graph_ui = GraphUi::default();
     }
 }
@@ -464,24 +800,27 @@ mod tests {
         .unwrap()
     }
 
-    /// A graph gives the saved layer with its operation, and the saved layer gives the graph again.
+    /// A graph gives the saved layer with its operation, and the saved layer gives the graph again. A muted
+    /// node gives its input.
     #[test]
     fn graph_to_op_and_back() {
         let mut g = Graph::default();
         let a = g.add(NodeKind::Source { name: "a".into(), layer: source("1") }, [0.0; 2], vec![]);
         let f = g.add(NodeKind::Filter(eo_cache::Filter::Gaussian { sigma: 2.0 }), [0.0; 2], vec![]);
-        let o = g.add(NodeKind::Output { name: "out".into() }, [0.0; 2], vec![Some(f)]);
+        let o = g.add(NodeKind::Output { name: "out".into(), view: 0 }, [0.0; 2], vec![Some(f)]);
         assert!(g.make(o).is_err(), "an input without link");
         g.nodes[1].inputs[0] = Some(a);
         let Ok(Made::Layer(name, s)) = g.make(o) else { panic!() };
         assert_eq!(name, "out");
         assert_eq!(s.op, Some(OpSave::Filter { filter: eo_cache::Filter::Gaussian { sigma: 2.0 }, inputs: vec![source("1")] }));
-        let back = Graph::of_save(&s, name);
+        let back = Graph::of_save(&s, name, 0);
         assert_eq!(back.nodes.len(), 3);
         assert_eq!(back.make(3).unwrap(), Made::Layer("out".into(), s));
         // A link that makes a cycle is refused by `depends`. The workspace file keeps the graph.
         assert!(g.depends(f, a) && !g.depends(a, f));
         assert_eq!(serde_json::from_str::<Graph>(&serde_json::to_string(&g).unwrap()).unwrap(), g);
+        g.nodes[1].muted = true;
+        assert!(g.make(o).is_err(), "a muted operation gives the source: not an operation");
     }
 
     /// The script of a Python node reads its sources by name, and refuses code without `def f(`.
@@ -490,7 +829,7 @@ mod tests {
         let mut g = Graph::default();
         let a = g.add(NodeKind::Source { name: "a - \"x\".tif".into(), layer: source("1") }, [0.0; 2], vec![]);
         let p = g.add(NodeKind::Python { code: "def f(a):\n    return a * 2\n".into() }, [0.0; 2], vec![Some(a)]);
-        let o = g.add(NodeKind::Output { name: "double".into() }, [0.0; 2], vec![Some(p)]);
+        let o = g.add(NodeKind::Output { name: "double".into(), view: 0 }, [0.0; 2], vec![Some(p)]);
         let Ok(Made::Python(s)) = g.make(o) else { panic!() };
         assert!(s.contains("def f(a):") && s.contains(r#"_names = ["a - \"x\".tif"]"#) && s.contains(r#"name="double""#), "{s}");
         g.nodes[1].kind = NodeKind::Python { code: "x = 1".into() };

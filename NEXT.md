@@ -132,11 +132,13 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
    point or a region, the spectral profile, figures with several panels, a north arrow, a choice of fonts.
 9. **Pipeline graph editor (Python).** Done (2026-10-19), first version: the Graph tab (F9, Tools menu),
    nodes for sources, filters, layer math, aggregates, Python and outputs, "Make layer", the graph of a
-   computed layer, the graph in the workspace file. DESIGN section 18 answers the 3 questions. To do:
+   computed layer, the graph in the workspace file. DESIGN section 18 answers the 3 questions. Done
+   (2026-10-20): a node editor as in Blender (DESIGN 18.4), live (no "Make layer"), the display settings in
+   the output node; a loading bar in each view, the old tiles stay during a new computation. To do:
    - The Python node runs on the whole layer at level 0 (the limit is the memory budget). Next step: tile by
      tile with halo pixels (DESIGN 18.2). Then a Python node can feed a filter or another node.
    - The result of a Python node is a memory layer: it is not in the workspace file (the graph is).
-   - A change of a node parameter does not update the layer: "Make layer" again.
+   - Node previews (a small image in the node), frames and reroute points of Blender.
    - Each run of a Python node starts a new Python process.
 10. **Filters for EO data.** Done (2026-10-19), first set, as computed layers (Layer > Filter, the menu of
    a layer row, the palette, the Data tab edits the parameters, the workspace file keeps them): scale and

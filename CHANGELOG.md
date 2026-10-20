@@ -9,7 +9,10 @@ The changes of each version of eoview, the newest first. The
   median, Sobel, Laplace, erosion, dilation, opening, closing, Lee, multilook, hillshade, slope, aspect and
   threshold. A filter makes a new layer. Change its parameters in the Data tab. The aggregates over time
   get percentiles and a trend.
-- Graph tab (F9): connect layers, filters, layer math, aggregates and Python code, then make a new layer.
+- Graph tab (F9): a node editor as in Blender. Connect layers, filters, layer math, aggregates and Python
+  code. The layers update while you change the nodes. Shift+A adds a node.
+- Each view has a loading bar. When the parameters of a layer change, the view keeps the old image until the
+  new image is complete.
 - Globe: tilt and turn the camera (right drag, Shift+arrows, Shift+N for north up). A layer can be the
   terrain of the globe, with a vertical exaggeration. The other layers go on the relief.
 - Go to (Ctrl+G): type a latitude and a longitude (and a scale 1:N), or a box west, south, east, north.

@@ -603,12 +603,21 @@ layer, with node positions. "Make layer" on an output node calls the same engine
 - Next step: the key of a Python node is the hash of its code, its halo and the keys of its inputs. The tiles
   go to the same disk cache.
 
-### 18.4 The tab
+### 18.4 The tab (2026-10-20: a node editor as in Blender)
 
-- A source is a layer of the active view with one band. An operation is a filter, a layer math, an aggregate
-  or a Python node. An output has a name and the button "Make layer".
-- A link goes from the output of a node to an input. Click the output, then the input. A click on an input
-  alone removes its link. A link that makes a cycle is refused.
+- Nodes by category, with the color of the category in the header: source (a layer of the active view with
+  one band), filter, layer math, aggregate (time), Python, output. All the parameters are in the nodes. The
+  output node also has the view of its layer and its display settings (color map, minimum and maximum,
+  automatic stretch, invert, visible, opacity).
+- The graph is live. A change in a node makes the layer of each output again, 150 ms after the last change
+  (a slider that moves makes one layer, not one for each step). The new layer takes the place of the old one:
+  the same colors and stretch, and the view keeps the tiles of the old layer until the new tiles come. The
+  operations run in the engine (Rust). Only a Python node waits for its Run button.
+- Mouse and keys: drag from an output socket to an input socket (a link), drag from an input (move or remove
+  its link), a link that ends on the background opens the add menu (the new node gets the link). Wheel: zoom
+  at the pointer. Middle button: pan. Drag on the background: select with a rectangle. Shift+A or a right
+  click: add a node (search field). X or Delete: remove. Shift+D: duplicate. M: mute (the node gives its first
+  input). H: collapse. A: select all. Home: show all the nodes. A link that makes a cycle is refused.
 - "Show the selected layer" and the command Graph (F9) with an empty graph show the tree of the selected
-  layer. The parameters of a node change the graph. The user makes the layer again with "Make layer".
+  layer. An output finds its layer by its name in its view.
 - An aggregate takes a source, as the Layer menu does.

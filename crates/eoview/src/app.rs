@@ -2098,6 +2098,11 @@ impl App {
             }
         }
         ws.panes.iter_mut().flat_map(|p| p.layers.iter_mut()).for_each(|s| fix_save(s, &mut fix));
+        for n in &mut ws.graph.nodes {
+            if let crate::graph::NodeKind::Source { layer, .. } = &mut n.kind {
+                fix_save(layer, &mut fix);
+            }
+        }
         if cfg!(windows) && network_path(&ws.render.out) {
             nets.push(ws.render.out.clone());
         }
@@ -2159,7 +2164,12 @@ impl App {
     /// Open the saved layer `s` in view `pane` at position `order`, or as input `to` of a layer math. A
     /// computed layer opens its source (an aggregate) or its inputs (a layer math, a filter) first.
     fn load_layer(&mut self, pane: u32, order: usize, s: LayerSave, to: Option<(u64, usize)>) {
-        let open = Open { pane, save: Some(s.clone()), order, path: s.path.clone(), series: vec![], band: None, op: s.op.clone(), to, replace: None, var: None };
+        self.load_layer_as(pane, order, s, to, None);
+    }
+
+    /// `load_layer`, and the new layer takes the place of the layer `replace` (the uid) of the view.
+    pub fn load_layer_as(&mut self, pane: u32, order: usize, s: LayerSave, to: Option<(u64, usize)>, replace: Option<u64>) {
+        let open = Open { pane, save: Some(s.clone()), order, path: s.path.clone(), series: vec![], band: None, op: s.op.clone(), to, replace, var: None };
         match &s.op {
             Some(OpSave::Math { expr, names, inputs }) => self.load_inputs(open, expr.clone(), names.clone(), None, inputs),
             Some(OpSave::Filter { filter, inputs }) => self.load_inputs(open, String::new(), vec![], Some(filter.clone()), inputs),
@@ -2887,10 +2897,21 @@ mod workspace_tests {
         let mut g = Graph::default();
         let a = g.add(K::Source { name: "a".into(), layer: s }, [0.0; 2], vec![]);
         let f = g.add(K::Filter(eo_cache::Filter::Gaussian { sigma: 2.0 }), [0.0; 2], vec![Some(a)]);
-        let o = g.add(K::Output { name: "g".into() }, [0.0; 2], vec![Some(f)]);
+        let o = g.add(K::Output { name: "g".into(), view: 0 }, [0.0; 2], vec![Some(f)]);
         app.graph = g;
         app.graph_make(o);
         wait(&mut app, |a| a.panes[0].layers.len() == 2 && a.panes[0].layers.iter().all(|l| !l.inputs.is_empty()));
+        // The graph is live: a new sigma makes the layer of the output again, in its place.
+        if let K::Filter(eo_cache::Filter::Gaussian { sigma }) = &mut app.graph.nodes[1].kind {
+            *sigma = 4.0;
+        }
+        let ctx = app.ctx.clone();
+        app.graph_live(&ctx);
+        let new = |a: &App| matches!(&a.panes[0].layers[1].op, Some(OpSave::Filter { filter: eo_cache::Filter::Gaussian { sigma }, .. }) if *sigma == 4.0);
+        wait(&mut app, |a| a.panes[0].layers.len() == 2 && new(a) && a.panes[0].layers.iter().all(|l| !l.inputs.is_empty()));
+        assert!(!app.panes[0].layers[1].prev.is_empty(), "the old tiles stay until the new ones come");
+        app.graph_live(&ctx);
+        assert_eq!(app.panes[0].layers.len(), 2);
         app.graph_show(1);
         assert_eq!(app.graph.nodes.len(), 3);
     }
