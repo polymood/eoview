@@ -2,6 +2,7 @@
 //! The chunk engine in `eo-cache` reads and decodes them.
 mod blosc;
 pub mod dap;
+pub mod envisat;
 pub mod hdf4;
 pub mod hdf5;
 pub mod netcdf;
@@ -87,6 +88,8 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
         }
         let desc = format!("NetCDF-4 / HDF5, {} variables", vars.len());
         Product { name, desc, vars, small, valid: None, info }
+    } else if envisat::is_envisat(&head) {
+        envisat::open(&src, 0, name)?
     } else if head.starts_with(&hdf4::MAGIC) {
         hdf4::open(&src, 0, name)?
     } else if netcdf3::is_netcdf3(&head) {
@@ -94,7 +97,7 @@ pub fn open(url: &str, rt: &Handle) -> Result<Dataset> {
     } else if grib::is_grib(&src) {
         grib::open(&src, 0, name)?
     } else {
-        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-3, NetCDF-4, HDF4, HDF5, GRIB, Zarr, SAFE or OPeNDAP expected)").into());
+        return Err(format!("{url}: unknown format (TIFF, COG, JPEG 2000, NITF, NetCDF-3, NetCDF-4, HDF4, HDF5, GRIB, Envisat N1, Zarr, SAFE or OPeNDAP expected)").into());
     };
     Ok(Dataset { product, sources: vec![Arc::new(src)] })
 }
