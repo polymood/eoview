@@ -134,7 +134,9 @@ Work rule (the maintainer, 2026-10-06): add functions first. Keep the tests shor
    nodes for sources, filters, layer math, aggregates, Python and outputs, "Make layer", the graph of a
    computed layer, the graph in the workspace file. DESIGN section 18 answers the 3 questions. Done
    (2026-10-20): a node editor as in Blender (DESIGN 18.4), live (no "Make layer"), the display settings in
-   the output node; a loading bar in each view, the old tiles stay during a new computation. To do:
+   the output node; a loading bar in each view, the old tiles stay during a new computation. The editor is
+   the crate egui-noodle (github.com/polymood/egui-noodle, private for now): a copy of its `src/` is in
+   `crates/egui-noodle`. Change the editor there, then copy `src/` again. To do:
    - The Python node runs on the whole layer at level 0 (the limit is the memory budget). Next step: tile by
      tile with halo pixels (DESIGN 18.2). Then a Python node can feed a filter or another node.
    - The result of a Python node is a memory layer: it is not in the workspace file (the graph is).

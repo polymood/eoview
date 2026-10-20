@@ -1,0 +1,15 @@
+# A copy of github.com/polymood/egui-noodle (src only), until it is a published crate. Change the editor there
+# and copy src/ here again.
+[package]
+name = "egui-noodle"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+egui.workspace = true
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde", "egui/serde"]
